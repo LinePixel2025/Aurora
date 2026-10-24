@@ -144,6 +144,23 @@
   `automation.replay` / `automation.run-detail`（2026-10-16：`.detail-message` 随纯文本回放一起退役），
   截图场景改为直接截 `automation` 窗口。
 
+### 2.2.2 插件配置窗口（Plugin Config Window）
+
+- **定位**：设置 → 插件列表只负责总览与启停；单个插件的配置、桌面小组件开关 / 层级、
+  权限与扩展点、重启 / 回滚 / 卸载等管理动作收进**单例独立窗口**（窗口名 `plugin-config`）。
+- **规格**：默认 `880×760`、最小 `620×520`、resizable、非置顶、无 parent、
+  `skipTaskbar: false`、可最小化 / 最大化；关闭 / Esc 均为隐藏，不退出应用。
+  与 memory / automation 一致启用原生 Acrylic（受 `appearance.glass` 门控）。
+- **打开链**：设置页每行的「配置」按钮（`data-field="plugins.config.<id>"`）经
+  `plugins:openWindow` 发请求；主进程校验插件存在后复用同一个窗口，等页面加载完成再经
+  `plugins:windowRequest` 推送 `{ requestId, pluginId }`。
+- **内容**：插件身份与状态头、配置表单（`plugin-config.config`，字段来自清单 `config.fields`）、
+  桌面小组件显隐 / 层级（沿用 `plugins.widget-visible.<id>` / `plugins.widget-level.<id>` 锚点）、
+  权限与扩展点清单、管理动作（启用 / 信任 / 重启 / 回滚 / 目录 / 日志 / 卸载）。
+  保存走 `plugins:setConfig`；重启后所有已打开的面板 / 页面 / 小组件经 `plugins:changed` 重载。
+- **锚点**：`plugin-config.page` / `plugin-config.config` / `plugin-config.save` /
+  `plugin-config.restart` / `plugin-config.permissions`，截图场景 `plugin-config.png`。
+
 ### 2.3 主界面（Chat Window）
 
 > **BetaV2**：交互窗（chat）升级为常驻**主界面**，本节规格按新口径改写；下文沿用「chat / 交互窗」
@@ -165,13 +182,14 @@
 - **原生毛玻璃（2026-10-04，Windows 11 22H2+）**：主界面 BrowserWindow 使用
   `backgroundMaterial: 'acrylic'`，渲染层 body 透明，系统材质提供长驻窗口的桌面层次；
   页面侧栏、标题栏、输入区再叠加 CSS 玻璃作为可读性层。系统材质不可用或非 win32 时
-  自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗 / 记忆库 / 自动化详情窗
-  同样启用原生 Acrylic（侧栏使用标准玻璃、内容区叠 `--glass-content` 可读性 tint）；
+  自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗 / 记忆库 / 自动化详情窗 /
+  插件配置窗口同样启用原生 Acrylic（侧栏使用标准玻璃、内容区叠 `--glass-content` 可读性 tint）；
   提示条（§2.1）自 2026-10-11 起并入同一份材质名单；引导窗继续保持
   不透明基座，避免所有窗口同时采样桌面造成 GPU 重绘与可读性问题。
   **v32 起受 `appearance.glass` 门控**：该开关为 `false` 时窗口管理器不挂系统材质、
   底色改回不透明 `--bg-base`，已存在的窗口由 `applyGlass(false)` 即时摘除材质（关闭=实色，
-  与页面令牌降级同一时刻生效）。**覆盖五个窗口**：chat / settings / memory / automation / edge-bar。
+  与页面令牌降级同一时刻生效）。**覆盖六个窗口**：chat / settings / memory / automation /
+  plugin-config / edge-bar。
   **Electron 44 起恢复系统原生最大化**：Electron 33 的 `backgroundMaterial` 会在
   `WS_MAXIMIZE` 后把 Acrylic 锁成灰底，旧版曾用工作区缩放规避；Electron 44 已修复材质
   更新链路，chat / settings / memory 恢复调用 `BrowserWindow.maximize()` / `unmaximize()`，
@@ -2288,9 +2306,13 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     最后把 `llm.active`、模型名、候选列表与临时参数写回原状。
     `pass` = 下拉存在 && DOM 值 === 配置值 === 目标对 && 恢复成功；
     这条同时覆盖「按 provider 分组的选项渲染」与「切换即保存」两条产品口径。
+    目录可用时下拉还应有「Aurora Center 官方模型」分组（本场景在隔离 userData 无目录，
+    该分组缺席是预期；官方分组的写入由单测覆盖）。
   - **对话窗模型来源 / 模型双下拉**（`CHAT_MODEL_PICKER_ACT` / `CHAT_MODEL_PICKER_CHECK`，
     产物 `chat-model-picker.png`）：act 用 `capture-source` + `center-llm` 造出两个来源，
-    先记录旧会话没有 `meta.llm`，再切 `chat.modelSource=local` 验证本机默认模型，
+    先把全局 `llm.active` 设为本机 `capture-source` 并开启官方（2026-10-24：此时初始来源
+    必须是 `local`，官方开启不再抢占全局默认），记录旧会话没有 `meta.llm`，
+    再切 `chat.modelSource=local` 验证本机默认模型，
     随后切回 `center` 验证 `center-a` 默认写入，再选 `center-b`，最后切 `local` 并选
     `deepseek-reasoner`。check 断言来源选项只有
     `center` / `local`、Center 与本机覆盖都写进正确的 `(providerId, model)`、最终会话覆盖和
@@ -2451,22 +2473,29 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
 
 - 四行分别对应语言模型、生图、TTS、STT；每行有启用开关与模型下拉；
 - 模型目录来自 Center，普通用户看不到上游地址与 API Key；
-- 语言模型作为全局默认覆盖，仍可在会话模型选择器里覆盖；
+- **语言模型不再「全局覆盖」**（2026-10-24）：`llm.active` 是全局默认唯一事实来源，
+  只有它指向 `center-llm` 时才使用官方模型。Center 页的 LLM 开关首次开启会把默认切到官方；
+  关闭时若默认仍是官方则回落到首个可用本机 provider。用户在 AI 模型页选本机后，
+  官方开关保持可用（会话模型选择器仍可覆盖到官方），但不再顶替本机默认；
+  开关开启而默认在本机时，LLM 行补一行「当前默认：本机模型 <id>」状态；
 - Center 不可用或模型被停用时回落本地 Provider，并在当前会话首次提示，不阻塞回复。
 
 勾选 TTS / STT / 生图官方服务后，对应 Provider 页显示只读 `center-*` 卡片，并加入默认模型
 下拉；卡片不能编辑凭据、Base URL、模型或删除。切回本地模型不会关闭
 Center 开关，官方卡片继续展示并标记为未作为默认；目录不可用时保留卡片并标注暂不可用。
-语言模型仍只通过会话模型选择器覆盖，不在 Provider 页显示。Center Web 新增 `#/usage`：用户看本人，管理员可按用户、
+语言模型的全局默认只通过「AI 模型」页的默认模型下拉（含官方分组）与 Center 页 LLM 开关写入
+`llm.active`；Provider 页不展示官方语言模型卡片。会话模型选择器仍可在会话内覆盖到官方。Center Web 新增 `#/usage`：用户看本人，管理员可按用户、
 设备、模型筛选全站；两页均显示总量卡、输入/输出/缓存折线图与最近记录。管理页新增
 官方模型配置与 Release 管理卡。
 
 ## 8. 插件界面（v36）
 
 - **设置 → 插件**（侧栏「扩展」组）三 tab：已安装 / 市场 / 开发。
-  - 已安装：总开关、插件主题选择、安装确认（权限 / 工具 / SHA-256）、插件详情
-    （启停 / 信任 / 重启 / 回滚 / 打开目录 / 日志 / 卸载）、桌面小组件「显示在桌面」开关
-    与层级下拉（跟随插件 / 置顶 / 普通 / 桌面层）、配置表单（文本 / 数字 / 布尔 / 下拉 / 多行）；
+  - 已安装：总开关、插件主题选择、安装确认（权限 / 工具 / SHA-256）与插件列表；每行只有
+    状态 / 名称 / 版本 / 描述 / 一行统计、启停快捷开关与「配置」按钮
+    （`data-field="plugins.config.<id>"`）。**不再内联展开详情或配置表单**；
+  - **插件配置窗口**（`plugin-config`，见 §2.2.2）：配置、桌面小组件显隐 / 层级、权限与扩展点、
+    启用 / 信任 / 重启 / 回滚 / 目录 / 日志 / 卸载全部收在这里，详情信息不再挤在设置列表里；
   - 市场：Center 公开列表，显示更新标记与「安装 / 更新」；未配置 Center 时明确空态；
   - 开发：`plugins.devDirs` 增删（≤ 8），目录内插件原地加载、改文件自动重启。
 - **右栏插件标签**：`CtxTabKind` 新增 `plugin`，同一 `(pluginId, panelId)` 只开一个标签；
@@ -2478,8 +2507,11 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   `window.auroraPlugin.request/onEvent`；页面 RPC 由宿主带 guest id 中继，主进程校验归属。
 - **插件主题**：令牌内联到 `document.documentElement`，在 `applyAppearance()` 之后应用；
   切换 / 卸载时清理上一组令牌。只允许表面 / 文字 / 边框 / 圆角，强调色与毛玻璃仍由外观设置决定。
+- **重启 / 配置变更的重载**：`plugins:changed` 广播投递到 chat / settings / edge-bar /
+  plugin-config 与全部桌面小组件窗口；页面型面板 / 小组件重载 webview，声明式面板重拉 schema，
+  设置列表与配置窗口重拉摘要。插件重启按钮旁边不再出现「点了没反应」。
 - **桌面小组件**：每个可见 widget 一张无边框 / 透明 / 不占任务栏的浮动卡片，默认置顶；
-  层级（跟随插件 / 置顶 / 普通 / 桌面层）可在插件详情逐 widget 覆盖，声明 `acrylic` 的 widget
+  层级（跟随插件 / 置顶 / 普通 / 桌面层）可在插件配置窗口逐 widget 覆盖，声明 `acrylic` 的 widget
   在扩展点里标注「毛玻璃」。桌面层不置顶、尽力贴合桌面 shell（Win32 owner + 最小化恢复守护），
   失败回落普通窗口；毛玻璃需 Windows 11 22H2+ 且外观设置里的毛玻璃开启，不满足时保持不透明。
   页头为 `-webkit-app-region: drag` 拖动区；大小最小 120×80，位置夹到显示器 workArea。
@@ -2487,5 +2519,6 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
 - **提示条小组件**：展开面板底部「小组件」区（`edge-bar.plugin-widgets`），只渲染声明式条目，
   单条最高 220px 内部滚动；无 widget 时整块不渲染，不改变提示条窗口 shape。
 - 截图锚点：`chat-plugin-panel` / `chat-plugin-page` / `settings-plugins-installed` /
-  `settings-plugins-detail` / `settings-plugins-marketplace` / `widget-desktop-plugin` /
-  `edge-bar-plugin-widget` / `chat-plugin-panel-push`（另含设置页深链 `settings-plugins.png`）。
+  `settings-plugins-detail`（设置页列表 + 配置入口）/ `plugin-config` /
+  `settings-plugins-marketplace` / `widget-desktop-plugin` / `edge-bar-plugin-widget` /
+  `chat-plugin-panel-push`（另含设置页深链 `settings-plugins.png`）。

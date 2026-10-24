@@ -181,10 +181,32 @@ describe('createProviderFactory · 会话级模型覆盖（docs/06 §3）', () =
 })
 
 describe('createProviderFactory · Aurora Center 官方模型', () => {
-  it('开启官方选择时构造保留 Provider，并可被会话覆盖', () => {
+  it('官方开启但全局默认在本机：仍使用本机 Provider（不再被官方抢占）', () => {
     const settings = settingsWith()
     settings.center.officialModels.llm = { enabled: true, model: 'm-center' }
     settings.llm.providers['center-llm'] = provider('m-center', ['m-center'])
+    const factory = createProviderFactory(storeOf(settings), createMemoryLogger(), undefined, {
+      centerOfficial: {
+        token: () => 'ac-token',
+        service: () => ({
+          type: 'openai-compat',
+          defaultModel: 'm-center',
+          models: [{ id: 'm-center', contextWindow: 128000, vision: true }],
+        }),
+        selection: () => settings.center.officialModels.llm,
+      },
+    })
+
+    const config = factory.create()
+    expect(config?.provider.id).toBe('p-global')
+    expect(config?.model).toBe('m-global')
+  })
+
+  it('全局默认指向 center-llm 时构造官方 Provider，且用目录选中的模型与参数', () => {
+    const settings = settingsWith()
+    settings.llm.active = 'center-llm'
+    settings.center.officialModels.llm = { enabled: true, model: 'm-center' }
+    settings.llm.providers['center-llm'] = provider('m-center', ['m-center', 'm-alt'])
     const factory = createProviderFactory(storeOf(settings), createMemoryLogger(), undefined, {
       centerOfficial: {
         token: () => 'ac-token',
@@ -193,7 +215,10 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
             ? {
                 type: 'openai-compat',
                 defaultModel: 'm-center',
-                models: [{ id: 'm-center', contextWindow: 128000, vision: true }],
+                models: [
+                  { id: 'm-center', contextWindow: 128000, vision: true },
+                  { id: 'm-alt', contextWindow: 64000, vision: false },
+                ],
               }
             : undefined,
         selection: () => settings.center.officialModels.llm,
@@ -206,8 +231,31 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
     expect(config?.vision).toBe(true)
   })
 
+  it('官方选中模型被目录下线：回落 defaultModel，而不是回落本机', () => {
+    const settings = settingsWith()
+    settings.llm.active = 'center-llm'
+    settings.center.officialModels.llm = { enabled: true, model: 'm-removed' }
+    settings.llm.providers['center-llm'] = provider('m-center', ['m-center'])
+    const factory = createProviderFactory(storeOf(settings), createMemoryLogger(), undefined, {
+      centerOfficial: {
+        token: () => 'ac-token',
+        service: () => ({
+          type: 'openai-compat',
+          defaultModel: 'm-center',
+          models: [{ id: 'm-center' }],
+        }),
+        selection: () => settings.center.officialModels.llm,
+      },
+    })
+
+    const config = factory.create()
+    expect(config?.provider.id).toBe('center-llm')
+    expect(config?.model).toBe('m-center')
+  })
+
   it('Center 目录不可用时回调回落，并使用本机默认 Provider', () => {
     const settings = settingsWith()
+    settings.llm.active = 'center-llm'
     settings.center.officialModels.llm = { enabled: true, model: 'm-center' }
     settings.llm.providers['center-llm'] = provider('m-center', ['m-center'])
     const fallbacks: Array<{ requestedProviderId: string; fallbackProviderId: string }> = []
@@ -230,6 +278,7 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
 
   it('目录尚未加载：静默回落本机、不提示，并在后台补拉一次', () => {
     const settings = settingsWith()
+    settings.llm.active = 'center-llm'
     settings.center.officialModels.llm = { enabled: true, model: 'm-center' }
     settings.llm.providers['center-llm'] = provider('m-center', ['m-center'])
     let refreshed = 0
@@ -247,7 +296,7 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
       },
     })
 
-    const config = factory.create()
+    const config = factory.create({ allowFallback: true })
     expect(config?.provider.id).toBe('p-global')
     expect(fallbacks).toEqual([])
     expect(refreshed).toBeGreaterThan(0)

@@ -2081,6 +2081,17 @@ export interface PluginSummary {
   skills: string[]
 }
 
+/** 打开 / 复用插件配置窗口的请求（docs/07 §2.2.2）。 */
+export interface PluginOpenWindowRequest {
+  pluginId: string
+}
+
+/** 插件配置窗口的视图参数：requestId 单调递增，用于同一窗口切换不同插件。 */
+export interface PluginWindowRequest {
+  requestId: string
+  pluginId: string
+}
+
 /** 安装前预览（安装同意弹窗唯一的数据来源）。 */
 export interface PluginInstallPreview {
   id: string
@@ -2687,6 +2698,10 @@ export interface AuroraApi {
     restart(request: { pluginId: string }): Promise<Result<PluginSummary>>
     /** 回滚到上一版本（仅本地 / 市场安装的插件有 previousVersion） */
     rollback(request: { pluginId: string }): Promise<Result<PluginSummary>>
+    /** 打开 / 复用单例插件配置窗口（docs/07 §2.2.2） */
+    openWindow(request: PluginOpenWindowRequest): Promise<Result<WindowState>>
+    /** 配置窗口的插件切换推送（on/off 成对；按 requestId 去重） */
+    onWindowRequest(listener: (request: PluginWindowRequest) => void): () => void
     /** 系统选择框：选 `.aurora-plugin` / `.zip`（只返回路径，不安装） */
     choosePackage(): Promise<Result<string | null>>
     /** 系统选择框：选开发目录（只返回路径，写配置走 settings:update） */

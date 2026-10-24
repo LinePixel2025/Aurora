@@ -47,7 +47,12 @@ let offWidgetEvent: (() => void) | null = null
 let offWidgetMaterial: (() => void) | null = null
 let offChanged: (() => void) | null = null
 let toastTimer: ReturnType<typeof setTimeout> | undefined
-let lastStatus = ''
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
+let retryCount = 0
+/** 启动期 IPC handler 可能尚未注册：有界重试 + plugins:changed 双保险，不永久空窗。 */
+const MAX_RETRIES = 20
+const RETRY_DELAY_MS = 250
 
 const title = computed(() => info.value?.title ?? '小组件')
 const isPage = computed(() => info.value?.kind === 'page')
@@ -77,19 +82,41 @@ function applySchema(raw: unknown): void {
   error.value = null
 }
 
+function scheduleRetry(): void {
+  if (disposed || retryTimer !== undefined || retryCount >= MAX_RETRIES) return
+  retryCount += 1
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined
+    void refreshIfReady()
+  }, RETRY_DELAY_MS)
+}
+
 async function loadInfo(): Promise<PluginSummary | null> {
-  const result = await window.aurora.plugins.list()
-  if (!result.ok) {
-    error.value = result.message
+  try {
+    const result = await window.aurora.plugins.list()
+    if (!result.ok) {
+      error.value = `插件界面加载失败：${result.message}`
+      return null
+    }
+    const found = result.value.find((plugin) => plugin.id === pluginId) ?? null
+    summary.value = found
+    info.value = found?.widgets.find((widget) => widget.id === widgetId) ?? null
+    hideCloseButton.value = info.value?.hideCloseButton === true
+    if (found === null) {
+      error.value = '插件不存在'
+    } else if (info.value === null) {
+      error.value = '小组件不存在'
+    } else {
+      // 成功一次后不再残留「启动期读取失败」的文案
+      error.value = null
+    }
+    return found
+  } catch (cause) {
+    // invoke 在 handler 尚未注册时会 reject（而不是回 { ok: false }）。
+    error.value = '插件界面正在启动，请稍候…'
+    void cause
     return null
   }
-  const found = result.value.find((plugin) => plugin.id === pluginId) ?? null
-  summary.value = found
-  info.value = found?.widgets.find((widget) => widget.id === widgetId) ?? null
-  hideCloseButton.value = info.value?.hideCloseButton === true
-  if (found === null) error.value = '插件不存在'
-  else if (info.value === null) error.value = '小组件不存在'
-  return found
 }
 
 async function invoke(method: string, params?: unknown): Promise<void> {
@@ -131,18 +158,47 @@ async function hide(): Promise<void> {
   await window.aurora.plugins.setWidgetVisible({ pluginId, widgetId, visible: false })
 }
 
+let initialized = false
+
+/**
+ * 拉插件摘要并驱动首屏 / 后续重载。
+ *
+ * - 首次成功之前失败（IPC handler 未注册、插件尚未就绪）→ 有界重试；
+ *   `plugins:changed` 也会再次触发，双保险；
+ * - 页面型：每次变化都让 PluginPageFrame 重载 webview（插件重启后的内容不会停在旧页）；
+ * - 声明式：每次变化都重拉 schema（旧 schema 在加载失败时保留）。
+ */
 async function refreshIfReady(): Promise<void> {
   const found = await loadInfo()
-  if (found === null) return
+  if (found === null) {
+    scheduleRetry()
+    return
+  }
+  retryCount = 0
+  if (!initialized) {
+    initialized = true
+    if (isPage.value) return
+    offWidgetEvent = window.aurora.plugins.onWidgetEvent((event: PluginPushEvent) => {
+      if (event.pluginId !== pluginId || event.widgetId !== widgetId) return
+      void invoke('event', { event: event.event, payload: event.payload })
+    })
+    void invoke('refresh')
+    return
+  }
+  // 页面型由 PluginPageFrame 自己订阅 plugins:changed 并 reload（chat 面板同一套），
+  // 这里只处理声明式 widget，避免一次重启触发两次 webview 重载。
   if (isPage.value) return
-  // 崩溃恢复：状态从非 ready 回到 ready 时重新拉一次；旧 schema 在此期间照样保留。
-  if (found.status === 'ready' && lastStatus !== 'ready') void invoke('refresh')
-  lastStatus = found.status
+  if (!loading.value) void invoke('refresh')
 }
 
-onMounted(async () => {
-  const found = await loadInfo()
-  lastStatus = found?.status ?? ''
+function retryNow(): void {
+  error.value = null
+  retryCount = 0
+  void refreshIfReady()
+}
+
+onMounted(() => {
+  // 先订阅、再加载：启动窗口期的一次推送也不能丢（与 bootstrapApp 同一硬口径）。
   offChanged = window.aurora.plugins.onChanged(() => {
     void refreshIfReady()
   })
@@ -150,15 +206,15 @@ onMounted(async () => {
     if (event.pluginId !== pluginId || event.widgetId !== widgetId) return
     material.value = event.material
   })
-  if (isPage.value) return
-  void invoke('refresh')
-  offWidgetEvent = window.aurora.plugins.onWidgetEvent((event: PluginPushEvent) => {
-    if (event.pluginId !== pluginId || event.widgetId !== widgetId) return
-    void invoke('event', { event: event.event, payload: event.payload })
-  })
+  void refreshIfReady()
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  if (retryTimer !== undefined) {
+    clearTimeout(retryTimer)
+    retryTimer = undefined
+  }
   offWidgetEvent?.()
   offWidgetEvent = null
   offWidgetMaterial?.()
@@ -210,9 +266,14 @@ onBeforeUnmount(() => {
           @action="onAction"
           @update-value="updateValue"
         />
-        <div v-else-if="error === null && statusHint === ''" class="widget-empty">
-          小组件暂无内容
+        <div v-else-if="error !== null" class="widget-empty">
+          <p>{{ error }}</p>
+          <button type="button" class="widget-retry" data-field="widget.retry" @click="retryNow">
+            重试
+          </button>
         </div>
+        <div v-else-if="summary === null" class="widget-empty">正在读取插件…</div>
+        <div v-else-if="statusHint === ''" class="widget-empty">小组件暂无内容</div>
       </template>
     </div>
   </div>
@@ -306,9 +367,30 @@ onBeforeUnmount(() => {
 }
 
 .widget-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-4);
   text-align: center;
   color: var(--text-muted);
   font-size: var(--text-xs);
+}
+
+.widget-empty p {
+  margin: 0;
+}
+
+.widget-retry {
+  padding: 3px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.widget-retry:hover {
+  color: var(--text-primary);
 }
 </style>

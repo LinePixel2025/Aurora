@@ -1179,6 +1179,23 @@ export function registerIpc(deps: DesktopDeps): () => void {
       ? Promise.resolve(pluginsMissing<PluginSummary>())
       : plugins.rollback(request.pluginId).then(ok, pluginError),
   )
+  /**
+   * 插件配置窗口（docs/07 §2.2.2）：设置列表的「配置」按钮 → 单例 `plugin-config` 窗口。
+   * 已打开时复用同一窗口，经 `showWithPayload` 等页面加载完成后再推参数，避免首开空白。
+   */
+  handle<WindowState>(IPC.plugins.openWindow, async (request: { pluginId: string }) => {
+    if (plugins === undefined) return pluginsMissing<WindowState>()
+    const pluginId = typeof request?.pluginId === 'string' ? request.pluginId.trim() : ''
+    if (pluginId === '' || plugins.get(pluginId) === undefined) {
+      return err('E_INVALID_ARGUMENT', '插件不存在')
+    }
+    return ok(
+      await deps.windows.showWithPayload('plugin-config', IPC.plugins.windowRequest, {
+        requestId: randomUUID(),
+        pluginId,
+      }),
+    )
+  })
   handle<string | null>(IPC.plugins.choosePackage, async () => {
     const picked = await dialog.showOpenDialog({
       title: '选择 Aurora 插件包',

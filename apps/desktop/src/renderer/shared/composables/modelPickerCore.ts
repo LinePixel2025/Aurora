@@ -36,8 +36,9 @@ export interface ModelPickerState {
 /**
  * 模型下拉的唯一解析口径。
  *
- * 优先级必须与主进程 `createProviderFactory` 一致：会话覆盖 > Center 官方语言模型 >
- * 本机 `llm.active`。没有会话覆盖的旧会话只推导展示选择，不在这里产生任何写入。
+ * 优先级必须与主进程 `createProviderFactory` 一致：会话覆盖 > 全局 `llm.active`
+ * （指向 `center-llm` 时才是 Center 官方，否则是本机 Provider）。Center 官方能力开启
+ * 不再参与全局默认竞争；没有会话覆盖的旧会话只推导展示选择，不在这里产生任何写入。
  */
 export function buildModelPickerState(
   settings: Settings,
@@ -152,9 +153,11 @@ function resolveGlobalChoice(
   center: ModelPickerSource | null,
   local: ModelPickerSource | null,
 ): ModelPickerChoice | null {
-  if (center !== null) return center.defaultChoice
-  if (local !== null) return local.defaultChoice
-  return null
+  // 只有 llm.active 指向官方时才优先 Center；本机默认优先，官方退回“可选来源”。
+  if (isCenterOfficialProviderId(settings.llm.active)) {
+    return center?.defaultChoice ?? local?.defaultChoice ?? null
+  }
+  return local?.defaultChoice ?? center?.defaultChoice ?? null
 }
 
 function providerModels(provider: LlmProviderConfig): string[] {

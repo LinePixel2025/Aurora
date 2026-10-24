@@ -40,7 +40,9 @@ import {
   ensurePluginPageProtocol,
   isPluginPageUrl,
   pluginPageTargetOf,
+  queuePluginPageSrc,
   registerPluginPageGuest,
+  takePluginPageSrcForSession,
 } from './page-protocol.js'
 
 export interface WindowManagerOptions {
@@ -186,6 +188,21 @@ const SPECS: Record<WindowName, WindowSpec> = {
     maximizable: true,
     place: 'center',
   },
+  /** 插件配置窗口（docs/07 §2.2.2）：设置列表的「配置」入口打开的单例管理面。 */
+  'plugin-config': {
+    width: 880,
+    height: 760,
+    minWidth: 620,
+    minHeight: 520,
+    resizable: true,
+    transparent: false,
+    alwaysOnTop: false,
+    skipTaskbar: false,
+    focusable: true,
+    minimizable: true,
+    maximizable: true,
+    place: 'center',
+  },
   onboarding: {
     width: 720,
     height: 560,
@@ -232,6 +249,7 @@ const NATIVE_GLASS_WINDOWS = new Set<WindowName>([
   'settings',
   'memory',
   'automation',
+  'plugin-config',
   'edge-bar',
 ])
 
@@ -250,12 +268,6 @@ const GEOMETRY_PERSIST_DEBOUNCE_MS = 250
 
 /** 已加固过的插件页面 session（按插件 partition；授权、下载与弹窗只关一次） */
 const hardenPluginSessions = new WeakSet<Session>()
-/**
- * `will-attach-webview` 里拿到的插件页面地址。
- * guest 自动导航在自定义协议下不一定发生（实测 guest.getURL() 为空），
- * `did-attach-webview` 里用它显式 `loadURL` 一次。
- */
-let pendingPluginPageSrc = ''
 
 /** 窗口几何（与 `BrowserWindow.getBounds()` 同形，单独命名只为让短路比较读得懂） */
 interface WindowBounds {
@@ -315,7 +327,14 @@ export class WindowManager {
   private static readonly EDGE_BAR_TOP_WATCHDOG_MS = 10_000
   private readonly syncWindowBackgrounds = (): void => {
     const color = windowBackgroundColor()
-    for (const name of ['chat', 'settings', 'memory', 'automation', 'onboarding'] as const) {
+    for (const name of [
+      'chat',
+      'settings',
+      'memory',
+      'automation',
+      'plugin-config',
+      'onboarding',
+    ] as const) {
       const win = this.windows.get(name)
       if (!win || win.isDestroyed() || this.nativeGlassWindows.has(name)) continue
       win.setBackgroundColor(color)
@@ -693,9 +712,10 @@ export class WindowManager {
             event.preventDefault()
             return
           }
-          pendingPluginPageSrc = src
           delete params['preload']
           params['partition'] = `plugin-${target.pluginId}`
+          // 按插件 partition 排队：同插件多标签并发挂载时仍按 will-attach 顺序取回自己的 src
+          queuePluginPageSrc(params['partition'] ?? '', src)
           webPreferences.preload = preload
           webPreferences.partition = `plugin-${target.pluginId}`
           webPreferences.sandbox = true
@@ -709,8 +729,7 @@ export class WindowManager {
         },
       )
       win.webContents.on('did-attach-webview', (_event, guest) => {
-        const src = pendingPluginPageSrc
-        pendingPluginPageSrc = ''
+        const src = takePluginPageSrcForSession(guest.session)
         this.options.logger.debug('webview 已挂载', { url: guest.getURL(), pending: src })
         if (isPluginPageUrl(src)) {
           registerPluginPageGuest(guest, win.webContents, src)
@@ -1519,6 +1538,7 @@ function titleFor(name: WindowName): string {
     settings: 'Aurora 设置',
     memory: 'Aurora 记忆库',
     automation: 'Aurora 自动化',
+    'plugin-config': 'Aurora 插件配置',
     onboarding: 'Aurora 首次引导',
   }
   return titles[name]

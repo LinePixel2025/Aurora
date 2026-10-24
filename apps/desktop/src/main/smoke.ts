@@ -817,6 +817,15 @@ export function smokeScript(
         JSON.stringify(readyAgain),
       )
 
+      // 插件配置窗口（docs/07 §2.2.2）：设置列表的「配置」按钮走同一条 IPC。
+      const configWindow = await window.aurora.plugins.openWindow({ pluginId: PLUGIN_ID })
+      record(
+        '打开插件配置窗口',
+        configWindow?.ok === true && configWindow.value?.visible['plugin-config'] === true,
+        JSON.stringify(configWindow),
+      )
+      await window.aurora.window.hide('plugin-config')
+
       const removed = await window.aurora.plugins.uninstall({ pluginId: PLUGIN_ID, deleteData: true })
       record('卸载插件成功', removed?.ok === true && removed.value === true, JSON.stringify(removed))
       const afterUninstall = await readPlugins()

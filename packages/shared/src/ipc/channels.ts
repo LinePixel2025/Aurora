@@ -355,6 +355,10 @@ export const IPC = {
     marketplaceList: 'plugins:marketplaceList',
     marketplaceInstall: 'plugins:marketplaceInstall',
     checkUpdates: 'plugins:checkUpdates',
+    /** 打开 / 复用单例插件配置窗口；返回窗口状态 */
+    openWindow: 'plugins:openWindow',
+    /** 插件配置窗口的「打开哪个插件」推送（on/off 成对） */
+    windowRequest: 'plugins:windowRequest',
     /** 插件集合变化推送（on/off 成对）：各窗口重拉 list */
     changed: 'plugins:changed',
     /** 主进程 → 渲染层：插件请求打开右栏面板（on/off 成对） */

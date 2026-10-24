@@ -33,6 +33,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { formatTokenCount } from '@aurora/shared/browser'
 import { ChevronRight } from '@aurora/shared/browser'
 import {
+  CENTER_OFFICIAL_PROVIDER_IDS,
   DEFAULT_REASONING_EFFORT,
   LLM_PROVIDER_TYPE_LABELS,
   LlmProviderTypes,
@@ -52,6 +53,7 @@ import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import ImageGenSection from '../components/ImageGenSection.vue'
+import { useCenterOfficialCatalog } from '../../shared/composables/useCenterOfficialCatalog.js'
 import { useSettingsStore } from '../../shared/stores.js'
 
 interface ProviderDraft extends LlmProviderConfig {
@@ -73,6 +75,7 @@ const PROVIDER_TYPE_OPTIONS = LlmProviderTypes.map((value) => ({
 }))
 
 const settingsStore = useSettingsStore()
+const { catalog: centerCatalog } = useCenterOfficialCatalog()
 
 const newProviderId = ref('')
 const testing = ref<string | null>(null)
@@ -100,16 +103,38 @@ const renameValue = ref('')
 
 const activeId = computed(() => settingsStore.settings?.llm.active ?? '')
 
+/** Center 官方语言模型目录（未登录 / 未拉取到为 null）。 */
+const centerLlmService = computed(() => centerCatalog.value?.services.llm ?? null)
+
+/**
+ * 官方默认模型：优先目录里的选中项，其次 defaultModel、首个；目录缺失时退回
+ * `officialModels.llm.model` / 镜像 Provider 的 model（只为把选择显示出来）。
+ */
+const officialDefaultModel = computed(() => {
+  const service = centerLlmService.value
+  const settings = settingsStore.settings
+  if (service !== null) {
+    const selected = settings?.center.officialModels.llm.model.trim() ?? ''
+    const entry =
+      service.models.find((item) => item.id === selected) ??
+      service.models.find((item) => item.id === service.defaultModel) ??
+      service.models[0]
+    if (entry !== undefined) return entry.id
+  }
+  return settings?.center.officialModels.llm.model.trim() ?? ''
+})
+
 /** 当前默认状态：按配置解析（不依赖 drafts，Center 官方 provider 不会出现在行列表里）。 */
 const activeSummary = computed(() => {
   const settings = settingsStore.settings
   if (!settings || settings.llm.active === '') return null
   const provider = settings.llm.providers[settings.llm.active]
   if (provider === undefined) return null
+  const center = isCenterOfficialProviderId(settings.llm.active)
   return {
     id: settings.llm.active,
-    model: provider.model.trim(),
-    center: isCenterOfficialProviderId(settings.llm.active),
+    model: center ? officialDefaultModel.value : provider.model.trim(),
+    center,
   }
 })
 
@@ -152,9 +177,19 @@ function defaultModelsOf(draft: ProviderDraft): string[] {
  */
 const defaultGroups = computed(() =>
   savedDrafts.value
+    // Center 官方语言模型单独成组（模型列表来自目录，不是镜像 Provider 的 modelList）
+    .filter((draft) => !isCenterOfficialProviderId(draft.id))
     .map((draft) => ({ id: draft.id, models: defaultModelsOf(draft) }))
     .filter((group) => group.models.length > 0),
 )
+
+/** 官方分组：已登录且目录有可用模型时出现；选中即把官方设为全局默认。 */
+const officialDefaultGroup = computed(() => {
+  const service = centerLlmService.value
+  if (service === null) return null
+  const models = service.models.map((item) => item.id)
+  return models.length === 0 ? null : { id: 'Aurora Center 官方', models }
+})
 
 /**
  * 下拉的当前值。Center 官方 provider 不在这里选（由 Center 目录维护），
@@ -163,15 +198,21 @@ const defaultGroups = computed(() =>
 const defaultModelValue = computed(() => {
   const settings = settingsStore.settings
   if (!settings || settings.llm.active === '') return ''
-  if (isCenterOfficialProviderId(settings.llm.active)) return ''
+  if (isCenterOfficialProviderId(settings.llm.active)) {
+    // 目录不可用时官方分组不存在，保留占位项（否则 select 会落到第一个本机选项）
+    if (officialDefaultGroup.value === null) return ''
+    const model = officialDefaultModel.value
+    return model === '' ? '' : defaultModelKey(settings.llm.active, model)
+  }
   const provider = settings.llm.providers[settings.llm.active]
   const model = provider?.model.trim() ?? ''
   return model === '' ? '' : defaultModelKey(settings.llm.active, model)
 })
 
-const defaultPlaceholder = computed(() =>
-  activeIsCenter.value ? 'Center 官方模型（由 Aurora Center 管理）' : '请选择默认模型',
-)
+const defaultPlaceholder = computed(() => {
+  if (!activeIsCenter.value) return '请选择默认模型'
+  return centerLlmService.value === null ? 'Center 官方模型（目录不可用）' : 'Center 官方模型'
+})
 
 /**
  * 切换默认模型：**立即保存**（与「显示思考过程」同款），
@@ -189,7 +230,43 @@ async function onDefaultModelChange(event: Event): Promise<void> {
   if (!Array.isArray(pair) || pair.length !== 2) return
   const [providerId, model] = pair
   if (typeof providerId !== 'string' || typeof model !== 'string' || model.trim() === '') return
+  if (providerId === CENTER_OFFICIAL_PROVIDER_IDS.llm) {
+    await saveOfficialDefaultModel(model.trim())
+    return
+  }
   await saveDefaultModel(providerId, model.trim())
+}
+
+/**
+ * 选择 Center 官方语言模型作为全局默认（2026-10-24）。
+ *
+ * 同时写 `llm.active = 'center-llm'`、`center.officialModels.llm.enabled = true` 与所选 model；
+ * 镜像 Provider 的落盘 model 仍由目录同步维护，读时由主进程按选中项解析。
+ */
+async function saveOfficialDefaultModel(model: string): Promise<void> {
+  const settings = settingsStore.settings
+  if (!settings) return
+  message.value = null
+  error.value = null
+  const providers: Record<string, LlmProviderConfig> = {}
+  for (const [id, item] of Object.entries(settings.llm.providers)) {
+    providers[id] = { ...item, apiKeyEnc: '' }
+  }
+  const ok = await settingsStore.update({
+    llm: { active: CENTER_OFFICIAL_PROVIDER_IDS.llm, providers },
+    center: {
+      ...settings.center,
+      officialModels: {
+        ...settings.center.officialModels,
+        llm: { enabled: true, model },
+      },
+    },
+  })
+  if (!ok) {
+    error.value = settingsStore.error
+    return
+  }
+  message.value = '默认模型已切换为 Aurora Center 官方模型'
 }
 
 async function saveDefaultModel(providerId: string, model: string): Promise<void> {
@@ -858,6 +935,15 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
             v-for="model in group.models"
             :key="`${group.id}:${model}`"
             :value="defaultModelKey(group.id, model)"
+          >
+            {{ model }}
+          </option>
+        </optgroup>
+        <optgroup v-if="officialDefaultGroup !== null" :label="officialDefaultGroup.id">
+          <option
+            v-for="model in officialDefaultGroup.models"
+            :key="`center:${model}`"
+            :value="defaultModelKey('center-llm', model)"
           >
             {{ model }}
           </option>

@@ -16,6 +16,7 @@ import {
   type SessionModelOverride,
 } from '@aurora/agent-core'
 import { createLlmProvider } from './llm-provider.js'
+import { resolveOfficialModelEntry } from './center/official-selection.js'
 import type {
   AgentEvent,
   AgentHost,
@@ -321,6 +322,47 @@ export function createProviderFactory(
     }
   }
 
+  /** 官方选中模型被目录下线时只 warn 一次（避免每次请求刷日志）。 */
+  const warnedStaleOfficial = new Set<string>()
+
+  /**
+   * 全局默认指向 `center-llm` 时的构造路径（docs/08 §8，2026-10-24）。
+   *
+   * `llm.active` 是唯一事实来源：只有它指向官方才走这里；本机 active 永不因官方
+   * 开关开启而改道。选模解析链与非语言能力同源（选中 → defaultModel → 首个），
+   * 但由工厂在每次请求时现算，不写回配置。
+   */
+  const buildGlobalOfficial = (llm: LlmSettings): ProviderConfig | undefined => {
+    const officialProviderId = CENTER_OFFICIAL_PROVIDER_IDS.llm
+    const selection = options?.centerOfficial?.selection('llm')
+    if (selection?.enabled !== true) return undefined
+    const service = options?.centerOfficial?.service('llm')
+    const token = options?.centerOfficial?.token() ?? ''
+    if (service === undefined || token === '') {
+      if (service === undefined) options?.centerOfficial?.refresh?.()
+      if (!(service === undefined && options?.centerOfficial?.loaded?.() === false)) {
+        logger.warn('Center 官方语言模型当前不可用', { providerId: officialProviderId })
+      }
+      return undefined
+    }
+    const resolved = resolveOfficialModelEntry(service, selection.model)
+    if (resolved === undefined) return undefined
+    if (resolved.fellBack) {
+      const key = `llm:${selection.model}`
+      if (!warnedStaleOfficial.has(key)) {
+        warnedStaleOfficial.add(key)
+        logger.warn('Center 官方目录已不再开放所选模型，回落目录默认模型', {
+          capability: 'llm',
+          selection: selection.model,
+          fallback: resolved.entry.id,
+        })
+      }
+    }
+    const config = llm.providers[officialProviderId]
+    if (config === undefined) return undefined
+    return build(officialProviderId, { ...config, model: resolved.entry.id })
+  }
+
   /**
    * 官方回落提示的唯一出口：目录尚未加载时**不提示** —— 那不是故障，只是首个请求
    * 赶在目录到达之前（启动自动化 / 刚登录），静默用本机档，下次请求会自然切回官方。
@@ -384,7 +426,6 @@ export function createProviderFactory(
       sessionId?: string
     }): ProviderConfig | undefined {
       const llm: LlmSettings = settings.get().llm
-      const official = options?.centerOfficial?.selection('llm')
       // 会话级覆盖（docs/06 §3）：判据收在 shared 的 `resolveSessionModel`（唯一口径，
       // 渲染层与 Center 网页端同用一份）—— 这里只负责「拿它算出来的 (pid, model) 去构造」，
       // 构造不出来（Key 没配 / baseUrl 空）再回落全局档，绝不把会话拖成 E_NO_MODEL。
@@ -436,28 +477,24 @@ export function createProviderFactory(
       }
 
       const officialProviderId = CENTER_OFFICIAL_PROVIDER_IDS.llm
-      let officialFallbackPending = false
-      if (official?.enabled === true) {
-        const officialConfig = llm.providers[officialProviderId]
-        if (officialConfig !== undefined) {
-          const builtOfficial = build(officialProviderId, {
-            ...officialConfig,
-            model: official.model || officialConfig.model,
-          })
-          if (builtOfficial !== undefined) {
-            const localFallback = pickFallback(llm, officialProviderId)
-            return localFallback === undefined
-              ? builtOfficial
-              : withProviderFallback(builtOfficial, localFallback, () =>
-                  notifyOfficialFallback(
-                    officialProviderId,
-                    localFallback.provider.id,
-                    createOptions?.sessionId,
-                  ),
-                )
-          }
+      // 全局默认严格按 llm.active 解析：指向官方才走官方，指向本机就绝不因官方开关而改道。
+      if (llm.active === officialProviderId) {
+        const builtOfficial = buildGlobalOfficial(llm)
+        if (builtOfficial !== undefined) {
+          const localFallback = pickFallback(llm, officialProviderId)
+          return localFallback === undefined
+            ? builtOfficial
+            : withProviderFallback(builtOfficial, localFallback, () =>
+                notifyOfficialFallback(
+                  officialProviderId,
+                  localFallback.provider.id,
+                  createOptions?.sessionId,
+                ),
+              )
         }
-        officialFallbackPending = true
+        return allowFallbackOf(createOptions)
+          ? fallback(llm, officialProviderId, createOptions?.sessionId)
+          : undefined
       }
       const providerId = llm.active
       if (providerId === '') {
@@ -474,12 +511,7 @@ export function createProviderFactory(
           : undefined
       }
       const built = build(providerId, config)
-      if (built !== undefined) {
-        if (officialFallbackPending) {
-          notifyOfficialFallback(officialProviderId, built.provider.id, createOptions?.sessionId)
-        }
-        return built
-      }
+      if (built !== undefined) return built
       if (allowFallbackOf(createOptions)) {
         return fallback(llm, providerId, createOptions?.sessionId)
       }

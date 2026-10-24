@@ -751,6 +751,10 @@ Center 可为登录客户端提供语言模型、生图、TTS 与 STT 四类官�
 客户端侧的选模（`center.officialModels.<cap>.model`）在主进程构造官方请求时生效——
 读时把所选模型与该条目的参数覆写进 `center-*` 镜像 Provider 副本（目录同步落盘的镜像
 始终是 defaultModel），解析链「选中项 → defaultModel → 首个」，目录缺席时不覆写（口径见 08 §8）。
+**语言模型是例外（2026-10-24）**：官方能力开启不再抢 `llm.active`；只有 `llm.active`
+指向 `center-llm` 时才构造官方请求，并用同一解析链取选中模型。用户在 AI 模型页选了本机
+模型后，即使 Center 页的官方开关仍开着，请求也走本机；会话级覆盖到官方时按覆盖里的显式
+`model` 校验，模型不在目录则回落全局档。
 
 `/api/model-gateway/*` 接受客户端令牌并按其绑定 `clientId` 鉴权，覆盖：
 ```

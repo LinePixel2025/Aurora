@@ -6,7 +6,12 @@
  * 插件可以在响应里返回新的 schema（动态面板），校验失败就保留旧面板并报错。
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { PluginPanelSchema, PluginPushEvent, PluginUiAction, PluginUiNode } from '@aurora/shared/browser'
+import type {
+  PluginPanelSchema,
+  PluginPushEvent,
+  PluginUiAction,
+  PluginUiNode,
+} from '@aurora/shared/browser'
 import AppToast from '../shared/components/AppToast.vue'
 import PluginSchemaRenderer from './PluginSchemaRenderer.vue'
 import { validatePanelSchema } from './pluginSchema.js'
@@ -26,6 +31,8 @@ const toast = ref<string | null>(null)
 const pending = ref<{ node: PluginUiNode; action: PluginUiAction } | null>(null)
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 let offPanelEvent: (() => void) | null = null
+let offChanged: (() => void) | null = null
+let changedTimer: ReturnType<typeof setTimeout> | undefined
 let initialized = false
 
 function showToast(message: string): void {
@@ -112,11 +119,22 @@ onMounted(() => {
     if (event.panelId !== props.panelId) return
     void invoke('event', { event: event.event, payload: event.payload })
   })
+  // 插件重启 / 配置变更后重新拉 schema；已加载的旧面板在加载失败时仍保留。
+  offChanged = window.aurora.plugins.onChanged(() => {
+    if (changedTimer !== undefined) clearTimeout(changedTimer)
+    changedTimer = setTimeout(() => {
+      changedTimer = undefined
+      if (!loading.value) refresh()
+    }, 250)
+  })
 })
 
 onBeforeUnmount(() => {
   offPanelEvent?.()
   offPanelEvent = null
+  offChanged?.()
+  offChanged = null
+  if (changedTimer !== undefined) clearTimeout(changedTimer)
   if (toastTimer !== undefined) clearTimeout(toastTimer)
 })
 </script>

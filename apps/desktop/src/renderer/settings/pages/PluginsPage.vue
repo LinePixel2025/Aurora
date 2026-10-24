@@ -1,14 +1,10 @@
 <script setup lang="ts">
 /**
- * 插件设置页（docs/14 §5，v36）：已安装 / 市场 / 开发 三个视图。
+ * 插件设置页（docs/07 §8）：已安装 / 市场 / 开发 三个视图。
  *
- * 口径：
- * - **安装即信任**：插件进程持有当前用户权限，安装前把权限、工具与校验和摊开给用户看；
- *   页面文案不宣称沙箱（docs/14 §6.4）。
- * - 启停 / 信任 / 重启 / 卸载都走 `PluginManager`，本页只发 IPC 并重拉快照；
- *   `plugins:changed` 到达时同样重拉（插件崩溃、开发目录重载都会推）。
- * - 开发目录插件不复制、原地加载，启用与否由 `plugins.devDirs` 决定，因此不给单个启停按钮。
- * - 市场在 P4 接入 Center；未接入时如实显示空态，不放假数据。
+ * 2026-10-24 起列表只保留总览与启停；单个插件的配置、桌面小组件、权限与
+ * 重启 / 回滚 / 卸载等管理动作都收进独立窗口 `plugin-config`（`plugins.config.<id>`）。
+ * 页面仍然只发 IPC 并重拉快照；`plugins:changed` 到达时同样重拉。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type {
@@ -16,27 +12,14 @@ import type {
   PluginMarketplaceListResult,
   PluginPackageRef,
   PluginSummary,
-  PluginWidgetInfo,
-  PluginWidgetLayout,
-  PluginWidgetWindowLevel,
 } from '@aurora/shared'
-import {
-  Blocks,
-  ChevronDown,
-  FolderOpen,
-  ListChecks,
-  Play,
-  RotateCw,
-  Trash2,
-  Puzzle,
-} from '@aurora/shared/browser'
+import { Blocks, Play, Puzzle } from '@aurora/shared/browser'
 import { PLUGIN_PERMISSION_LABELS } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import AppTooltip from '../../shared/components/AppTooltip.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import StatusDot from '../../shared/components/StatusDot.vue'
-import PluginConfigForm from './PluginConfigForm.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 
 const settingsStore = useSettingsStore()
@@ -46,25 +29,16 @@ const masterEnabled = computed(() => pluginsSettings.value?.enabled ?? true)
 const devDirs = computed(() => pluginsSettings.value?.devDirs ?? [])
 
 const installed = ref<PluginSummary[]>([])
-const widgetLayout = ref<PluginWidgetLayout | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const notice = ref<string | null>(null)
 const tab = ref<'installed' | 'market' | 'dev'>('installed')
 
-/** 安装同意数据：选包后先 `inspect`，用户确认才真正 `install` */
 const preview = ref<PluginInstallPreview | null>(null)
 const previewing = ref(false)
 const installing = ref(false)
-const confirmingUninstall = ref<string | null>(null)
-const deleteData = ref(false)
-/** 正在执行动作的插件 id（按钮禁用，避免连点产生并发安装/重启） */
 const busy = ref<string | null>(null)
 const market = ref<PluginMarketplaceListResult | null>(null)
-/** 展开了「详情」的插件 id（同一时间只展开一个，列表保持紧凑） */
-const expandedPlugin = ref<string | null>(null)
-/** 展开了配置表单的插件 id（同一时间只展开一个，避免页面无限变长） */
-const expandedConfig = ref<string | null>(null)
 
 let offChanged: (() => void) | null = null
 
@@ -75,12 +49,6 @@ const STATUS_TEXT: Record<PluginSummary['status'], string> = {
   ready: '运行中',
   crashed: '已崩溃',
   error: '启动失败',
-}
-
-const SOURCE_TEXT: Record<PluginSummary['source'], string> = {
-  local: '本地安装',
-  marketplace: '市场安装',
-  dev: '开发目录',
 }
 
 function statusTone(plugin: PluginSummary): 'idle' | 'running' | 'unread' | 'error' {
@@ -103,68 +71,7 @@ async function refresh(): Promise<void> {
   const result = await window.aurora.plugins.list()
   if (result.ok) installed.value = result.value
   else fail(result.message)
-  const layout = await window.aurora.plugins.widgetLayout()
-  if (layout.ok) widgetLayout.value = layout.value
   loading.value = false
-}
-
-/** 桌面小组件是否显示（布局文件缺失时按默认可见处理）。 */
-function widgetVisible(widget: PluginWidgetInfo): boolean {
-  const entry = widgetLayout.value?.widgets[`${widget.pluginId}/${widget.id}`]
-  return entry?.visible ?? true
-}
-
-/** 桌面小组件当前层级：用户覆盖优先，缺省跟随插件清单（auto）。 */
-function widgetLevel(widget: PluginWidgetInfo): 'auto' | PluginWidgetWindowLevel {
-  const entry = widgetLayout.value?.widgets[`${widget.pluginId}/${widget.id}`]
-  return entry?.windowLevelOverride ?? 'auto'
-}
-
-/** 层级下拉选项：`auto` 表示清除覆盖、回到清单声明的层级。 */
-const WIDGET_LEVEL_OPTIONS: ReadonlyArray<{
-  value: 'auto' | PluginWidgetWindowLevel
-  label: string
-}> = [
-  { value: 'auto', label: '跟随插件' },
-  { value: 'floating', label: '置顶' },
-  { value: 'normal', label: '普通' },
-  { value: 'desktop', label: '桌面层' },
-]
-
-async function setWidgetLevel(
-  plugin: PluginSummary,
-  widget: PluginWidgetInfo,
-  rawLevel: string,
-): Promise<void> {
-  const option = WIDGET_LEVEL_OPTIONS.find((item) => item.value === rawLevel)
-  if (option === undefined) return
-  busy.value = plugin.id
-  try {
-    const result = await window.aurora.plugins.setWidgetWindowLevel({
-      pluginId: widget.pluginId,
-      widgetId: widget.id,
-      windowLevel: option.value,
-    })
-    if (!result.ok) fail(result.message)
-    await refresh()
-  } finally {
-    busy.value = null
-  }
-}
-
-async function toggleWidgetVisible(plugin: PluginSummary, widget: PluginWidgetInfo): Promise<void> {
-  busy.value = plugin.id
-  try {
-    const result = await window.aurora.plugins.setWidgetVisible({
-      pluginId: widget.pluginId,
-      widgetId: widget.id,
-      visible: !widgetVisible(widget),
-    })
-    if (!result.ok) fail(result.message)
-    await refresh()
-  } finally {
-    busy.value = null
-  }
 }
 
 async function loadMarket(): Promise<void> {
@@ -172,7 +79,6 @@ async function loadMarket(): Promise<void> {
   market.value = result.ok ? result.value : { serverUrl: '', entries: [], error: result.message }
 }
 
-/** 从市场安装 / 更新（主进程下载并校验 sha256 后才交给安装器） */
 async function installFromMarket(entry: {
   id: string
   name: string
@@ -257,38 +163,12 @@ async function toggleEnabled(plugin: PluginSummary): Promise<void> {
   }
 }
 
-async function toggleTrusted(plugin: PluginSummary): Promise<void> {
+/** 打开独立插件配置窗口：配置 / 小组件 / 权限 / 管理动作都在那里。 */
+async function openConfig(plugin: PluginSummary): Promise<void> {
   busy.value = plugin.id
   try {
-    const result = await window.aurora.plugins.setTrusted({
-      pluginId: plugin.id,
-      trusted: !plugin.trusted,
-    })
+    const result = await window.aurora.plugins.openWindow({ pluginId: plugin.id })
     if (!result.ok) fail(result.message)
-    await refresh()
-  } finally {
-    busy.value = null
-  }
-}
-
-async function restart(plugin: PluginSummary): Promise<void> {
-  busy.value = plugin.id
-  try {
-    const result = await window.aurora.plugins.restart({ pluginId: plugin.id })
-    if (!result.ok) fail(result.message)
-    await refresh()
-  } finally {
-    busy.value = null
-  }
-}
-
-async function rollback(plugin: PluginSummary): Promise<void> {
-  busy.value = plugin.id
-  try {
-    const result = await window.aurora.plugins.rollback({ pluginId: plugin.id })
-    if (!result.ok) fail(result.message)
-    else succeed(`已回滚到 ${result.value.version}`)
-    await refresh()
   } finally {
     busy.value = null
   }
@@ -323,16 +203,6 @@ async function setTheme(key: string): Promise<void> {
   if (!ok) fail(settingsStore.error ?? '保存失败')
 }
 
-function toggleConfig(plugin: PluginSummary): void {
-  expandedConfig.value = expandedConfig.value === plugin.id ? null : plugin.id
-}
-
-function toggleDetails(plugin: PluginSummary): void {
-  const open = expandedPlugin.value === plugin.id
-  expandedPlugin.value = open ? null : plugin.id
-  if (open) expandedConfig.value = null
-}
-
 /** 一行摘要：只报非零的贡献与权限数量，避免整列标签把卡片撑高。 */
 function pluginStats(plugin: PluginSummary): string {
   const parts: string[] = []
@@ -342,40 +212,6 @@ function pluginStats(plugin: PluginSummary): string {
   if (plugin.widgets.length > 0) parts.push(`${plugin.widgets.length} 小组件`)
   if (plugin.permissions.length > 0) parts.push(`${plugin.permissions.length} 项权限`)
   return parts.join(' · ')
-}
-
-function askUninstall(plugin: PluginSummary): void {
-  confirmingUninstall.value = plugin.id
-  deleteData.value = false
-}
-
-async function uninstall(plugin: PluginSummary): Promise<void> {
-  busy.value = plugin.id
-  try {
-    const result = await window.aurora.plugins.uninstall({
-      pluginId: plugin.id,
-      deleteData: deleteData.value,
-    })
-    if (!result.ok) {
-      fail(result.message)
-      return
-    }
-    confirmingUninstall.value = null
-    succeed(`已卸载 ${plugin.name}`)
-    await refresh()
-  } finally {
-    busy.value = null
-  }
-}
-
-async function openFolder(plugin: PluginSummary): Promise<void> {
-  const result = await window.aurora.plugins.openFolder({ pluginId: plugin.id })
-  if (!result.ok) fail(result.message)
-}
-
-async function openLog(plugin: PluginSummary): Promise<void> {
-  const result = await window.aurora.plugins.openLog({ pluginId: plugin.id })
-  if (!result.ok) fail(result.message)
 }
 
 async function addDevDir(): Promise<void> {
@@ -610,12 +446,7 @@ onUnmounted(() => {
         </div>
 
         <template v-else>
-          <article
-            v-for="plugin in installed"
-            :key="plugin.id"
-            class="plugin-item"
-            :class="{ 'is-expanded': expandedPlugin === plugin.id }"
-          >
+          <article v-for="plugin in installed" :key="plugin.id" class="plugin-item">
             <div class="plugin-head">
               <div class="plugin-title">
                 <StatusDot :tone="statusTone(plugin)" :title="STATUS_TEXT[plugin.status]" />
@@ -639,18 +470,11 @@ onUnmounted(() => {
                 <AppButton
                   size="sm"
                   variant="ghost"
-                  :aria-expanded="expandedPlugin === plugin.id"
-                  :data-field="`plugins.details.${plugin.id}`"
-                  @click="toggleDetails(plugin)"
+                  :data-field="`plugins.config.${plugin.id}`"
+                  :disabled="busy === plugin.id"
+                  @click="openConfig(plugin)"
                 >
-                  详情
-                  <ChevronDown
-                    class="chevron"
-                    :class="{ rotated: expandedPlugin === plugin.id }"
-                    :size="13"
-                    :stroke-width="1.8"
-                    aria-hidden="true"
-                  />
+                  配置
                 </AppButton>
               </div>
             </div>
@@ -662,184 +486,6 @@ onUnmounted(() => {
               <span>{{ pluginStats(plugin) }}</span>
               <span>{{ plugin.author }}</span>
             </p>
-
-            <div
-              v-if="plugin.widgets.some((widget) => widget.slot === 'desktop')"
-              class="widget-switches"
-            >
-              <span class="block-label">桌面</span>
-              <span
-                v-for="widget in plugin.widgets.filter((item) => item.slot === 'desktop')"
-                :key="`widget-control-${widget.id}`"
-                class="widget-control"
-              >
-                <label class="widget-switch" :data-field="`plugins.widget-visible.${widget.id}`">
-                  <input
-                    type="checkbox"
-                    :checked="widgetVisible(widget)"
-                    :disabled="busy === plugin.id || !plugin.enabled"
-                    @change="toggleWidgetVisible(plugin, widget)"
-                  />
-                  <span>{{ widget.title }}</span>
-                </label>
-                <select
-                  class="widget-level"
-                  :data-field="`plugins.widget-level.${widget.id}`"
-                  :value="widgetLevel(widget)"
-                  :disabled="busy === plugin.id || !plugin.enabled"
-                  title="桌面层失败时回落普通窗口"
-                  aria-label="小组件窗口层级"
-                  @change="
-                    setWidgetLevel(plugin, widget, ($event.target as HTMLSelectElement).value)
-                  "
-                >
-                  <option
-                    v-for="level in WIDGET_LEVEL_OPTIONS"
-                    :key="level.value"
-                    :value="level.value"
-                  >
-                    {{ level.label }}
-                  </option>
-                </select>
-              </span>
-            </div>
-
-            <div v-if="expandedPlugin === plugin.id" class="plugin-details">
-              <div class="detail-row">
-                <span class="detail-label">来源</span>
-                <span class="detail-value"
-                  >{{ SOURCE_TEXT[plugin.source] }} · {{ plugin.author }}</span
-                >
-              </div>
-
-              <div v-if="plugin.permissions.length > 0" class="detail-row">
-                <span class="detail-label">权限</span>
-                <div class="perm-chips">
-                  <AppTooltip
-                    v-for="permission in plugin.permissions"
-                    :key="permission"
-                    :text="PLUGIN_PERMISSION_LABELS[permission]"
-                  >
-                    <span class="perm-chip mono">{{ permission }}</span>
-                  </AppTooltip>
-                </div>
-              </div>
-
-              <div
-                v-if="
-                  plugin.panels.length > 0 ||
-                  plugin.commands.length > 0 ||
-                  plugin.widgets.length > 0
-                "
-                class="detail-row"
-              >
-                <span class="detail-label">扩展点</span>
-                <ul class="plain-list detail-value">
-                  <li v-for="panel in plugin.panels" :key="`panel-${panel.id}`">
-                    面板 · {{ panel.title }}
-                    <span class="muted">（{{ panel.kind === 'page' ? '页面' : '声明式' }}）</span>
-                  </li>
-                  <li v-for="command in plugin.commands" :key="`cmd-${command.name}`">
-                    命令 · <span class="mono">/{{ command.name }}</span>
-                    <span class="muted">{{ command.title }}</span>
-                  </li>
-                  <li v-for="widget in plugin.widgets" :key="`widget-${widget.id}`">
-                    小组件 · {{ widget.title }}
-                    <span class="muted">
-                      （{{ widget.slot === 'desktop' ? '桌面' : '提示条' }} ·
-                      {{ widget.kind === 'page' ? '页面' : '声明式' }}）
-                    </span>
-                    <span v-if="widget.windowMaterial === 'acrylic'" class="badge material-badge">
-                      毛玻璃
-                    </span>
-                  </li>
-                </ul>
-              </div>
-
-              <div v-if="plugin.configFields.length > 0" class="detail-row">
-                <span class="detail-label">配置</span>
-                <div class="detail-value detail-stack">
-                  <AppButton size="sm" variant="ghost" @click="toggleConfig(plugin)">
-                    {{ expandedConfig === plugin.id ? '收起配置' : '编辑配置' }}
-                  </AppButton>
-                  <PluginConfigForm
-                    v-if="expandedConfig === plugin.id"
-                    :plugin-id="plugin.id"
-                    :fields="plugin.configFields"
-                  />
-                </div>
-              </div>
-
-              <label v-if="!plugin.isDev" class="check-row trust-row">
-                <input
-                  type="checkbox"
-                  :checked="plugin.trusted"
-                  :disabled="busy === plugin.id"
-                  @change="toggleTrusted(plugin)"
-                />
-                <span> 信任此插件：清单声明为安全的工具将免确认，其余工具仍需每次确认 </span>
-              </label>
-
-              <div class="detail-actions">
-                <AppButton
-                  size="sm"
-                  variant="ghost"
-                  :disabled="busy === plugin.id || (plugin.isDev ? false : !plugin.enabled)"
-                  @click="restart(plugin)"
-                >
-                  <RotateCw :size="13" :stroke-width="1.8" aria-hidden="true" />
-                  重启
-                </AppButton>
-                <AppButton
-                  v-if="plugin.previousVersion !== undefined"
-                  size="sm"
-                  variant="ghost"
-                  :disabled="busy === plugin.id"
-                  @click="rollback(plugin)"
-                >
-                  回滚到 {{ plugin.previousVersion }}
-                </AppButton>
-                <AppButton size="sm" variant="ghost" @click="openFolder(plugin)">
-                  <FolderOpen :size="13" :stroke-width="1.7" aria-hidden="true" />
-                  目录
-                </AppButton>
-                <AppButton size="sm" variant="ghost" @click="openLog(plugin)">
-                  <ListChecks :size="13" :stroke-width="1.7" aria-hidden="true" />
-                  日志
-                </AppButton>
-                <AppButton
-                  v-if="!plugin.isDev"
-                  size="sm"
-                  variant="danger"
-                  :disabled="busy === plugin.id"
-                  @click="askUninstall(plugin)"
-                >
-                  <Trash2 :size="13" :stroke-width="1.8" aria-hidden="true" />
-                  卸载
-                </AppButton>
-              </div>
-
-              <div v-if="confirmingUninstall === plugin.id" class="uninstall-confirm">
-                <p class="tiny">卸载后插件目录会被删除，插件数据默认保留。</p>
-                <label class="check-row">
-                  <input v-model="deleteData" type="checkbox" />
-                  <span>同时删除插件数据与配置</span>
-                </label>
-                <div class="row">
-                  <AppButton
-                    variant="danger"
-                    size="sm"
-                    :disabled="busy === plugin.id"
-                    @click="uninstall(plugin)"
-                  >
-                    确认卸载
-                  </AppButton>
-                  <AppButton size="sm" variant="ghost" @click="confirmingUninstall = null">
-                    取消
-                  </AppButton>
-                </div>
-              </div>
-            </div>
           </article>
         </template>
       </section>
@@ -1029,10 +675,6 @@ onUnmounted(() => {
   background: var(--fill-1);
 }
 
-.plugin-item.is-expanded {
-  background: var(--fill-2);
-}
-
 .plugin-head {
   display: flex;
   align-items: flex-start;
@@ -1112,104 +754,6 @@ onUnmounted(() => {
   font-size: var(--text-xs);
 }
 
-.chevron {
-  transition: transform var(--transition-fast);
-}
-
-.chevron.rotated {
-  transform: rotate(180deg);
-}
-
-.widget-switches {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding-top: 2px;
-}
-
-.widget-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 9px 2px 7px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-pill);
-  background: var(--fill-2);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-
-.widget-switch input {
-  margin: 0;
-  accent-color: var(--aurora-blue);
-}
-
-/* 复选框 + 层级下拉作为一组留在同一行，避免把插件卡片撑高 */
-.widget-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-/* 紧凑层级下拉：覆盖下方通用 `.section-card select` 的内边距与字号 */
-.section-card select.widget-level {
-  padding: 1px 4px;
-  border-radius: var(--radius-xs);
-  background: var(--fill-1);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  line-height: var(--leading-normal);
-  cursor: pointer;
-}
-
-.material-badge {
-  margin-left: 4px;
-}
-
-.plugin-details {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-top: 2px;
-  padding-top: var(--space-2);
-  border-top: 1px dashed var(--border-subtle);
-}
-
-.detail-row {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-}
-
-.detail-label {
-  flex: 0 0 46px;
-  padding-top: 1px;
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-
-.detail-value {
-  min-width: 0;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-}
-
-.detail-stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  align-items: flex-start;
-}
-
-.detail-actions {
-  display: flex;
-  gap: var(--space-1);
-  flex-wrap: wrap;
-  padding-top: var(--space-1);
-}
-
 .block-label {
   margin: 0;
   color: var(--text-muted);
@@ -1252,12 +796,6 @@ onUnmounted(() => {
   font-size: var(--text-xs);
 }
 
-.perm-chips {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
 .perm-chip {
   display: inline-block;
   padding: 1px 7px;
@@ -1294,25 +832,6 @@ onUnmounted(() => {
 
 .mono {
   font-family: var(--font-mono);
-}
-
-.trust-row {
-  padding-top: var(--space-1);
-  border-top: 1px solid var(--border-subtle);
-}
-
-.uninstall-confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--danger-border);
-  background: var(--error-fill);
-}
-
-.uninstall-confirm p {
-  margin: 0;
 }
 
 .dev-row {

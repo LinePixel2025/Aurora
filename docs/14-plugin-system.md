@@ -59,6 +59,13 @@ API 白名单、工具确认、安装 / 更新路径安全与页面渲染隔离�
 | 日志 | `<userData>/logs/plugins/<id>.log`（统一脱敏） |
 | 退出 | 先 `plugin.deactivate`（3s 超时），再 `kill()`；在途请求全部以 `E_PLUGIN_CRASHED` 拒绝 |
 
+- **窗口创建时机（2026-10-24）**：桌面小组件窗口必须等主进程 `registerIpc()` 完成后再创建
+  （`WidgetManager.markReady()`）。在此之前创建时，渲染层启动即调用的 `plugins:list` /
+  `settings:get` 还没有 handler，页面型小组件会永久停在「暂无内容」。
+- **`plugins:changed` 广播面**：chat / settings / edge-bar / plugin-config 与全部桌面小组件窗口
+  都会收到；页面型面板 / 小组件据此 reload webview，声明式面板据此重拉 schema
+  （插件重启按钮的可见效果依赖这条广播，不要再只发给 chat / settings）。
+
 ### 2.2 RPC 信封
 
 结构化克隆消息（不用 NDJSON）：
@@ -286,7 +293,7 @@ window.auroraPlugin = {
 
 - `windowLevelOverride` 记录用户在设置页选的层级，缺省 = 跟随清单；读取时丢弃非法值。
 - 新 widget 默认可见，位置从工作区右上角级联；用户拖动 / 缩放 / 改层级后 250ms 防抖原子写。
-- 设置 → 插件详情里每个桌面 widget 一枚「显示在桌面」开关 + 一枚层级下拉
+- 插件配置窗口（`plugin-config`）里每个桌面 widget 一枚「显示在桌面」开关 + 一枚层级下拉
   （跟随插件 / 置顶 / 普通 / 桌面层）；关闭开关即销毁窗口、保留布局条目。
 - 插件停用 / 卸载 / 总开关关闭 / 崩溃反复超限：立即销毁窗口；布局文件保留用户位置。
 - 开发目录热重载：同 id widget 更新标题 / 入口，位置不丢；入口类型变化时重建窗口。
@@ -317,6 +324,16 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
   页面型面板 / 桌面页面 widget → `webview.send('aurora:event')`；
   桌面声明式 widget → `plugins:widgetEvent` → `widgetData('event', ...)`；提示条同样订阅 `plugins:widgetEvent`。
 - 推送内容按纯数据（结构化克隆）传输，不做 HTML 拼接；渲染层仍禁止 `v-html`。
+
+### 5.6 插件配置窗口（`plugin-config`）
+
+- 设置 → 插件列表只保留总览、启停与「配置」入口；配置表单、桌面小组件显隐 / 层级、
+  权限与扩展点、重启 / 回滚 / 卸载等管理动作在单例独立窗口里（默认 880×760、最小 620×520，
+  关闭 = 隐藏，规格见 docs/07 §2.2.2）。
+- 打开链：`plugins:openWindow` → 主进程校验插件存在 → 复用窗口并等页面加载完成后经
+  `plugins:windowRequest` 推送 `{ requestId, pluginId }`；已打开时只重推参数。
+- 保存配置仍走 `plugins:setConfig`，插件侧收到 `config.changed`；重启成功后由
+  `plugins:changed` 触发全部已打开界面重载，窗口内给出成功提示。
 
 ---
 
@@ -447,8 +464,9 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 端到端：`AURORA_SMOKE=1 pnpm dev` 覆盖安装 → 工具 / Skill / 命令 → 插件事件自动化 →
   面板 schema → **小组件窗口 / 面板事件推送** → 主题令牌 → 停用 / 启用 / 卸载；
 - 截图：`chat-plugin-panel.png` / `chat-plugin-page.png` / `settings-plugins-installed.png` /
-  `settings-plugins-marketplace.png` / `widget-desktop-plugin.png` / `edge-bar-plugin-widget.png` /
-  `chat-plugin-panel-push.png` + 设置页 `settings-plugins.png`；
+  `settings-plugins-detail.png` / `plugin-config.png` / `settings-plugins-marketplace.png` /
+  `widget-desktop-plugin.png` / `edge-bar-plugin-widget.png` / `chat-plugin-panel-push.png` +
+  设置页 `settings-plugins.png`；
 - Center：`verify:web` 的 `marketplace` / `plugins-admin` 场景；
 - 独立校验：`node scripts/verify-plugin.mjs <目录|zip>`。
 

@@ -7,6 +7,10 @@ source: 模型自动记录
 
 # Center 官方模型与自托管更新
 
+> **2026-10-24 修订**：语言模型不再「开启即全局覆盖」。`llm.active` 是全局默认唯一事实来源，
+> 只有它指向 `center-llm` 时才使用官方模型；读取层不再改写 llm.active（见
+> [2026-10-24-plugin-startup-model-priority-config-window.md](2026-10-24-plugin-startup-model-priority-config-window.md)）。
+
 ## 现象
 
 Center 现在同时承担三类容易混淆的职责：客户端连接与远程控制、官方模型网关、安装包更新源。

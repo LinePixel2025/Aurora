@@ -33,13 +33,17 @@ const CAPABILITIES: Array<{
   label: string
   hint: string
 }> = [
-  { id: 'llm', label: '语言模型', hint: '覆盖全局默认；会话级模型仍可单独覆盖' },
+  { id: 'llm', label: '语言模型', hint: '开启后可用；首次开启会切为默认模型' },
   { id: 'imagegen', label: '图像生成', hint: 'generate_image 默认使用该模型' },
   { id: 'tts', label: '语音合成', hint: '消息朗读使用该模型与管理员配置的音色' },
   { id: 'stt', label: '语音识别', hint: '录音转写使用该模型' },
 ]
 
 const selections = computed(() => settingsStore.settings?.center.officialModels ?? null)
+/** 全局默认是否仍是官方（用于勾选官方但默认在本机时的澄清状态行）。 */
+const llmDefaultIsOfficial = computed(
+  () => settingsStore.settings?.llm.active === CENTER_OFFICIAL_PROVIDER_IDS.llm,
+)
 const tokenSet = ref(false)
 const centerConnected = ref(false)
 
@@ -113,6 +117,19 @@ function firstLocalProviderId(capability: Exclude<CenterOfficialCapability, 'llm
   return ''
 }
 
+/** 关闭官方默认时的回落目标：首个可用的本机 LLM provider（带凭据、baseUrl 与 model）。 */
+function firstLocalLlmProviderId(): string {
+  const settings = settingsStore.settings
+  if (settings === null) return ''
+  for (const [providerId, provider] of Object.entries(settings.llm.providers)) {
+    if (isCenterOfficialProviderId(providerId)) continue
+    if (provider.baseUrl.trim() === '' || provider.model.trim() === '') continue
+    if ((provider as unknown as { apiKeySet?: boolean }).apiKeySet !== true) continue
+    return providerId
+  }
+  return ''
+}
+
 async function setSelection(
   capability: CenterOfficialCapability,
   enabled: boolean,
@@ -132,7 +149,24 @@ async function setSelection(
       },
     },
   }
-  if (capability !== 'llm') {
+  if (capability === 'llm') {
+    // 语言模型：llm.active 是全局默认的唯一事实来源（2026-10-24）。
+    // - 首次开启（或从 Center 页显式改模型）→ 默认切到官方；
+    // - 关闭时若当前默认仍是官方 → 回落到首个可用本机 provider；
+    // - 用户在本机默认时，开关的启用 / 关闭不覆盖 active（与 TTS/STT/生图同款）。
+    const officialId = CENTER_OFFICIAL_PROVIDER_IDS.llm
+    const switchingModel = model !== undefined
+    const nextActive = enabled
+      ? current.enabled && !switchingModel
+        ? settings.llm.active
+        : officialId
+      : settings.llm.active === officialId
+        ? firstLocalLlmProviderId()
+        : settings.llm.active
+    if (nextActive !== settings.llm.active) {
+      patch.llm = { ...settings.llm, active: nextActive }
+    }
+  } else {
     const providerId = CENTER_OFFICIAL_PROVIDER_IDS[capability]
     const toggle = resolveCenterProviderToggle(
       settings[capability],
@@ -244,6 +278,16 @@ void refresh()
                 {{ optionLabel(item.id, model.id) }}
               </option>
             </select>
+            <p
+              v-if="
+                item.id === 'llm' &&
+                selections?.llm?.enabled === true &&
+                llmDefaultIsOfficial !== true
+              "
+              class="official-note tiny muted"
+            >
+              当前默认：本机模型 {{ settingsStore.settings?.llm.active || '未选择' }}
+            </p>
           </div>
         </SettingField>
       </div>
@@ -267,5 +311,11 @@ void refresh()
 
 .official-row select {
   min-width: min(100%, 320px);
+}
+
+/* 勾选官方但默认仍在本机时的澄清行：独占一行，别把控件挤到换行 */
+.official-note {
+  flex-basis: 100%;
+  margin: 0;
 }
 </style>

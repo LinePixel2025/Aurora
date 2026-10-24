@@ -263,6 +263,8 @@ const CHANNELS = {
     marketplaceList: 'plugins:marketplaceList',
     marketplaceInstall: 'plugins:marketplaceInstall',
     checkUpdates: 'plugins:checkUpdates',
+    openWindow: 'plugins:openWindow',
+    windowRequest: 'plugins:windowRequest',
     changed: 'plugins:changed',
     openPanel: 'plugins:openPanel',
     panelEvent: 'plugins:panelEvent',

@@ -3459,44 +3459,68 @@ export const SETTINGS_PLUGINS_INSTALLED_CHECK = `(() => {
       text.includes('Hello Aurora') &&
       text.includes('安装插件包') &&
       item !== null &&
-      (item.innerText.includes('详情') || item.innerText.includes('停用')),
+      (item.innerText.includes('配置') || item.innerText.includes('停用')),
     detail: text.slice(0, 200),
   }
 })()`
 
-/** 展开「详情」后的紧凑次级区：权限 / 扩展点 / 配置 / 信任 / 动作。 */
+/** 设置页列表的「配置」入口：点击后由主进程打开独立的 plugin-config 窗口。 */
 export const SETTINGS_PLUGINS_DETAIL_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const button = document.querySelector('[data-field="plugins.details.com.example.hello"]')
+    const button = document.querySelector('[data-field="plugins.config.com.example.hello"]')
     if (button !== null) {
       button.click()
-      await wait(350)
-      const details = document.querySelector('.plugin-details')
-      // 详情在首屏下方：滚到可见区域再截图（否则只能截到卡片上半截）
-      if (details !== null) details.scrollIntoView({ block: 'center' })
-      await wait(300)
-      return { ok: details !== null }
+      await wait(500)
+      return { ok: true }
     }
     await wait(150)
   }
-  return { ok: false, reason: '详情按钮未出现' }
+  return { ok: false, reason: '配置按钮未出现' }
 })()`
 
 export const SETTINGS_PLUGINS_DETAIL_CHECK = `(() => {
-  const details = document.querySelector('.plugin-details')
-  const text = details === null ? '' : details.innerText
-  const actions = details === null ? [] : [...details.querySelectorAll('.detail-actions button')]
-  const level = document.querySelector('[data-field="plugins.widget-level.duty-week"]')
+  const item = document.querySelector('.plugin-item')
+  const text = item === null ? '' : item.innerText
+  const configButton = document.querySelector('[data-field="plugins.config.com.example.hello"]')
+  const inlineForm = document.querySelector('.plugin-config-form')
   return {
     pass:
-      details !== null &&
-      text.includes('权限') &&
-      text.includes('扩展点') &&
-      text.includes('信任此插件') &&
-      actions.some((button) => (button.textContent ?? '').includes('卸载')) &&
-      level !== null,
+      item !== null &&
+      text.includes('Hello Aurora') &&
+      configButton !== null &&
+      inlineForm === null,
     detail: text.slice(0, 220),
+  }
+})()`
+
+/** 独立插件配置窗口（docs/07 §2.2.2）：配置 / 小组件 / 权限 / 管理动作。 */
+export const PLUGIN_CONFIG_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const page = document.querySelector('[data-field="plugin-config.page"]')
+    const greeting = document.querySelector('[data-field="plugin-config.config.greeting"]')
+    if (page !== null && greeting !== null) break
+    await wait(150)
+  }
+  const page = document.querySelector('[data-field="plugin-config.page"]')
+  const text = document.body ? document.body.innerText : ''
+  const greeting = document.querySelector('[data-field="plugin-config.config.greeting"]')
+  const save = document.querySelector('[data-field="plugin-config.save"]')
+  const restart = document.querySelector('[data-field="plugin-config.restart"]')
+  const level = document.querySelector('[data-field="plugins.widget-level.duty-week"]')
+  const permissions = document.querySelector('[data-field="plugin-config.permissions"]')
+  return {
+    pass:
+      page !== null &&
+      text.includes('Hello Aurora') &&
+      text.includes('配置') &&
+      greeting !== null &&
+      save !== null &&
+      restart !== null &&
+      permissions !== null &&
+      level !== null,
+    detail: text.slice(0, 240),
   }
 })()`
 
@@ -10967,6 +10991,7 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
 
 /**
  * 对话窗模型选择器探针 · 前半：造本机 + Center 两个来源，依次切 Center / 用户模型。
+ * 全局默认为本机时初始来源必须是 local（官方开启不再抢占，2026-10-24）。
  *
  * 双下拉后 [data-field="chat.modelSource"] 管来源，[data-field="chat.model"] 管具体模型。
  * 探针用 reserved id `capture-source` 和 `center-llm`，原值记到 window.__auroraModelProbe，
@@ -11262,7 +11287,8 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
       pass:
         probe !== undefined &&
         probe.overriddenAfterSeed === false &&
-        probe.initialSource === 'center' &&
+        // 全局默认在本机（capture-source）时，官方开启也不得抢占；官方仍作为可选来源。
+        probe.initialSource === 'local' &&
         probe.centerProvider === 'center-llm' &&
         probe.centerModel === 'center-a' &&
         probe.centerSelectedProvider === 'center-llm' &&
@@ -14060,6 +14086,13 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     query: { page: 'plugins' },
     act: SETTINGS_PLUGINS_DETAIL_ACT,
     check: SETTINGS_PLUGINS_DETAIL_CHECK,
+  })
+  // 上一条 act 已通过真实「配置」按钮打开了单例 plugin-config 窗口；这一条直接截它。
+  plan.push({
+    name: 'plugin-config',
+    file: 'plugin-config.png',
+    check: PLUGIN_CONFIG_CHECK,
+    settleMs: 500,
   })
   plan.push({
     name: 'settings',

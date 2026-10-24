@@ -1176,7 +1176,8 @@ async function bootstrap(): Promise<void> {
     glassAllowed: () => settings?.get().appearance.glass ?? true,
   })
   await widgetManager.init()
-  widgetManager.sync()
+  // 窗口创建推迟到 `registerIpc()` 之后（见 `widgetManager.markReady()`）：
+  // 渲染层挂载即调用 plugins:list / settings:get，提前建窗会拿到 "No handler registered"。
   // 插件页面协议（`aurora-plugin://`）：路径 realpath 前缀 + MIME 白名单 + CSP（docs/14 §2.4）
   registerPluginPageProtocol(pluginManager, logger.child('plugin-page'))
   // 插件市场客户端（P4）：公开列表 / 下载校验 / 更新检查；Center 未配置时如实返回空态
@@ -2936,6 +2937,8 @@ async function bootstrap(): Promise<void> {
   if (browserAgent !== undefined) deps.browserAgent = browserAgent
   desktopDeps = deps
   disposeIpc = registerIpc(deps)
+  // IPC handler 已注册：现在才允许创建桌面小组件窗口（docs/14 §2.1，2026-10-24）。
+  widgetManager?.markReady()
 
   // 8. 托盘
   tray = createTray(deps, resolveTrayIcon())
@@ -6370,10 +6373,14 @@ function syncPluginContributions(): void {
       logger?.warn('插件 Skill 目录重扫失败', { error: String(error) })
     })
   }
-  // 启停 / 卸载 / 崩溃都会走到这里：同步创建或关闭桌面小组件窗口。
+  // 启停 / 卸载 / 崩溃 / 重启都会走到这里：同步创建或关闭桌面小组件窗口。
   widgetManager?.sync()
-  windows?.sendTo('chat', IPC.plugins.changed, {})
-  windows?.sendTo('settings', IPC.plugins.changed, {})
+  // 广播面必须覆盖所有承载插件界面的窗口：聊天右栏面板 / 页面、设置列表、
+  // 提示条小组件、插件配置窗口与全部桌面小组件窗口（重启按钮的可见效果依赖它）。
+  for (const name of ['chat', 'settings', 'edge-bar', 'plugin-config'] as const) {
+    windows?.sendTo(name, IPC.plugins.changed, {})
+  }
+  widgetManager?.broadcast(IPC.plugins.changed, {})
 }
 
 function syncClassification(): void {

@@ -104,6 +104,13 @@ export class WidgetManager {
   private readonly platform: NodeJS.Platform
   private readonly desktopLayer: NonNullable<WidgetManagerOptions['desktopLayer']>
   private layout: PluginWidgetLayout = { version: 1, widgets: {} }
+  /**
+   * IPC handler 是否已注册。桌面小组件窗口的渲染层在挂载时就会调用 `plugins:list` /
+   * `settings:get`；若窗口早于 `registerIpc()` 创建，这两个 invoke 会因 "No handler registered"
+   * 直接 reject，页面型小组件永久停在「暂无内容」（docs/14 §2.1，2026-10-24 实测）。
+   * 因此 `sync()` 在 ready 前一律 no-op，由装配层在 `registerIpc()` 之后调 `markReady()`。
+   */
+  private ready = false
   private readonly records = new Map<string, WidgetRecord>()
   private persistTimer: NodeJS.Timeout | undefined
   private disposed = false
@@ -127,9 +134,21 @@ export class WidgetManager {
     screen.on('display-removed', this.onDisplayChange)
   }
 
+  /** 装配层在 `registerIpc()` 之后调用：IPC 已就绪，允许创建窗口并补一次 sync。 */
+  markReady(): void {
+    if (this.ready || this.disposed) return
+    this.ready = true
+    this.sync()
+  }
+
+  /** 自测诊断：窗口创建门是否已打开。 */
+  isReady(): boolean {
+    return this.ready
+  }
+
   /** 按当前贡献创建缺失窗口、更新已有窗口、销毁多余窗口。 */
   sync(): void {
-    if (this.disposed) return
+    if (this.disposed || !this.ready) return
     const desktop = this.options
       .contributions()
       .filter((info) => info.slot === 'desktop')
@@ -247,6 +266,14 @@ export class WidgetManager {
         windowMaterial: record.info.windowMaterial,
         materialActive: record.materialActive,
       }))
+  }
+
+  /** 主进程广播 → 全部桌面小组件窗口（插件变化 / 重启后重载用）。 */
+  broadcast(channel: string, payload: unknown): void {
+    for (const record of this.records.values()) {
+      if (record.win.isDestroyed()) continue
+      record.win.webContents.send(channel, payload)
+    }
   }
 
   /** 主进程推送 → 对应桌面小组件窗口。 */

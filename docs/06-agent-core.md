@@ -44,10 +44,11 @@ export interface LlmProvider {
 - **会话级模型（本轮）**：每个会话可以覆盖「用哪个模型」——覆盖写在**会话文件自身**
   （`sessions/<id>.json` 的 `meta.llm = { providerId, model }`，经 `chat:setSessionModel` 写入 /
   清除），**不是配置项、不进 `CONFIG_VERSION` 迁移链**（与 `meta.projectId` / `meta.permissionMode`
-  同一条零迁移路子）。解析链为：**会话覆盖 > Center 官方语言模型（启用且目录可用）>
-  全局 `llm.active` + 该 provider 的 `model`**。覆盖里的 provider 已被删除 / model 为空时
-  **静默回落全局**（逐次执行不刷 warn，与 `meta.projectId` 绑定失效同款）；Center 官方不可用时
-  继续按现有回落与运行态提示处理。
+  同一条零迁移路子）。解析链为：**会话覆盖 > 全局 `llm.active` + 该 provider 的 `model`**
+  （只有 `llm.active` 指向 `center-llm` 时才走 Center 官方语言模型）。官方能力开启不再抢占
+  全局默认：用户在本机 Provider 上选的默认一直生效，直到显式选择官方模型。覆盖里的 provider
+  已被删除 / model 为空时**静默回落全局**（逐次执行不刷 warn，与 `meta.projectId` 绑定失效同款）；
+  Center 官方不可用时继续按现有回落与运行态提示处理。
   存 `(providerId, model)` **一对**而不是只存 model：模型名可跨 provider 重名，且思考等级等参数
   是 `providers.<pid>.modelParams[<model>]` 名下的（见下），只存 model 会在切 provider 后取错参数表。
   取值口径：内核每轮经注入的 `AgentProviderFactory.createForSession({ sessionId })` 现解析

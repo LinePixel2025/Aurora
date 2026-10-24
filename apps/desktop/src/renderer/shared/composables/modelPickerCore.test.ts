@@ -37,9 +37,22 @@ function enableCenter(settings: Settings): void {
 }
 
 describe('模型来源选择器解析', () => {
-  it('没有会话覆盖时优先展示 Center 官方默认模型，但标记为未覆盖', () => {
+  it('官方启用但全局默认在本机：展示本机 active，官方只作为可选来源', () => {
     const settings = settingsWith()
     enableCenter(settings)
+
+    expect(buildModelPickerState(settings)).toMatchObject({
+      sourceId: 'local',
+      choice: { providerId: 'alpha', model: 'alpha-a' },
+      overridden: false,
+      centerReadOnly: false,
+    })
+  })
+
+  it('全局默认指向 center-llm 时才优先展示 Center 官方模型', () => {
+    const settings = settingsWith()
+    enableCenter(settings)
+    settings.llm.active = CENTER_OFFICIAL_PROVIDER_IDS.llm
 
     expect(buildModelPickerState(settings)).toMatchObject({
       sourceId: 'center',

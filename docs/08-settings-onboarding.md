@@ -867,8 +867,12 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
    选项集合 = 每个已保存 provider 的 `modelList ∪ {model}`。
    切换即**立即保存**（不点「应用」）：写 `llm.active = providerId` 与
    `llm.providers.<id>.model = model`，并把该模型补进 `modelList`；失败时按 `settingsStore.error` 提示。
-   `llm.active` 指向 Center 官方 provider（页面不展示的保留 id）时，下拉显示一个禁用的占位项
-   「Center 官方模型（由 Aurora Center 管理）」，不改写配置；选择任意本机模型即切回本机 provider。
+   已登录且拿到目录时，下拉还多一个「Aurora Center 官方模型」分组（`<optgroup>`，选项来自
+   `center.modelServices()` 的 `services.llm.models`）。选中官方项会**同时**写
+   `llm.active = 'center-llm'`、`center.officialModels.llm = { enabled: true, model }`，
+   镜像 Provider 的落盘 model 仍由目录同步维护。`llm.active` 指向官方但目录不可用时，
+   下拉保留一个禁用的占位项「Center 官方模型（目录不可用）」，不改写配置；
+   选择任意本机模型即切回本机 provider，且**不会关闭**官方能力（它仍可作为会话级来源）。
 3. **工具行**：`+ 添加 Provider`（切到添加态）与「保存全部」（逐个保存全部 provider）。
 4. **provider 行列表**：每个 provider 一行，行上只有
    - 名称（`.mono`）；
@@ -1213,9 +1217,18 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `center-llm` / `center-imagegen` / `center-tts` / `center-stt`。它们的 Base URL
   由 `center.serverUrl` 推导，API Key 固定使用 `center.token`；TTS / STT / 生图 Provider
   页把启用后的条目显示为只读官方卡片，不提供编辑或删除入口。
-- 语言模型由 Center 页开关决定全局覆盖，会话级覆盖仍遵循“会话 > 全局”。
-  TTS / STT / 生图以各自 `active` 为实际分派依据：首次开启官方服务自动切到 `center-*`，
-  用户之后可在 Provider 页切回本地模型；官方开关保持开启但请求走本地。
+- **语言模型的默认模型只认 `llm.active`（2026-10-24 修订）**：官方能力开启不再「全局覆盖」。
+  读取层（`createCenterAwareSettingsStore`）**不得**把 `llm.active` 改写成 `center-llm`；
+  只有 `llm.active` 指向 `center-llm` 时才按官方模型构造请求。用户在本机 Provider 上选的
+  默认一直生效，直到显式选择官方模型（AI 模型页官方分组，或 Center 页首次勾选官方开关）。
+  会话级覆盖仍遵循「会话 > 全局」；官方开启且默认在本机时，官方仍可作为会话级来源。
+- **Center 页 LLM 开关的切换规则**：首次开启（`false → true`）把 `llm.active` 切到
+  `center-llm`；关闭时只有当前默认仍是官方才回落到首个可用本机 LLM provider（没有则置空），
+  用户自己切到本机后开关的启用 / 关闭都不再覆盖该选择（与 TTS / STT / 生图同款）。
+  TTS / STT / 生图仍以各自 `active` 为实际分派依据。
+- **读时覆写只用于非语言能力**：`officialModels.<cap>.model` 的读时覆写继续作用于
+  `imagegen` / `tts` / `stt` 的 `center-*` 镜像副本；语言模型的选模与回落统一由
+  `createProviderFactory` 处理（选中项 → `defaultModel` → 首个），不提示「回落本机」。
 - **`officialModels.<cap>.model` 的生效口径（v0.4.8）**：四类能力的 `model` 都是**真实选模**——
   主进程在 `createCenterAwareSettingsStore`（`apps/desktop/src/main/center/aware-settings.ts`）
   **读时**把所选模型与其目录参数（生图 `size`、TTS `voice`/`speed`/`format`、STT `language`）

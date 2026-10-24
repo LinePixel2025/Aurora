@@ -24,6 +24,7 @@ export const WINDOW_NAMES = [
   'memory',
   'onboarding',
   'automation',
+  'plugin-config',
 ] as const
 export type WindowName = (typeof WINDOW_NAMES)[number]
 export const WindowNameSchema = z.enum(WINDOW_NAMES)

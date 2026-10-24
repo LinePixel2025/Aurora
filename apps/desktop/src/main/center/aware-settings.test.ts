@@ -130,7 +130,15 @@ describe('createCenterAwareSettingsStore 官方选模读时覆写', () => {
     const stt = next.stt.providers['center-stt']
     expect(stt).toMatchObject({ model: 'stt-alt', language: 'en' })
     expect(next.imagegen.enabled).toBe(true)
-    expect(next.llm.active).toBe('center-llm')
+    // v0.5.5：llm.active 是全局默认唯一事实来源，读取层不得因官方开关把它改写成 center-llm。
+    expect(next.llm.active).toBe('')
+  })
+
+  it('官方 llm 启用时仍保留用户在本机 Provider 上的全局默认', () => {
+    const settings = settingsWithOfficial()
+    settings.llm.active = 'deepseek'
+    const { store } = makeAware(settings)
+    expect(store.get().llm.active).toBe('deepseek')
   })
 
   it('不落盘：底仓对象保持镜像默认模型', () => {

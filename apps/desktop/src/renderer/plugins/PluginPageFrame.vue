@@ -133,8 +133,15 @@ function mountWebview(): void {
     loading.value = false
   })
   element.addEventListener('did-fail-load', (event) => {
-    const failure = event as Event & { errorDescription?: string; validatedURL?: string }
+    const failure = event as Event & {
+      errorCode?: number
+      errorDescription?: string
+      validatedURL?: string
+    }
     if (disposed) return
+    // 首次导航在协议 handler 注册前可能被中止（ERR_ABORTED），紧随其后的显式 loadURL
+    // 才是真正那次加载；把它当失败会把已渲染的页面盖成错误条。
+    if (failure.errorCode === -3) return
     loading.value = false
     error.value = `页面加载失败：${failure.errorDescription ?? '未知原因'}`
   })
@@ -176,12 +183,10 @@ function forwardEvent(event: { event: string; payload?: unknown }): void {
 }
 
 let offPush: (() => void) | null = null
+let offChanged: (() => void) | null = null
+let reloadTimer: ReturnType<typeof setTimeout> | undefined
 
-function matchesPush(event: {
-  pluginId: string
-  panelId?: string
-  widgetId?: string
-}): boolean {
+function matchesPush(event: { pluginId: string; panelId?: string; widgetId?: string }): boolean {
   if (event.pluginId !== props.pluginId) return false
   return props.widgetId === undefined
     ? event.panelId === props.panelId
@@ -198,9 +203,23 @@ onMounted(() => {
     props.widgetId === undefined
       ? window.aurora.plugins.onPanelEvent(handler)
       : window.aurora.plugins.onWidgetEvent(handler)
+  // 插件重启 / 配置变更 / 重新就绪：页面必须重载，否则一直显示旧内容。
+  offChanged = window.aurora.plugins.onChanged(() => {
+    if (disposed || reloadTimer !== undefined) return
+    reloadTimer = setTimeout(() => {
+      reloadTimer = undefined
+      if (!disposed) reload()
+    }, 300)
+  })
 })
 
 onBeforeUnmount(() => {
+  offChanged?.()
+  offChanged = null
+  if (reloadTimer !== undefined) {
+    clearTimeout(reloadTimer)
+    reloadTimer = undefined
+  }
   offPush?.()
   offPush = null
   disposed = true

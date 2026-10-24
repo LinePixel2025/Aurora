@@ -13,7 +13,14 @@
 import type { WindowName } from '@aurora/shared/browser'
 
 /** 允许用户拖动的窗口（显式清单，docs/07 §1）。 */
-export const DRAGGABLE_WINDOWS = ['chat', 'settings', 'memory', 'onboarding', 'automation'] as const
+export const DRAGGABLE_WINDOWS = [
+  'chat',
+  'settings',
+  'memory',
+  'onboarding',
+  'automation',
+  'plugin-config',
+] as const
 export type DraggableWindow = (typeof DRAGGABLE_WINDOWS)[number]
 
 /**

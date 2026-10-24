@@ -1088,8 +1088,9 @@ function onCancelJob(id: string): void {
  * 2. **全局默认**（「思考等级」下拉，以及设置页「AI 模型」卡）：写配置
  *    `llm.providers.<生效 provider>.modelParams.<生效模型>.reasoningEffort`（v23 起随模型绑定）。
  *
- * 「生效」由 `buildModelPickerState()` 统一解析：会话覆盖 > Center 官方语言模型 > 本机
- * `llm.active`；覆盖里的 provider 已被删除 / model 为空 → 静默回落全局档。
+ * 「生效」由 `buildModelPickerState()` 统一解析：会话覆盖 > 全局 `llm.active`
+ * （指向 `center-llm` 时才是 Center 官方，否则本机）；覆盖里的 provider 已被删除 /
+ * model 为空 → 静默回落全局档。
  * 保存成功后 `settings:changed` 会把新配置推回 store，会话覆盖由 `loadSessions()` 刷新。
  * 每次发送时主进程都会重解析，因此写完**下一次发送**立即生效。
  */

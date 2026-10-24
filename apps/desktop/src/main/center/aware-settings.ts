@@ -1,10 +1,13 @@
 /**
  * Center 感知的设置读层（docs/12 §12.2 / docs/08 §8）。
  *
- * 包一层 `SettingsStoreLike`：官方模型开关启用时，把保留 Provider 设为可用并把用户所选
- * 官方模型（`center.officialModels.<cap>.model` + 目录参数）**覆写进返回副本**——落盘镜像
- * 仍由 `syncProviders` 保持目录默认模型。llm 的选模在 `createProviderFactory` 自理，
- * 这里只切 `llm.active`。
+ * 包一层 `SettingsStoreLike`：**非语言能力**（imagegen / tts / stt）的官方模型开关启用时，
+ * 把保留 Provider 设为可用并把用户所选官方模型（`center.officialModels.<cap>.model` +
+ * 目录参数）**覆写进返回副本**——落盘镜像仍由 `syncProviders` 保持目录默认模型。
+ *
+ * **语言模型不在这里处理（2026-10-24）**：`llm.active` 是全局默认的唯一事实来源，
+ * 读取层绝不能因为官方开关开启就改写成 `center-llm`；官方选模与回落统一由
+ * `createProviderFactory` 在真正构造请求时解析。
  */
 import type {
   CenterOfficialCapability,
@@ -89,7 +92,7 @@ export function createCenterAwareSettingsStore(
     }
   }
   const applyOfficialSelection = (next: Settings): Settings => {
-    for (const capability of ['llm', 'tts', 'stt', 'imagegen'] as const) {
+    for (const capability of ['tts', 'stt', 'imagegen'] as const) {
       const selection = next.center.officialModels[capability]
       if (!selection.enabled) continue
       const providerId = CENTER_OFFICIAL_PROVIDER_IDS[capability]
@@ -97,11 +100,8 @@ export function createCenterAwareSettingsStore(
         deps.serviceOf(capability) !== undefined &&
         next[capability].providers[providerId] !== undefined
       if (available) {
-        if (capability === 'llm') next.llm.active = providerId
-        else {
-          next[capability].enabled = true
-          applyModelOverride(next, capability, providerId, selection.model)
-        }
+        next[capability].enabled = true
+        applyModelOverride(next, capability, providerId, selection.model)
       } else {
         // 目录尚未加载（启动 / 刚登录）不是故障：静默沿用本机档，等目录到达再自然切回官方。
         if (deps.catalogLoaded?.() !== false) deps.noticeFallback(capability)

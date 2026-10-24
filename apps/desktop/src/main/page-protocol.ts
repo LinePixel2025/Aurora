@@ -9,7 +9,7 @@
  */
 import { promises as fs } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
-import { protocol, type Session, type WebContents } from 'electron'
+import { protocol, session as electronSession, type Session, type WebContents } from 'electron'
 import type { Logger } from '@aurora/shared'
 import type { PluginManager } from './plugins/manager.js'
 import {
@@ -138,6 +138,48 @@ export function registerPluginPageProtocol(manager: PluginManager, logger: Logge
   protocol.handle(PLUGIN_PAGE_SCHEME, pageHandler)
 }
 
+// ───────────────────────── guest 挂载前的页面地址（按 partition 排队） ─────────────────────────
+
+/**
+ * `will-attach-webview` 与 `did-attach-webview` 之间暂存的插件页面地址。
+ *
+ * 右侧标签栏可能同时挂载多个页面型面板；原先用一个全局字符串暂存，两个 attach
+ * 交错时会把 A 面板的 URL 当成 B guest 的入口（登记归属与 `loadURL` 全错）。
+ * 这里按插件 partition 各自 FIFO 排队：同插件多个页面按挂载顺序取，不同插件互不串队。
+ */
+const pendingPageSrcs = new Map<string, string[]>()
+const PENDING_PAGE_SRC_MAX = 16
+
+export function queuePluginPageSrc(partition: string, src: string): void {
+  if (partition === '' || !isPluginPageUrl(src)) return
+  const queue = pendingPageSrcs.get(partition) ?? []
+  queue.push(src)
+  // 防御性上限：正常关闭路径都会 consume；异常残留不应无限增长。
+  while (queue.length > PENDING_PAGE_SRC_MAX) queue.shift()
+  pendingPageSrcs.set(partition, queue)
+}
+
+/**
+ * 按 guest 的 `session` 身份找到它所属的 partition，并取出队首 src。
+ *
+ * Electron 的 `Session` 没有 `getPartition()`；`session.fromPartition()` 返回同一实例，
+ * 因此用对象身份比对即可。找不到（例如浏览器 webview / 非插件 guest）返回空串。
+ */
+export function takePluginPageSrcForSession(session: Session): string {
+  for (const [partition, queue] of pendingPageSrcs) {
+    if (electronSession.fromPartition(partition) !== session) continue
+    const src = queue.shift() ?? ''
+    if (queue.length === 0) pendingPageSrcs.delete(partition)
+    return src
+  }
+  return ''
+}
+
+/** 测试 / 退出收尾用。 */
+export function clearPendingPluginPageSrcs(): void {
+  pendingPageSrcs.clear()
+}
+
 // ───────────────────────── guest 归属 ─────────────────────────
 
 export interface PluginGuest {
@@ -170,7 +212,11 @@ export function registerPluginPageGuest(guest: WebContents, host: WebContents, s
   if (target === null) return
   const id = guest.id
   const widgetId = widgetIdOfUrl(source)
-  guests.set(id, { pluginId: target.pluginId, hostId: host.id, ...(widgetId === undefined ? {} : { widgetId }) })
+  guests.set(id, {
+    pluginId: target.pluginId,
+    hostId: host.id,
+    ...(widgetId === undefined ? {} : { widgetId }),
+  })
   guest.once('destroyed', () => guests.delete(id))
 }
 
