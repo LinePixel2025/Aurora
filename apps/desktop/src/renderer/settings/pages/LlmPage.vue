@@ -99,9 +99,21 @@ const renamingModel = ref<string | null>(null)
 const renameValue = ref('')
 
 const activeId = computed(() => settingsStore.settings?.llm.active ?? '')
-const activeDraft = computed(
-  () => drafts.value.find((draft) => draft.id === activeId.value) ?? null,
-)
+
+/** 当前默认状态：按配置解析（不依赖 drafts，Center 官方 provider 不会出现在行列表里）。 */
+const activeSummary = computed(() => {
+  const settings = settingsStore.settings
+  if (!settings || settings.llm.active === '') return null
+  const provider = settings.llm.providers[settings.llm.active]
+  if (provider === undefined) return null
+  return {
+    id: settings.llm.active,
+    model: provider.model.trim(),
+    center: isCenterOfficialProviderId(settings.llm.active),
+  }
+})
+
+const activeIsCenter = computed(() => isCenterOfficialProviderId(activeId.value))
 
 /**
  * 未落盘的新建草稿（`syncDrafts` 会把已保存的镜像整体换掉，
@@ -119,6 +131,96 @@ const savedDrafts = ref<ProviderDraft[]>([])
 
 /** 列表 = 已保存的镜像 + 未落盘的新建草稿（重名不会出现：`addPreset` 先查重） */
 const drafts = computed<ProviderDraft[]>(() => [...savedDrafts.value, ...localDrafts.value])
+
+/**
+ * 「默认模型」下拉的 value：JSON 编码一对 `(providerId, model)`。
+ *
+ * 模型 id 里可能有 `/`、`:`、`@` 等字符，用拼接分隔符会解析错；JSON 是唯一无歧义的编码。
+ */
+function defaultModelKey(providerId: string, model: string): string {
+  return JSON.stringify([providerId, model])
+}
+
+/** 某个 provider 可供默认模型选择的 id（候选列表 + 当前生效值，去重去空）。 */
+function defaultModelsOf(draft: ProviderDraft): string[] {
+  return mergeModelIds(draft.modelList, [draft.model.trim()])
+}
+
+/**
+ * 默认模型下拉的分组：只有**已保存**的 provider 才进选项（未落盘草稿还不是配置的一部分）。
+ * 没有任何模型的 provider 跳过 —— 选中一个空模型名不是合法状态。
+ */
+const defaultGroups = computed(() =>
+  savedDrafts.value
+    .map((draft) => ({ id: draft.id, models: defaultModelsOf(draft) }))
+    .filter((group) => group.models.length > 0),
+)
+
+/**
+ * 下拉的当前值。Center 官方 provider 不在这里选（由 Center 目录维护），
+ * 返回空串让占位项显示出来；它也正是「尚未选择默认模型」的表达。
+ */
+const defaultModelValue = computed(() => {
+  const settings = settingsStore.settings
+  if (!settings || settings.llm.active === '') return ''
+  if (isCenterOfficialProviderId(settings.llm.active)) return ''
+  const provider = settings.llm.providers[settings.llm.active]
+  const model = provider?.model.trim() ?? ''
+  return model === '' ? '' : defaultModelKey(settings.llm.active, model)
+})
+
+const defaultPlaceholder = computed(() =>
+  activeIsCenter.value ? 'Center 官方模型（由 Aurora Center 管理）' : '请选择默认模型',
+)
+
+/**
+ * 切换默认模型：**立即保存**（与「显示思考过程」同款），
+ * 写的是 `llm.active` + 该 provider 的 `model`（唯一生效值），并把模型补进候选列表。
+ */
+async function onDefaultModelChange(event: Event): Promise<void> {
+  const raw = (event.target as HTMLSelectElement).value
+  if (raw === '') return
+  let pair: unknown
+  try {
+    pair = JSON.parse(raw)
+  } catch {
+    return
+  }
+  if (!Array.isArray(pair) || pair.length !== 2) return
+  const [providerId, model] = pair
+  if (typeof providerId !== 'string' || typeof model !== 'string' || model.trim() === '') return
+  await saveDefaultModel(providerId, model.trim())
+}
+
+async function saveDefaultModel(providerId: string, model: string): Promise<void> {
+  const settings = settingsStore.settings
+  if (!settings) return
+  const provider = settings.llm.providers[providerId]
+  if (provider === undefined) {
+    error.value = `Provider「${providerId}」不存在`
+    return
+  }
+  message.value = null
+  error.value = null
+  // 与 saveProvider 同一条口径：settings:update 只有顶层浅合并，providers 必须整份回传；
+  // 已有 provider 的 `apiKeyEnc: ''` 表示「本次不改凭据」。
+  const providers: Record<string, LlmProviderConfig> = {}
+  for (const [id, item] of Object.entries(settings.llm.providers)) {
+    providers[id] = { ...item, apiKeyEnc: '' }
+  }
+  providers[providerId] = {
+    ...provider,
+    apiKeyEnc: '',
+    model,
+    modelList: mergeModelIds(provider.modelList, [model]),
+  }
+  const ok = await settingsStore.update({ llm: { active: providerId, providers } })
+  if (!ok) {
+    error.value = settingsStore.error
+    return
+  }
+  message.value = `默认模型已切换为 ${providerId} · ${model}`
+}
 
 /** 该 id 是否已经在配置里（与「未落盘草稿」相对） */
 function hasSaved(id: string): boolean {
@@ -726,11 +828,12 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
     <header>
       <h1 class="page-title">AI 模型</h1>
       <p class="page-sub">支持任何 OpenAI 兼容服务；凭据加密保存在本机，日志与导出均脱敏。</p>
-      <!-- 页头摘要：当前默认模型来自哪个 provider，一眼可见 -->
+      <!-- 页头摘要：当前默认模型来自哪个 provider，一眼可见（Center 官方也能如实显示） -->
       <p class="summary tiny">
-        <template v-if="activeDraft">
-          当前默认：<span class="mono">{{ activeDraft.id }}</span> ·
-          <span class="mono">{{ activeDraft.model }}</span>
+        <template v-if="activeSummary">
+          当前默认：<span class="mono">{{ activeSummary.id }}</span> ·
+          <span class="mono">{{ activeSummary.model || '未设置模型' }}</span>
+          <template v-if="activeSummary.center">（Center 官方）</template>
         </template>
         <template v-else>尚未选择默认模型</template>
       </p>
@@ -738,6 +841,29 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
+
+    <!-- 默认模型（v37）：按 provider 分组的单个下拉，切换即保存（docs/08 §5） -->
+    <section v-if="savedDrafts.length > 0" class="section-card default-model-card">
+      <h2 class="section-title">默认模型</h2>
+      <p class="section-desc">新建会话与未单独指定模型的会话默认调用它。</p>
+      <select
+        class="input"
+        data-field="llm.defaultModel"
+        :value="defaultModelValue"
+        @change="onDefaultModelChange"
+      >
+        <option value="" disabled>{{ defaultPlaceholder }}</option>
+        <optgroup v-for="group in defaultGroups" :key="group.id" :label="group.id">
+          <option
+            v-for="model in group.models"
+            :key="`${group.id}:${model}`"
+            :value="defaultModelKey(group.id, model)"
+          >
+            {{ model }}
+          </option>
+        </optgroup>
+      </select>
+    </section>
 
     <!-- 「显示思考过程」（v8 新增）：独立小节，改动即时保存 -->
     <section class="section-card">
@@ -1209,6 +1335,11 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 .summary {
   margin: var(--space-2) 0 0;
   color: var(--text-secondary);
+}
+
+/* 默认模型下拉：与页面其它输入同高，但不铺满整张卡 */
+.default-model-card .input {
+  max-width: 420px;
 }
 
 .toolbar {

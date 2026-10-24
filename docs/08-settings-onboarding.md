@@ -856,12 +856,21 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 ## 5. AI 模型设置页
 
 信息架构是**目录行列表 + 一次只开一张编辑卡**（前端刷新轮重写）：
-不再把所有 provider 平铺成一屏长滚动卡片，而是自上而下四块 ——
+不再把所有 provider 平铺成一屏长滚动卡片，而是自上而下依次为
+页头摘要 / 默认模型 / 工具行 / provider 行列表 / 编辑卡 ——
 
 1. **页头摘要**：标题 + 一句话说明（凭据加密、日志脱敏）+ 当前默认状态
    （`当前默认：<activeId> · <model>`；`llm.active` 为空或指向不存在的 provider 时显示「尚未选择默认模型」）。
-2. **工具行**：`+ 添加 Provider`（切到添加态）与「保存全部」（逐个保存全部 provider）。
-3. **provider 行列表**：每个 provider 一行，行上只有
+2. **默认模型**（v37）：有已保存 provider 时，页头下方显示一张「默认模型」卡，
+   `data-field="llm.defaultModel"` 的单个 `<select>` 按 provider 分组（`<optgroup>`），
+   每个选项是一对 `(providerId, model)`（JSON 编码进 `value`，避免模型 id 里的分隔符冲突）；
+   选项集合 = 每个已保存 provider 的 `modelList ∪ {model}`。
+   切换即**立即保存**（不点「应用」）：写 `llm.active = providerId` 与
+   `llm.providers.<id>.model = model`，并把该模型补进 `modelList`；失败时按 `settingsStore.error` 提示。
+   `llm.active` 指向 Center 官方 provider（页面不展示的保留 id）时，下拉显示一个禁用的占位项
+   「Center 官方模型（由 Aurora Center 管理）」，不改写配置；选择任意本机模型即切回本机 provider。
+3. **工具行**：`+ 添加 Provider`（切到添加态）与「保存全部」（逐个保存全部 provider）。
+4. **provider 行列表**：每个 provider 一行，行上只有
    - 名称（`.mono`）；
    - **凭据状态 badge**：`apiKeySet === true` → `凭据已保存`（ok），否则 `缺少凭据`（warn）——
      凭据**永不回显**（§1.1），编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**；
@@ -869,7 +878,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
    - 行尾操作：`编辑` / `删除`；默认模型由上方下拉切换。
    - 列表为空时是 `data-empty="llm.providers"` 的**空状态卡**（文案与「添加 AI 模型」主按钮），
      不画一排空行。
-4. **编辑卡**（`editingId` 是单值，因此**同一时刻最多一张卡**）：
+5. **编辑卡**（`editingId` 是单值，因此**同一时刻最多一张卡**）：
    - 必填区：`baseUrl` / `apiKey` / `model`（必填项前置，缺失时当场提示是哪个 provider 的哪个字段，
      不再等到保存后由 Schema 兜底）；
    - 「模型设置」区（必填区与 `高级参数与连接测试` 折叠区**之间**）——该 provider 的**候选模型列表**：
@@ -909,25 +918,25 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
      分母取**当前生效模型**的 `modelParams.<modelId>.contextWindow`（`0` = 未知则不显示百分比，
      见 §1 与 docs/07 §2.3）；v23 起卡片正文就这三行（`chat.context-detail` 锚点与
      `chat.context` / `chat.context-usage` / `chat.context-cache` / `.ctx-total` 保持不变）。
-5. **删除是危险操作**：点「删除」先就地出现确认条
+6. **删除是危险操作**：点「删除」先就地出现确认条
    （`删除 provider「<id>」？依赖它的会话将无法再请求模型。` + `确认删除` / `取消`）。
    确认后的 patch 带 `llm.removedProviders: [<id>]` —— `llm.providers` 是 record，
    **缺项表达不了删除**（只回传一份少了它的 `providers` 是合法的局部更新形状，不会删掉它）。
    密文与内存明文缓存在**删除成功之后**由主进程一并清理；删除失败时凭据保持原样。
-6. **思考等级 / 上下文窗口 / 支持图片输入**属于**模型维度**
+7. **思考等级 / 上下文窗口 / 支持图片输入**属于**模型维度**
    （`llm.providers.<id>.modelParams.<modelId>.*`，v23 起，见 §1），因此**不在** provider 级折叠区，
    而在「模型设置」区的**模型行内**展开编辑（行上 `data-action="toggle-model-params"` 开关，
    字段锚点 `llm.providers.<id>.modelList.<index>.<字段>`）；交互窗另有入口
    （docs/07 §2.3，读写的是同一份 `modelParams`）。语义因此是「**参数随模型绑定**」——
    在对话窗切模型即切参数，`model` 是唯一生效值、参数随之取（见 06 §3）。
-7. 保存语义：`settings:update` 只有**顶层浅合并**，因此任何一次保存都必须**原样回传全部 provider
+8. 保存语义：`settings:update` 只有**顶层浅合并**，因此任何一次保存都必须**原样回传全部 provider
    再覆盖当前一个**；`apiKeyEnc: ''` 对已有 provider 表示「本次不改凭据」（新建时 Schema 要求该字段存在）；
-   **缺项 ≠ 删除**（删除必须显式声明 `llm.removedProviders`，见第 5 条）；
+   **缺项 ≠ 删除**（删除必须显式声明 `llm.removedProviders`，见第 6 条）；
    明文 API Key 只走 `settings:setSecrets`。`modelList` 是数组，跨 IPC 前必须**深拷贝成新数组**
    （`reactive` 里的数组是 Proxy，直接传会 `DataCloneError`）。
-8. 支持范围：DeepSeek / OpenAI / 其他 OpenAI 兼容（含 Ollama 本地）；P2 再评估更多协议（Anthropic 等）。
-9. 测试连接：展示延迟与可用模型列表（可选拉取）。
-10. **v8 目标口径增量（UI 由另一任务实施）**：本页在 6 页 IA（见 §6「页面结构」）下还承载 ——
+9. 支持范围：DeepSeek / OpenAI / 其他 OpenAI 兼容（含 Ollama 本地）；P2 再评估更多协议（Anthropic 等）。
+10. 测试连接：展示延迟与可用模型列表（可选拉取）。
+11. **v8 目标口径增量（UI 由另一任务实施）**：本页在 6 页 IA（见 §6「页面结构」）下还承载 ——
     「显示思考过程」开关（`general.chat.showThinking`，门控对话窗可折叠思考块，docs/07 §2.3）与
     **生图模型区组**（`imagegen.*`：总开关 / 默认生图模型 / provider 增改删；provider 表单为
     `baseUrl` / `apiKey` / `model` / `size`，与 `llm.providers` 同构但独立，见 §1；

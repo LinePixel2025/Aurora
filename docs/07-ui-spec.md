@@ -1705,7 +1705,8 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      五页各挂一条门控探针，advanced 纯截图；modes 页 act 先展开默认收起的「课程表与课前提醒」分组）→
      `settings-legacy-tts-alias.png`（旧深链 `?page=tts` 经 `LEGACY_PAGE_ALIASES` 落到「语音」页；
      `skills|mcp → agent` 走同一张映射表，机制由本场景代表验证）→ `settings-drag.png` →
-     `settings-llm-models.png` → `settings-llm-params.png` → `settings-llm-structure.png` →
+     `settings-llm-models.png` → `settings-llm-default.png`（v37 默认模型下拉）→
+     `settings-llm-params.png` → `settings-llm-structure.png` →
      `settings-tts-card.png`（深链用旧 id `tts`，顺带覆盖「旧链接上编辑卡流程照常可用」）→
      `settings-stt-card.png`（v24 新增；深链用新页 id `voice`，打开 STT 编辑卡并断言
      「接口协议」切到阿里云原生时 baseURL 提示词被改写）→
@@ -1747,7 +1748,8 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
   `chat-right-panel-work`（经 `mode.set` 切 `modes.current` 到 work，check 收尾切回 classroom）、
   `chat-thinking-level`（改 `reasoningEffort`，check 结尾写回原值）、
   `chat-model-picker`（切 `model`，check 结尾写回原值）、
-  `settings-llm-params`（造一个 provider 用于断言）。
+  `settings-llm-params`（造一个 provider 用于断言）、
+  `settings-llm-default`（切默认模型并临时补一个候选模型，check 结尾写回默认与候选列表）。
   它们中的大多数会在结束时把改动还原（如 `chat-thinking-level` / `chat-model-picker` 写回原值、
   `settings-llm-models` 删回新增行），但这属于**各场景自己的自律、不是框架保证**：
   场景中途失败就会把脏配置留给后面的场景。所以 `AURORA_CAPTURE` 存在时应用一律把 userData
@@ -2277,6 +2279,15 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     唯一写盘的情况是**一个 provider 都没有**时先造一个（否则列表区不在 DOM 里，无从点开）；
     恢复（删掉刚加的那一行）在 check 里做。之所以仍排在 `settings-llm-params` **之前**，
     是为了少一次配置往返，也避免它把参数场景造出的 provider 状态搅乱。
+  - **模型页「默认模型」下拉**（`SETTINGS_LLM_DEFAULT_ACT` / `SETTINGS_LLM_DEFAULT_CHECK`，
+    产物 `settings-llm-default.png`，设置页 `?page=llm`，v37）：act 先确保有 provider
+    （隔离环境没有时现造一个），必要时把同一 provider 的第二个模型加进候选列表，
+    然后**通过 `[data-field="llm.defaultModel"]` 这个 `<select>` 本身**派发 `change` 切到
+    `(providerId, model)` 对；check 同时读 DOM 的 `select.value` 与
+    `settings.get()` 的 `llm.active` / `providers.<id>.model`，要求两边都等于新值，
+    最后把 `llm.active`、模型名、候选列表与临时参数写回原状。
+    `pass` = 下拉存在 && DOM 值 === 配置值 === 目标对 && 恢复成功；
+    这条同时覆盖「按 provider 分组的选项渲染」与「切换即保存」两条产品口径。
   - **对话窗模型来源 / 模型双下拉**（`CHAT_MODEL_PICKER_ACT` / `CHAT_MODEL_PICKER_CHECK`，
     产物 `chat-model-picker.png`）：act 用 `capture-source` + `center-llm` 造出两个来源，
     先记录旧会话没有 `meta.llm`，再切 `chat.modelSource=local` 验证本机默认模型，
@@ -2326,8 +2337,9 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     跨场景之间没有这个限制：每换一条场景 `captureWindows` 会重新 `manager.show()`，
     所以 `chat-collapse`（点「收起」隐藏窗口）**之后**仍有 `chat.png` 场景，并且能正常出图 ——
     「之后既做不了 DOM 操作也截不到图」是**过强的说法**，不要照抄。
-    设置窗场景按上面第 4 组的顺序执行：`settings-llm-models` 排在 `settings-llm-params` 之前
-    （少一次配置往返）；`settings-classroom-patch` 必须排在 `settings-modes-work-gating` 之前
+    设置窗场景按上面第 4 组的顺序执行：`settings-llm-models` → `settings-llm-default` 排在
+    `settings-llm-params` 之前（少一次配置往返；default 场景造出的 provider 正好供后面用）；
+    `settings-classroom-patch` 必须排在 `settings-modes-work-gating` 之前
     （切到 Work 后 classroom 控件不在 DOM）；其余设置场景各自 reload，互相无顺序约束。
 - 截图前会等 `WindowManager.whenLoaded()`（`ensure()` 的加载是 fire-and-forget，
   不等会截到 0 字节空图），并对空图重试；连续空图直接判失败，不产出空文件。

@@ -11582,6 +11582,164 @@ export const SETTINGS_LLM_MODELS_CHECK = `(async () => {
 })()`
 
 /**
+ * 「默认模型」下拉探针 · 前半（v37，docs/08 §5）。
+ *
+ * 真实用户路径：在设置页选中另一个模型 → 配置里 `llm.active` 与
+ * `llm.providers.<id>.model` 同时变化。隔离 userData 起步可能没有 provider，
+ * 所以先像其它 LLM 探针一样自足地造一个；随后把同一 provider 的第二个模型
+ * 加进候选列表（没有就临时加，check 收尾时删掉），再**通过下拉本身**切换。
+ */
+export const SETTINGS_LLM_DEFAULT_ACT = `(async () => {
+  try {
+    let state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: 'settings.get failed' }
+    let settings = state.value
+    if (Object.keys(settings.llm.providers).length === 0) {
+      const created = await window.aurora.settings.update({
+        llm: {
+          active: 'capture',
+          providers: {
+            capture: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com/v1',
+              apiKeyEnc: '',
+              model: 'deepseek-chat',
+              modelList: ['deepseek-chat'],
+              modelParams: {
+                'deepseek-chat': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+              },
+            },
+          },
+        },
+      })
+      if (!created.ok) return { ok: false, reason: created.message }
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      state = await window.aurora.settings.get()
+      if (!state.ok) return { ok: false, reason: 'settings.get#2 failed' }
+      settings = state.value
+    }
+
+    const ids = Object.keys(settings.llm.providers)
+    const active = settings.llm.active !== '' ? settings.llm.active : ids[0]
+    const provider = settings.llm.providers[active]
+    if (provider === undefined) return { ok: false, reason: 'no provider for default model' }
+    const beforeModel = provider.model
+    const beforeList = (provider.modelList || []).slice()
+    const second =
+      beforeList.find((item) => item !== '' && item !== beforeModel) || 'capture-model-2'
+    const added = !beforeList.includes(second)
+    window.__auroraDefaultProbe = {
+      active,
+      beforeActive: settings.llm.active,
+      beforeModel,
+      beforeList,
+      second,
+      added,
+    }
+
+    if (added) {
+      const table = provider.modelParams || {}
+      const result = await window.aurora.settings.update({
+        llm: {
+          active: settings.llm.active,
+          providers: {
+            ...settings.llm.providers,
+            [active]: {
+              ...provider,
+              modelList: beforeList.concat([second]),
+              modelParams: {
+                ...table,
+                [second]: table[second] || {
+                  reasoningEffort: 'auto',
+                  contextWindow: 0,
+                  vision: false,
+                },
+              },
+            },
+          },
+        },
+      })
+      if (!result.ok) return { ok: false, reason: result.message }
+      await new Promise((resolve) => setTimeout(resolve, 600))
+    }
+
+    const select = document.querySelector('[data-field="llm.defaultModel"]')
+    if (select === null) return { ok: false, reason: 'no default model select' }
+    const value = JSON.stringify([active, second])
+    const hasOption = Array.from(select.options).some((option) => option.value === value)
+    if (!hasOption) return { ok: false, reason: 'second model not in default options' }
+    select.value = value
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 「默认模型」下拉探针 · 后半：DOM 值 === 配置值，并写回原默认与候选列表。
+ *
+ * 只断言"选中有反应"不够（写死一个 `<select>` 也能有 value），所以两边都读：
+ * ① DOM 的当前值；② `settings.get()` 里的 `llm.active` 与对应 `model`。
+ * 恢复顺序先读 DOM 再写配置 —— 写回会触发 settings:changed 重渲染，之后 DOM 值就变了。
+ */
+export const SETTINGS_LLM_DEFAULT_CHECK = `(async () => {
+  try {
+    const probe = window.__auroraDefaultProbe
+    const select = document.querySelector('[data-field="llm.defaultModel"]')
+    const expected = probe === undefined ? null : JSON.stringify([probe.active, probe.second])
+    const domValue = select === null ? null : select.value
+    const state = await window.aurora.settings.get()
+    const target = state.ok && probe !== undefined ? state.value.llm.providers[probe.active] : null
+    const configOk =
+      state.ok &&
+      probe !== undefined &&
+      state.value.llm.active === probe.active &&
+      target !== null &&
+      target !== undefined &&
+      target.model === probe.second
+
+    let restored = null
+    if (state.ok && probe !== undefined && target !== null && target !== undefined) {
+      const table = { ...(target.modelParams || {}) }
+      if (probe.added) delete table[probe.second]
+      const result = await window.aurora.settings.update({
+        llm: {
+          active: probe.beforeActive,
+          providers: {
+            ...state.value.llm.providers,
+            [probe.active]: {
+              ...target,
+              model: probe.beforeModel,
+              modelList: probe.beforeList.slice(),
+              modelParams: table,
+            },
+          },
+        },
+      })
+      restored = result.ok
+    }
+
+    return {
+      pass:
+        select !== null &&
+        expected !== null &&
+        domValue === expected &&
+        configOk === true &&
+        restored === true,
+      selectExists: select !== null,
+      domValue,
+      expected,
+      configOk,
+      restored,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * "AI 模型"页结构探针 · 前半（step-04）：点开第一行 provider 的"编辑"。
  *
  * 这一步刻意**不写配置**：`settings-llm-params` 那条会造 provider 并断言下拉真值，
@@ -13982,6 +14140,15 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     query: { page: 'llm' },
     act: SETTINGS_LLM_MODELS_ACT,
     check: SETTINGS_LLM_MODELS_CHECK,
+  })
+  // 默认模型下拉（v37）：通过下拉真实切换一次 → DOM 与配置都为新值 → 写回原默认。
+  // 排在 models 之后（那时已有 provider），并在 params 之前（params 会读 active 那一行）。
+  plan.push({
+    name: 'settings',
+    file: 'settings-llm-default.png',
+    query: { page: 'llm' },
+    act: SETTINGS_LLM_DEFAULT_ACT,
+    check: SETTINGS_LLM_DEFAULT_CHECK,
   })
   // 思考等级（step-02）：造一个 provider → 展开"高级参数"→ 断言下拉真值来自配置。
   // 刻意放在 SETTINGS_PAGE_IDS 循环**之外**：塞进循环会让每个设置页都多点一次。
