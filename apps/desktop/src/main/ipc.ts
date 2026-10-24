@@ -42,6 +42,9 @@ import {
   type AppInfo,
   type AskUserAnswerInput,
   type AuroraApi,
+  type BannerDiagnostics,
+  type BannerDismissResult,
+  type BannerMeasureRequest,
   type BrowserAgentReportRequest,
   type BrowserAgentStopRequest,
   type ChatArchiveRequest,
@@ -145,6 +148,7 @@ import {
 import type {
   AgentHost,
   AutomationControllerLike,
+  BannerServiceLike,
   ClassIslandControllerLike,
   ClassificationControllerLike,
   GuideRunnerLike,
@@ -250,6 +254,19 @@ export interface DesktopDeps {
    * （与"已结算/未知 id"同款语义），推送通道自然不发 —— 工具侧另有"端口缺失"的兜底文案。
    */
   askUser?: AskUserLike
+  /**
+   * 流光提醒（banner:dismiss，docs/07 §2.2.3）。**只有回执走这里**：展示由服务的
+   * `present` 直接驱动两扇窗，推送不需要 IPC 层再判定一次「推给谁」。
+   * 未注入时回执返回 `{ dismissed: false, pending: 0 }`（与"迟到 / 未知 id"同款语义）。
+   */
+  banner?: BannerServiceLike
+  /**
+   * 卡片内容高度上报（`banner:measure`）：把卡片窗调成「卡片 + 24px 外边距」。
+   * 未注入时该通道返回 false（渲染层不需要为此报错）。
+   */
+  bannerCardResize?: (request: BannerMeasureRequest) => boolean
+  /** 仅自测：`app:smokeBanner` 的触发器（未注入 = 该通道如实回 E_INVALID_STATE） */
+  smokeBanner?: (action: 'show' | 'dismiss') => BannerDiagnostics
   /** 全局快捷键状态（hotkey:*，docs/07 §5） */
   hotkey: HotkeyControllerLike
   /**
@@ -1505,6 +1522,46 @@ export function registerIpc(deps: DesktopDeps): () => void {
   handle<boolean>(IPC.askUser.answer, (input: AskUserAnswerInput) =>
     ok(deps.askUser?.resolve(input) ?? false),
   )
+
+  // ───────────────────────── 流光提醒（docs/07 §2.2.3） ─────────────────────────
+
+  /**
+   * 渲染层的关闭回执：只认**当前那一条**的 id。
+   *
+   * 未装配时回 `{ dismissed: false, pending: 0 }` —— 与「迟到的回执」同义，
+   * 而不是 `E_INVALID_STATE`：关一条不存在的提醒不是错误，渲染层不该为此弹错误提示。
+   */
+  handle<BannerDismissResult>(IPC.banner.dismiss, (request: { id?: unknown }) => {
+    const id = typeof request?.id === 'string' ? request.id : ''
+    if (deps.banner === undefined || id === '') {
+      return ok<BannerDismissResult>({ dismissed: false, pending: 0 })
+    }
+    return ok(deps.banner.dismiss(id))
+  })
+
+  /**
+   * 卡片内容高度上报：窗口矩形必须等于「卡片 + 24px 外边距」，
+   * 多出来的透明区域会挡住下面窗口的点击（透明 ≠ 可穿透）。
+   * 非法高度（非有限数 / 越界）一律拒绝，不让渲染层把窗口调成任意尺寸。
+   */
+  handle<boolean>(IPC.banner.measure, (request: BannerMeasureRequest) => {
+    if (deps.bannerCardResize === undefined) return ok(false)
+    const height = typeof request?.height === 'number' ? request.height : Number.NaN
+    if (!Number.isFinite(height)) return err('E_INVALID_ARGUMENT', '卡片高度必须是有限数字')
+    const id = typeof request?.id === 'string' ? request.id : ''
+    return ok(deps.bannerCardResize({ id, height }))
+  })
+
+  // 仅开发自测：推一条 / 收一条提醒（生产与打包态一律拒绝）
+  handle<BannerDiagnostics>(IPC.app.smokeBanner, (action: 'show' | 'dismiss') => {
+    if (!deps.isDev || deps.smokeMode !== true || deps.smokeBanner === undefined) {
+      return err('E_INVALID_STATE', '该接口仅在开发自测下可用')
+    }
+    if (action !== 'show' && action !== 'dismiss') {
+      return err('E_INVALID_ARGUMENT', 'action 只能是 show / dismiss')
+    }
+    return ok(deps.smokeBanner(action))
+  })
 
   // ───────────────────────── Aurora Center（docs/12） ─────────────────────────
 

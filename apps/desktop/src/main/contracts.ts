@@ -7,6 +7,8 @@
 import type {
   AskUserAnswerInput,
   AskUserRequest,
+  BannerDismissResult,
+  BannerRequest,
   CenterConnectionStatus,
   AgentEvent,
   AutomationCatalog,
@@ -209,6 +211,21 @@ export interface AskUserLike {
   /** 渲染层回执；已结算 / 未知 id 返回 false（幂等） */
   resolve(input: AskUserAnswerInput): boolean
   onRequest(listener: (request: AskUserRequest) => void): () => void
+}
+
+/**
+ * 流光提醒服务（docs/07 §2.2.3）在 IPC / 工具 / 插件三处的**最小面**。
+ *
+ * 只声明这三个方法：`show`（三个来源共用）、`dismiss`（渲染层回执）、`diagnostics`（自测）。
+ * 队列 / 去重的实现细节留在 `main/banner.ts`，别在契约里再摊一份。
+ */
+export interface BannerServiceLike {
+  show(
+    request: BannerRequest,
+    options?: { source?: 'agent' | 'plugin' | 'ask' | 'smoke' },
+  ): { ok: boolean; reason?: string; id?: string; queued?: boolean }
+  dismiss(id: string): BannerDismissResult
+  diagnostics(): { visible: boolean; pending: number; shownCount: number }
 }
 
 export interface AgentHost {

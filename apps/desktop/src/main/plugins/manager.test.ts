@@ -161,6 +161,8 @@ interface Harness {
   behavior: FakeBehavior
   settings: Settings
   automationEvents: Array<{ pluginId: string; event: string; data: unknown }>
+  /** 插件 `ctx.banner` 收到的请求（docs/07 §2.2.3） */
+  banners: Array<{ title: string; body: string; speak?: boolean; sound?: boolean }>
   panelEvents: Array<{
     pluginId: string
     panelId?: string
@@ -239,6 +241,7 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
   }
   const automationEvents: Harness['automationEvents'] = []
   const panelEvents: Harness['panelEvents'] = []
+  const banners: Harness['banners'] = []
   const manager = new PluginManager({
     userData,
     hostVersion: '0.6.0',
@@ -261,6 +264,11 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
         payload: event.payload,
       })
     },
+    // 流光提醒（docs/07 §2.2.3）：记下宿主收到的请求，断言截断与缺省标题口径
+    banner: (input) => {
+      banners.push(input)
+      return true
+    },
   })
   await manager.init()
 
@@ -272,6 +280,7 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
     settings,
     automationEvents,
     panelEvents,
+    banners,
   }
   harnesses.push(harness)
   return harness
@@ -400,11 +409,48 @@ describe('PluginManager · 宿主 API 权限白名单', () => {
     const list = await hostCall(handle, 'storage.list', {})
     expect(list).toMatchObject({ ok: true, result: ['k1'] })
 
-    for (const method of ['config.get', 'net.fetch', 'notify', 'ui.openPanel', 'unknown.method']) {
+    for (const method of [
+      'config.get',
+      'net.fetch',
+      'notify',
+      'banner',
+      'ui.openPanel',
+      'unknown.method',
+    ]) {
       const response = await hostCall(handle, method, {})
       expect(response.ok).toBe(false)
       if (!response.ok) expect(response.error.code).toBe('E_PLUGIN_PERMISSION')
     }
+  })
+
+  it('ctx.banner：notifications 权限下截断标题 / 正文，空标题回落插件名', async () => {
+    const h = await createHarness({
+      mode: 'dev',
+      manifest: helloManifest({
+        permissions: ['tools', 'storage', 'notifications', 'automation.events'],
+      }),
+    })
+    await h.manager.invokeTool(PLUGIN_ID, 'echo', { text: 'x' })
+    const handle = h.created[0]!
+
+    const plain = await hostCall(handle, 'banner', { title: '构建完成', body: '产物已就绪' })
+    expect(plain).toMatchObject({ ok: true, result: true })
+
+    // 缺省标题用插件名；超长字段按 120 / 800 截断（与 ctx.notify 同一口径）
+    const long = await hostCall(handle, 'banner', {
+      title: '',
+      body: 'x'.repeat(2000),
+      speak: true,
+      sound: false,
+    })
+    expect(long).toMatchObject({ ok: true, result: true })
+
+    expect(h.banners).toHaveLength(2)
+    expect(h.banners[0]).toEqual({ title: '构建完成', body: '产物已就绪' })
+    expect(h.banners[1]?.title).toBe('Hello')
+    expect(h.banners[1]?.body).toHaveLength(800)
+    expect(h.banners[1]?.speak).toBe(true)
+    expect(h.banners[1]?.sound).toBe(false)
   })
 
   it('storage 键非法 / 值超限被拒；emitEvent 只允许清单声明的事件', async () => {

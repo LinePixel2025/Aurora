@@ -126,6 +126,8 @@ export interface SmokeDiagnostics {
   automationRuns?: AutomationRun[]
   /** 桌面小组件窗口原生状态（层级 / 材质，v37 起） */
   widgetWindows?: WidgetWindowDiagnostics[]
+  /** 流光提醒的运行态（服务队列 + 两个原生窗口，2026-10-24） */
+  banner?: BannerDiagnostics
 }
 
 // ───────────────────────── 设置 ─────────────────────────
@@ -1177,6 +1179,85 @@ export interface AskUserAnswerInput {
   /** 逐问作答（一次多问时按 `questions` 顺序；单问时缺省。`answers` 是它的扁平化副本） */
   answersByQuestion?: string[][]
   skipped?: boolean
+}
+
+// ───────────────────────── 流光提醒（Banner Notification，docs/07 §2.2.3） ─────────────────────────
+
+/** 提醒的语义档位：只影响卡片左侧强调条与图标，不改变排队 / 超时行为。 */
+export type BannerLevel = 'info' | 'success' | 'warning' | 'error'
+
+/**
+ * 一条流光提醒的**请求**（三个来源共用：Agent 工具 / 插件 `ctx.banner` / `ask_user`）。
+ *
+ * `title` + `body` 是 R2 的硬性要求：标题必填（空标题会被服务回落成「Aurora 提醒」），
+ * 正文允许空串 —— 此时卡片只显示标题，不会留一条空的第二行。
+ */
+export interface BannerRequest {
+  title: string
+  body: string
+  /** 是否朗读 `title + body`；缺省跟随 TTS 配置（未配置时一律跳过） */
+  speak?: boolean
+  /** 是否播放提示音；缺省 true */
+  sound?: boolean
+  /** 自动关闭时长（毫秒，缺省 6000；服务钳制在 2000–30000） */
+  durationMs?: number
+  /** 同内容合并键（缺省 `title\0body`）：短窗口内的重复请求只显示一次 */
+  dedupeKey?: string
+  level?: BannerLevel
+}
+
+/**
+ * 主进程 → banner 渲染层的展示载荷（`banner:show` 推送）。
+ *
+ * 与 `BannerRequest` 的差别只在**已经定稿的字段**：`speak` / `sound` / `durationMs` / `level`
+ * 都已由主进程按配置与缺省值解算，渲染层不再各自判一遍（两处判据必然漂移）。
+ */
+export interface BannerShowPayload {
+  /** 本次展示的 id：渲染层关闭 / 超时回执时带回，主进程据此丢弃迟到的回执 */
+  id: string
+  title: string
+  body: string
+  speak: boolean
+  sound: boolean
+  durationMs: number
+  level: BannerLevel
+}
+
+/**
+ * 渲染层 → 主进程：卡片**内容高度**上报（`banner:measure`）。
+ *
+ * 为什么由渲染层量：卡片高度取决于真实排版（换行、字体回退），主进程按字符数估算必然
+ * 在某些文案上偏大或偏小 —— 偏大 = 透明窗口多出一块挡住点击的死区，偏小 = 正文被裁掉。
+ * 渲染层量完（`getBoundingClientRect().height`）回报，主进程把窗口调成「卡片 + 24px 外边距」。
+ */
+export interface BannerMeasureRequest {
+  /** 正在展示的那一条的 id；预览 / 截图场景为空串（主进程只做高度钳制） */
+  id?: string
+  /** 卡片内容的真实高度（CSS 像素） */
+  height: number
+}
+
+/** 渲染层 → 主进程的关闭回执（`banner:dismiss`）。 */
+export interface BannerDismissResult {
+  /** 这次回执是否真的关掉了正在显示的那一条（重复 / 迟到 / 未知 id → false） */
+  dismissed: boolean
+  /** 仍在排队等待展示的条数 */
+  pending: number
+}
+
+/**
+ * 流光提醒的运行态读数（开发自测用，生产不暴露）。
+ *
+ * 服务侧的队列读数与两个**原生窗口**的可见性分开给：卡片没显示可能是窗口没建起来，
+ * 也可能只是服务还在排队 —— 合成一个 `visible` 会把这两种故障混成一条。
+ */
+export interface BannerDiagnostics {
+  /** 当前有一条正在显示（服务侧 current 非空） */
+  visible: boolean
+  pending: number
+  shownCount: number
+  cardVisible: boolean
+  glowVisible: boolean
 }
 
 // ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────
@@ -2296,6 +2377,14 @@ export interface AuroraApi {
      * chokidar add 事件验证，因此留这一个受 `smokeMode` 保护的口子。
      */
     smokeDropFile(request: { fileName: string; content: string }): Promise<Result<string>>
+    /**
+     * 仅开发态自测可用：手动推一条 / 收一条流光提醒。
+     *
+     * 流光提醒的三个真实入口（Agent 工具 / 插件 / 提问）都不适合在自测里当触发器 ——
+     * 前两者要跑一整轮模型调用或装插件，后者要等 3 分钟超时。这个口子只做
+     * 「show 后窗口真的可见、dismiss 后真的不可见」这一段，参数固定、不接受任意内容。
+     */
+    smokeBanner(action: 'show' | 'dismiss'): Promise<Result<BannerDiagnostics>>
   }
   /** 项目机制（v13，docs/06 §5.1） */
   project: {
@@ -2619,6 +2708,20 @@ export interface AuroraApi {
     onRequest(listener: (request: AskUserRequest) => void): () => void
     /** 回执：已结算 / 未知 requestId 返回 false（幂等，与确认回执同款） */
     answer(input: AskUserAnswerInput): Promise<Result<boolean>>
+  }
+  /**
+   * 流光提醒（Banner Notification，docs/07 §2.2.3）：屏幕顶端的置顶卡片 + 流光。
+   *
+   * 渲染层只有「收推送 + 回回执」两件事 —— **没有** `show`：提醒的来源是主进程
+   * （Agent 工具 / 插件 / 提问），渲染层不该成为第四种来源。
+   */
+  banner: {
+    /** 收到一条提醒（主进程 → banner 窗口推送，on/off 成对） */
+    onShow(listener: (payload: BannerShowPayload) => void): () => void
+    /** 关闭回执（用户点关闭 / 超时 / 播完） */
+    dismiss(id: string): Promise<Result<BannerDismissResult>>
+    /** 上报卡片内容高度（主进程据此把卡片窗调到「卡片 + 外边距」） */
+    measure(request: BannerMeasureRequest): Promise<Result<boolean>>
   }
   mcp: {
     status(): Promise<Result<McpServerStatus[]>>

@@ -1,0 +1,259 @@
+<script setup lang="ts">
+/**
+ * 流光提醒的**卡片层**（docs/07 §2.2.3）。
+ *
+ * 视觉口径：Apple HIG 的克制分层 —— 一块 `--bg-overlay` 填充 + 1px hairline + `--radius-lg`
+ * 大圆角 + `--shadow-2` 柔和阴影；左侧一条 3px 语义色条（info / success / warning / error）。
+ * **不用品牌双色渐变**（`--aurora-gradient` 是纯强调色，全仓禁渐变彩带）。
+ *
+ * 高度由**内容**决定（`height: auto`），量出来之后立刻回报主进程 —— 主进程把窗口调成
+ * 「卡片 + 24px 外边距」。为什么不按字符数估算：真实换行取决于字体与中英混排，
+ * 估算偏大 = 透明窗口多出一块挡点击的死区，偏小 = 正文被裁掉。
+ */
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { BannerShowPayload } from '@aurora/shared'
+import { useTts } from '../shared/composables/useTts.js'
+import { playBannerChime } from './chime.js'
+
+const props = defineProps<{
+  payload: BannerShowPayload | null
+  visible: boolean
+  closing: boolean
+  ttsReady: boolean
+  /** 截图核对 / 预览：不播音、不朗读（否则每跑一轮截图都会响） */
+  muted: boolean
+}>()
+
+const emit = defineEmits<{ close: [] }>()
+
+const tts = useTts()
+const cardEl = ref<HTMLElement | null>(null)
+let observer: ResizeObserver | null = null
+let reportedHeight = -1
+
+/**
+ * 把卡片真实高度回报主进程（幂等：0.5px 内的重复回报直接跳过，避免和窗口 resize 来回抖）。
+ * 用 `offsetHeight` 而不是 `getBoundingClientRect()`：后者把入场动画的 `transform: scale`
+ * 算进去，量到的是「动画中的高度」。
+ */
+function reportHeight(): void {
+  const element = cardEl.value
+  if (element === null) return
+  const height = element.offsetHeight
+  if (height <= 0) return
+  if (Math.abs(height - reportedHeight) < 0.5) return
+  reportedHeight = height
+  void window.aurora.banner.measure({ id: props.payload?.id ?? '', height })
+}
+
+watch(
+  () => props.payload,
+  (next) => {
+    tts.stop()
+    if (next === null) return
+    reportedHeight = -1
+    // 内容换了 → 高度可能变了：等 DOM 更新再量（ResizeObserver 只在尺寸真的变化时才回调）
+    void nextTick(() => requestAnimationFrame(reportHeight))
+    if (props.muted) return
+    if (next.sound) playBannerChime()
+    if (next.speak && props.ttsReady) {
+      // 朗读「标题 + 正文」：正文为空时只读标题，避免念出一个孤零零的句号
+      const text = next.body === '' ? next.title : `${next.title}。${next.body}`
+      void tts.speak(text, next.id)
+    }
+  },
+)
+
+watch(
+  () => props.visible,
+  (next) => {
+    // 卡片退场（超时 / 点关闭）时掐掉还在读的语音：提醒都收起来了，声音不该继续
+    if (!next) tts.stop()
+  },
+)
+
+onMounted(() => {
+  observer = new ResizeObserver(() => reportHeight())
+  if (cardEl.value !== null) observer.observe(cardEl.value)
+  reportHeight()
+})
+
+onUnmounted(() => {
+  observer?.disconnect()
+  observer = null
+  tts.stop()
+})
+</script>
+
+<template>
+  <div class="banner-card-root">
+    <article
+      v-if="payload !== null"
+      ref="cardEl"
+      class="banner-card"
+      :class="[
+        `banner-card--${payload.level}`,
+        { 'is-visible': visible && !closing, 'is-leaving': closing },
+      ]"
+      role="alert"
+      data-field="banner.card"
+      @click="emit('close')"
+    >
+      <span class="banner-card-accent" aria-hidden="true" />
+      <div class="banner-card-text">
+        <h1 class="banner-card-title" data-field="banner.title">{{ payload.title }}</h1>
+        <p v-if="payload.body !== ''" class="banner-card-body" data-field="banner.body">
+          {{ payload.body }}
+        </p>
+      </div>
+      <button
+        class="banner-card-close"
+        type="button"
+        aria-label="关闭提醒"
+        data-field="banner.close"
+        @click.stop="emit('close')"
+      >
+        <span aria-hidden="true">×</span>
+      </button>
+    </article>
+  </div>
+</template>
+
+<style scoped>
+.banner-card-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.banner-card {
+  /* 12px 外边距留给阴影：主进程据此把窗口调成「卡片 + 24px」，多出来的区域才会挡住点击 */
+  box-sizing: border-box;
+  display: flex;
+  gap: 10px;
+  width: calc(100% - 24px);
+  min-height: 46px;
+  margin: 12px;
+  padding: 11px 30px 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--bg-overlay);
+  box-shadow: var(--shadow-2);
+  color: var(--text-primary);
+  pointer-events: auto;
+  cursor: default;
+  opacity: 0;
+  transform: translate3d(0, -12px, 0) scale(0.97);
+  transition:
+    opacity 260ms var(--ease-standard),
+    transform 420ms var(--ease-spring);
+}
+
+.banner-card.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+.banner-card.is-leaving {
+  opacity: 0;
+  transform: translate3d(0, -8px, 0) scale(0.985);
+  transition:
+    opacity 320ms var(--ease-standard),
+    transform 320ms var(--ease-standard);
+}
+
+/* 语义色条：只表达档位，不做渐变 */
+.banner-card-accent {
+  flex: none;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--aurora-blue);
+}
+
+.banner-card--success .banner-card-accent {
+  background: var(--status-ok);
+}
+
+.banner-card--warning .banner-card-accent {
+  background: var(--status-unread);
+}
+
+.banner-card--error .banner-card-accent {
+  background: var(--status-error);
+}
+
+.banner-card-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.banner-card-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 20px;
+  letter-spacing: 0.1px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.banner-card-body {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 19px;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.banner-card-close {
+  position: absolute;
+  /* 与卡片右上角的圆弧留出视觉呼吸（12px 外边距 + 8px） */
+  top: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 160ms var(--ease-standard),
+    color 160ms var(--ease-standard);
+}
+
+.banner-card-close:hover {
+  background: color-mix(in srgb, var(--text-secondary) 28%, transparent);
+  color: var(--text-primary);
+}
+
+.banner-card-close:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banner-card,
+  .banner-card.is-visible,
+  .banner-card.is-leaving {
+    transition: none;
+    transform: none;
+  }
+}
+</style>

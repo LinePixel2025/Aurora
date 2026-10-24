@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ToolRegistry,
   type AgentProviderFactory,
+  type BannerNotifyPort,
   type ClipboardImagePort,
   type ClipboardPort,
   type CommandRunner,
@@ -550,6 +551,8 @@ describe('registerExtensionTools', () => {
       webFetch: { fetch: async () => ({ status: 200, text: '' }) } as WebFetchPort,
       clipboard: { read: async () => '', write: async () => undefined } as ClipboardPort,
       notify: { show: async () => undefined } as NotifyPort,
+      // 流光提醒（docs/07 §2.2.3）：与 notify 同级，端口只需回 ok
+      banner: { show: async () => ({ ok: true }) } as BannerNotifyPort,
       imageGen: {
         generate: async () => ({
           filePath: 'C:\\g\\1.png',
@@ -589,11 +592,13 @@ describe('registerExtensionTools', () => {
     return { tools, registry }
   }
 
-  it('注册扩展工具七件套，敏感级与文档一致（clipboard / generate_image = confirm，展示工具 = safe）', () => {
+  it('注册扩展工具八件套，敏感级与文档一致（clipboard / generate_image = confirm，展示工具 = safe）', () => {
     const { tools, registry } = setupExtension()
     expect(registry.sync()).toEqual([...EXTENSION_TOOL_NAMES])
     expect(tools.get('web_fetch')?.sensitivity).toBe('safe')
     expect(tools.get('notify_user')?.sensitivity).toBe('safe')
+    // 流光提醒（2026-10-24）：只弹一条置顶卡片，不碰文件与系统状态 → 与 notify_user 同级
+    expect(tools.get('notify_banner')?.sensitivity).toBe('safe')
     expect(tools.get('clipboard_read')?.sensitivity).toBe('confirm')
     expect(tools.get('clipboard_write')?.sensitivity).toBe('confirm')
     expect(tools.get('generate_image')?.sensitivity).toBe('confirm')

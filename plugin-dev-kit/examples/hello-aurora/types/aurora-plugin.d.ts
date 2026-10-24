@@ -46,6 +46,8 @@ export interface PluginContext {
   storage: PluginStorage
   net: PluginNet
   notify(input: { title: string; body: string }): Promise<boolean>
+  /** 流光提醒（屏幕顶端流光 + 置顶卡片）：需 `notifications` 权限 */
+  banner(input: { title: string; body: string; speak?: boolean; sound?: boolean }): Promise<boolean>
   log(level: 'debug' | 'info' | 'warn' | 'error', message: string, detail?: unknown): void
   emitEvent(name: string, payload?: unknown): Promise<void>
   ui: PluginUi

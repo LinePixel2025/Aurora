@@ -204,7 +204,7 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 | `config` | `ctx.config` 读取与 `config.set` 写入（非密文） |
 | `net` | `ctx.net.fetch`（只 http/https，响应 ≤ 5 MB） |
 | `net.private` | 允许 loopback / 私网（必须同时声明 `net`） |
-| `notifications` | 系统通知 |
+| `notifications` | 系统通知（`ctx.notify`）与流光提醒（`ctx.banner`） |
 | `logging` | 写插件日志（无权限也允许 warn/error，避免无法排障） |
 | `ui.panels` | 右栏面板 + `ui.openPanel` / `ui.toast` / `ui.panelEvent`（面板目标） |
 | `ui.widgets` | 注册 `contributes.widgets`、`invokeWidget`、`ui.panelEvent`（小组件目标） |

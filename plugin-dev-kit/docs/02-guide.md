@@ -106,7 +106,7 @@ aurora-center plugins publish --server http://127.0.0.1:8787 --user admin --dir 
 | `config` | 读取 `ctx.config`（写入由用户在设置页完成） |
 | `net` | `ctx.net.fetch`（http/https，≤ 5 MB 响应） |
 | `net.private` | 访问 loopback / 私网（必须同时有 `net`） |
-| `notifications` | `ctx.notify` |
+| `notifications` | `ctx.notify` / `ctx.banner`（系统通知 / 流光提醒） |
 | `logging` | 写插件日志（warn/error 不受限） |
 | `ui.panels` | 右栏面板 + `ctx.ui.openPanel` / `toast` / `panelEvent`（面板） |
 | `ui.widgets` | 桌面 / 提示条小组件 + `invokeWidget` + `panelEvent`（小组件） |
@@ -154,6 +154,9 @@ interface PluginContext {
     }): Promise<{ status: number; headers: Record<string, string>; body: string }>
   }
   notify(input: { title: string; body: string }): Promise<boolean>
+  banner(input: {
+    title: string; body: string; speak?: boolean; sound?: boolean
+  }): Promise<boolean>
   log(level: 'debug' | 'info' | 'warn' | 'error', message: string, detail?: unknown): void
   emitEvent(name: string, payload?: unknown): Promise<void>
   ui: {
@@ -169,6 +172,9 @@ interface PluginContext {
 - 长任务要监听 `ctx.signal`，宿主取消时会 abort；
 - 存储键 1–128 位 `[a-zA-Z0-9_.:-]`；超配额回 `E_PLUGIN_INVALID_ARGS`；
 - `emitEvent` 只允许清单里声明过的事件名。
+- **`ctx.notify` 与 `ctx.banner` 是两条独立通道**：前者走系统通知中心，后者在屏幕顶端弹
+  流光 + 置顶卡片（可选朗读 / 提示音）。两者都归 `notifications` 权限；`banner` 返回 `false`
+  表示没显示（同内容去重合并 / 队列满 / 窗口不可用），**不是错误**，不要重试。
 
 ### 4.2 返回值与超时
 

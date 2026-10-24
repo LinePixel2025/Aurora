@@ -63,6 +63,8 @@ export * from './tools/office.js'
 export * from './tools/web-fetch.js'
 export * from './tools/clipboard.js'
 export * from './tools/notify.js'
+// 流光提醒（2026-10-24，docs/06 §14）：`notify_banner` —— 与系统通知并列的第二条提醒通道。
+export * from './tools/banner-notify.js'
 // 右栏成果展示（2026-10-03，docs/06 §14）：`show_preview` —— 同一条端口注入套路。
 export * from './tools/preview.js'
 // 内置浏览器工具组（v35，docs/06 §27）：网页测试；Electron webview 驱动由主进程端口注入。

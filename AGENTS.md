@@ -88,15 +88,16 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   再细一级 `$env:AURORA_CAPTURE_ONLY='<PNG 名子串>'`（逗号分隔，特殊值 `failed` = 只重跑上次没过的）。
   **张数与构成以 `report.json` 为准；「截了没有」只看日志 count 与报告，退出码 0 不等于截到了**；
   ⚠️ 筛选跑会产生假 FAIL（看到 FAIL 先问"是不是筛选跑的"，再用全量确认）。userData 自动隔离。规则见 docs/07 §5.3。
-  当前基线（2026-10-24 实测）：**全量 108 条 checks**（四窗 98 + 插件配置窗口 1 + onboarding 6 +
-  memory/awareness-glow 3 + 小组件 / 推送 3）。四窗 98 含 v36 插件场景 `chat-plugin-panel` /
+  当前基线（2026-10-24 实测）：**全量 110 条 checks**（四窗 98 + 插件配置窗口 1 + onboarding 6 +
+  memory/awareness-glow 3 + 小组件 / 推送 3 + 流光提醒 2：`banner-card` / `banner-glow`）。
+  四窗 98 含 v36 插件场景 `chat-plugin-panel` /
   `chat-plugin-page` / `settings-plugins-installed` / `settings-plugins-detail`（设置列表 + 配置入口）/
   `settings-plugins-marketplace`、设置页 `settings-plugins`、v37 新增的 `settings-llm-default`
   （AI 模型页默认模型下拉）与 `plugin-config`（独立插件配置窗口）。
   桌面 widget 窗口不在 `WindowName` 里，走 `captureWindows` 的 `widgetWindow` 现取。
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 108 条：
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 110 条：
   `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config'`（99 checks，仅
   `chat-model-picker` 红）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
@@ -212,6 +213,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **插件事件自动化有防自激守卫**：同一 `(pluginId, event)` 在自动化执行期间的重入会被忽略；
   不要移除 `AutomationEngine.pluginEventsInFlight`（否则动作里再 emit 会无限递归）。
 - **插件进程不是 OS 沙箱**：文档 / 安装弹窗必须如实写「安装即信任」；不要宣称隔离。
+- **流光提醒是两扇内部窗口**（`banner-glow` 整屏穿透 + `banner-card` 可点）：都由
+  `WindowManager.showBanner()` 建/显，不在 `WINDOW_NAMES`、不写几何持久化；**窗口矩形必须等于卡片 + 12px
+  外边距**（透明 ≠ 穿透，多出来的区域就是死区）；三个来源（`notify_banner` / `ctx.banner` / `ask_user`）
+  只能走 `BannerService.show()`，别在别处再写一套排队 / 去重；卡片类名与关键帧用 `banner-*`，
+  不要复用 `awareness-glow` 的名字（截图探针按 `animationName` 断言，会互相误命中）。
 - `agent-core` / `modes` 仍不得 import electron；插件相关的 Electron 代码只在
   `apps/desktop/src/main` 与 `main/plugins/`。
 
@@ -223,7 +229,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - 提示条可穿透性（`setIgnoreMouseEvents`）未接入；`general.language` 是死字段（Schema 保留仅为兼容旧配置）。
 - **service-dock（v4）/ mini-chat（v6）已移除**；「关闭」= 隐藏窗口（流式回复不中止），别按旧窗口心智模型理解。
 - 未配置 STT provider 时麦克风按钮**根本不渲染**（不是 disabled）；TTS「朗读」同款口径。
-- **门控口径两组相反**：扩展工具六件套（`web_fetch` / `notify_user` / `clipboard_*` / `generate_image` / `show_preview`）**不受** `agent.tools.enabled`；
+- **门控口径两组相反**：扩展工具八件套（`web_fetch` / `notify_user` / `notify_banner` / `clipboard_*` / `generate_image` / `show_preview` / `show_image`）**不受** `agent.tools.enabled`；
   电脑操控工具（含 `edit_file` / Office / `grep` / `glob`）**受**总开关与子开关门控；`todo_*` / `task` 不受门控。
 - **Agent 内置浏览器不接管 `target="_blank"` 弹窗**：页面自己开的窗口仍按普通用户标签打开，Agent 不操作它；需要继续就对该 URL 重新 `browser_open`。
 - 办公文件（docx / xlsx / pptx）已有 `office_read/help/create/edit/render/pdf/raw_edit` 专用工具：

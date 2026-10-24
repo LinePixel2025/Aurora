@@ -96,6 +96,7 @@ import { compatUserAgent } from './composables/compatUserAgent.js'
 import { appendProject, pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { usePluginsStore } from '../shared/plugins-store.js'
+import { isTtsConfigured } from '../shared/tts-config.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
 import { ArrowUp, Mic, PanelLeft, Trash2 } from '@aurora/shared/browser'
@@ -1300,18 +1301,11 @@ const tts = useTts()
  * 当前是否「可朗读」——朗读按钮出不出现的**唯一**口径（docs/06 §13）。
  * 四个条件缺一不可：总开关打开、`tts.active` 指向一个存在的 provider、
  * 且该 provider 的 `baseUrl` / `model` / `voice` 都填了。没配置时按钮**根本不渲染**。
+ *
+ * 判据本身在 `shared/tts-config.ts`：流光提醒的语音播报用的是**同一份**，
+ * 别在这里再摊开一次（两处判据必然漂移成「按钮出现但点了没反应」）。
  */
-const ttsReady = computed<boolean>(() => {
-  const settings = settingsStore.settings
-  if (!settings) return false
-  const { enabled, active, providers } = settings.tts
-  if (!enabled || active === '') return false
-  const provider = providers[active]
-  if (provider === undefined) return false
-  return (
-    provider.baseUrl.trim() !== '' && provider.model.trim() !== '' && provider.voice.trim() !== ''
-  )
-})
+const ttsReady = computed<boolean>(() => isTtsConfigured(settingsStore.settings?.tts))
 
 /** 是否展示思考过程（MessageList 思考折叠块的唯一门控；配置缺失时默认开） */
 const showThinking = computed<boolean>(

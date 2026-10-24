@@ -85,6 +85,11 @@ export interface PluginManagerOptions {
   onPanelEvent?: (event: PluginPushEvent) => void
   /** 系统通知（notifications 权限） */
   notify?: (input: { title: string; body: string }) => boolean
+  /**
+   * 流光提醒（notifications 权限，docs/07 §2.2.3）：与 `notify` 并列的第二条通道。
+   * 返回 false = 没显示（去重 / 队列满 / 窗口不可用），不是异常。
+   */
+  banner?: (input: { title: string; body: string; speak?: boolean; sound?: boolean }) => boolean
   /** 出网 fetch（走主进程的代理链） */
   resolveFetch?: () => typeof fetch | undefined
 }
@@ -1337,6 +1342,20 @@ export class PluginManager {
       const title = typeof raw['title'] === 'string' ? raw['title'].slice(0, 120) : ''
       const body = typeof raw['body'] === 'string' ? raw['body'].slice(0, 800) : ''
       const shown = this.options.notify?.({ title: title || entry.manifest.name, body }) ?? false
+      return shown
+    }
+    // 流光提醒：权限、截断、缺省标题都与 `notify` 逐字一致（同一族通道不该有两套口径）
+    if (method === PLUGIN_CLIENT_CALLS.banner) {
+      this.requirePermission(entry, 'notifications')
+      const title = typeof raw['title'] === 'string' ? raw['title'].slice(0, 120) : ''
+      const body = typeof raw['body'] === 'string' ? raw['body'].slice(0, 800) : ''
+      const shown =
+        this.options.banner?.({
+          title: title || entry.manifest.name,
+          body,
+          ...(typeof raw['speak'] === 'boolean' ? { speak: raw['speak'] } : {}),
+          ...(typeof raw['sound'] === 'boolean' ? { sound: raw['sound'] } : {}),
+        }) ?? false
       return shown
     }
 

@@ -46,6 +46,17 @@ export interface AskUserServiceOptions {
   logger: Logger
   timeoutMs?: number
   now?: () => number
+  /**
+   * 卡片弹出前的**旁路播报**（2026-10-24 流光提醒）：典型实现是在交互窗不在前台时
+   * 发一条 `BannerService.show()`，让用户不至于错过一次提问。
+   *
+   * 三条约束（都在调用方实现里守）：
+   * - 它**不参与结算**：抛错只记 warn，绝不影响提问本身（提问端口必须保证会返回）；
+   * - 它跑在 `present()` **之前**：`present()` 会把交互窗拉到前台，之后再判「窗口是否在前台」
+   *   就永远是 true（提醒等于不发）；
+   * - 是否播报由调用方判定（窗口焦点 / 用户设置），本服务不认识窗口。
+   */
+  announce?: (request: AskUserCardRequest) => void
 }
 
 export interface AskUserService {
@@ -198,6 +209,16 @@ export function createAskUserService(options: AskUserServiceOptions): AskUserSer
               error: error instanceof Error ? error.message : String(error),
             })
           }
+        }
+        // 旁路播报（流光提醒）必须在 present() 之前：那一步会把交互窗拉到前台。
+        // 抛错只降级 —— 一条提醒发不出去，不能把「等回答」这件事一起带崩。
+        try {
+          options.announce?.(request)
+        } catch (error) {
+          options.logger.warn('提问的流光提醒失败（不影响提问）', {
+            requestId,
+            error: error instanceof Error ? error.message : String(error),
+          })
         }
         options.present()
       })

@@ -12,7 +12,8 @@
  *   （docs/06 §11）；
  * - `registerSettingsTool`：`set_setting` 与 `set_appearance`（v32 的外观三件套入口），
  *   两者都不受门控（docs/06 §12）；
- * - `registerExtensionTools`：扩展工具七件套（含 `show_preview` / `show_image`），不受门控（docs/06 §14）；
+ * - `registerExtensionTools`：扩展工具八件套（含 `show_preview` / `show_image` / `notify_banner`），
+ *   不受门控（docs/06 §14）；
  * - `registerImageTools`：图像工具（看图 / 截屏 / 读剪贴板图片），**按模型能力注册** ——
  *   当前生效模型没开图片输入就一个都不注册（docs/06 §25）；
  * - `registerAgentCoreTools`：todo_write / todo_read / task / ask_user，不受门控（docs/06 §18/§19/§21）
@@ -47,6 +48,7 @@ import {
   createFileTools,
   createImageGenTool,
   createShowImageTool,
+  createBannerNotifyTool,
   createNotifyTool,
   createOfficeTools,
   createOpenTool,
@@ -66,6 +68,7 @@ import {
   type AgentProviderFactory,
   type AskUserPort,
   type BrowserSessionPort,
+  type BannerNotifyPort,
   type CenterPort,
   type ClipboardImagePort,
   type ClipboardPort,
@@ -344,6 +347,7 @@ export const EXTENSION_TOOL_NAMES = [
   'clipboard_read',
   'clipboard_write',
   'notify_user',
+  'notify_banner',
   'generate_image',
   'show_preview',
   'show_image',
@@ -358,6 +362,8 @@ export interface ExtensionToolsDeps {
   clipboard: ClipboardPort
   /** 系统通知端口（`notify_user`，main/tools/notify.ts → NotificationService） */
   notify: NotifyPort
+  /** 流光提醒端口（`notify_banner`，main/tools/banner-notify.ts → BannerService） */
+  banner: BannerNotifyPort
   /** 生图端口（`generate_image`，main/tools/imagegen-port.ts → ImageGenService） */
   imageGen: ImageGenPort
   /** 对话图片端口（`show_image`，main/tools/image-display-port.ts） */
@@ -380,6 +386,9 @@ export interface ExtensionToolsRegistry {
  * （`clipboard_read` / `clipboard_write` / `generate_image`）由工具自身的
  * `sensitivity: 'confirm'` 逐次过用户确认。
  *
+ * `notify_banner`（2026-10-24）与 `notify_user` 同级、同为 `safe`：它只是把一条提醒
+ * 显示在屏幕顶端（流光 + 置顶卡片），不碰文件与系统状态，去重 / 排队都在 `BannerService` 里。
+ *
  * `show_preview`（2026-10-03）是这一族里唯一**推事件给渲染层**的：本地文件目标
  * 必须落在会话边界根之内（校验在 `preview-port.ts`），推送通道走 `preview:show`。
  */
@@ -398,6 +407,7 @@ export function registerExtensionTools(deps: ExtensionToolsDeps): ExtensionTools
         deps.tools.register(tool)
       }
       deps.tools.register(createNotifyTool({ port: deps.notify }))
+      deps.tools.register(createBannerNotifyTool({ port: deps.banner }))
       deps.tools.register(createImageGenTool({ port: deps.imageGen }))
       deps.tools.register(createShowPreviewTool({ port: deps.preview }))
       deps.tools.register(createShowImageTool({ port: deps.imageDisplay }))

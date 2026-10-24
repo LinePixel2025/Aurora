@@ -208,6 +208,16 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
   HTTP 模式下 `POST <端点 origin>/notify`，出网走 `main/net.ts` 的 `netFetch`
   （因此 `advanced.proxy` 生效）。实现见 `main/classisland.ts` 的 `ClassIslandNotifier`；
   契约细节见 `05 §3.4 v3`。
+- **流光提醒通道（2026-10-24，docs/07 §2.2.3）**：独立于系统通知（`NotificationService`）与
+  ClassIsland 提醒的第三条提醒通道 —— 屏幕顶端流光 + 置顶卡片。
+  `banner:show`（主进程 → banner 渲染层，推送，on/off 成对）携带 `BannerShowPayload`
+  （`id` / `title` / `body` / 已解算的 `speak` / `sound` / `durationMs` / `level`）；
+  `banner:dismiss`（渲染层 → 主进程，invoke）带回本次展示的 `id`，主进程**只认当前那一条**
+  （迟到 / 重复回执返回 `dismissed: false`，否则上一张卡片的超时回执会关掉刚弹出的新卡片）。
+  三个来源（Agent 工具 `notify_banner`、插件 `ctx.banner`、`ask_user` 的旁路播报）全部汇聚到
+  主进程 `main/banner.ts` 的 `BannerService.show()`；排队 / 去重 / 超时兜底只在那一处实现。
+  两个内部窗口由 `WindowManager.showBanner()` 驱动（光带窗整屏穿透、卡片窗可点），
+  不经过 `WINDOW_NAMES` 状态机、不写几何持久化。
 - 跨进程类型统一定义于 `packages/shared`；preload 只暴露白名单方法。
 - 事件推送使用 `on/off` 成对暴露，渲染层卸载时自动解绑。
 - **`chat:event` 事件带 `seq` 与 `round`**（2026-09）：`seq` 是会话内单调序号（主进程 `emit`

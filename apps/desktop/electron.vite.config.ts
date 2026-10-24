@@ -15,6 +15,8 @@ const windowEntries = {
   // 插件配置窗口（docs/07 §2.2.2）：设置列表的「配置」入口打开的单例窗口
   'plugin-config': r('src/renderer/plugin-config/index.html'),
   'awareness-glow': r('src/renderer/awareness-glow/index.html'),
+  // 流光提醒（docs/07 §2.2.3）：一个入口两个窗口，`?layer=glow|card` 决定画哪一层
+  banner: r('src/renderer/banner/index.html'),
   // 桌面小组件浮动卡片（docs/14 §5.3）：窗口 URL 带 `?pluginId=&widgetId=`
   widget: r('src/renderer/widget/index.html'),
 }

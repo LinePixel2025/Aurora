@@ -25,6 +25,8 @@ const CHANNELS = {
     openPath: 'app:openPath',
     smokeDiagnostics: 'app:smokeDiagnostics',
     smokeDropFile: 'app:smokeDropFile',
+    // 仅开发态自测（流光提醒窗口可见性）：与 shared 契约同构，双向断言兜住
+    smokeBanner: 'app:smokeBanner',
   },
   settings: {
     get: 'settings:get',
@@ -177,6 +179,12 @@ const CHANNELS = {
   askUser: {
     request: 'askUser:request',
     answer: 'askUser:answer',
+  },
+  // 流光提醒（docs/07 §2.2.3）：show 是主→渲染推送，dismiss 是渲染→主回执
+  banner: {
+    show: 'banner:show',
+    dismiss: 'banner:dismiss',
+    measure: 'banner:measure',
   },
   mcp: {
     status: 'mcp:status',

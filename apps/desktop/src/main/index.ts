@@ -75,6 +75,7 @@ import {
   type CenterSessionHistoryMessage,
   type Result,
   type AutomationRun,
+  type BannerDiagnostics,
   type ClassIslandStatus,
   type ClassIslandTestResult,
   type Logger,
@@ -179,6 +180,8 @@ import {
   ASK_USER_CAPTURE_QUESTION,
   AWARENESS_GLOW_CAPTURE_CHECK,
   AWARENESS_GLOW_SETTLE_ACT,
+  BANNER_CARD_CAPTURE_CHECK,
+  BANNER_GLOW_CAPTURE_CHECK,
   captureWindows,
   CHAT_AUTO_TITLE_CHECK,
   CHAT_TRACE_FOLD_CHECK,
@@ -259,6 +262,9 @@ import { visionEnabled } from './vision.js'
 import { prepareAttachments, type AttachmentDigest } from './attachment-prepare.js'
 import { selectExpiredFiles } from './tools/image-store.js'
 import { createNotificationPort } from './tools/notify.js'
+// 流光提醒（docs/07 §2.2.3）：Agent 工具 `notify_banner` 的端口 + 主进程服务
+import { createBannerNotifyPort } from './tools/banner-notify.js'
+import { BannerService } from './banner.js'
 import { createImageGenPort } from './tools/imagegen-port.js'
 import { createImageDisplayPort } from './tools/image-display-port.js'
 // 右栏成果展示（`show_preview`，docs/06 §14）：目标校验 + 推送到 chat 窗口
@@ -421,6 +427,12 @@ let fileAwarenessAnalyzer: FileAwarenessAnalyzer | undefined
 let agentActivityDetach: (() => void) | undefined
 const activeAgentRequests = new Set<string>()
 let notifications: NotificationService | undefined
+/**
+ * 流光提醒（docs/07 §2.2.3）：屏幕顶端流光 + 置顶卡片。
+ * 三个来源（Agent `notify_banner` / 插件 `ctx.banner` / `ask_user`）共用一个实例，
+ * 排队与去重因此只有一份实现。
+ */
+let bannerService: BannerService | undefined
 let proactiveScheduler: ProactiveScheduler | undefined
 // 自动化引擎（docs/13）：定义与历史存 `<userData>/automations/`，内置课前提醒由引擎承接
 let automationStore: AutomationStore | undefined
@@ -1019,6 +1031,17 @@ async function bootstrap(): Promise<void> {
     backgroundThrottling: !smokeMode,
   })
 
+  // 4.1 流光提醒（docs/07 §2.2.3）：Agent 工具 / 插件 / `ask_user` 三条来源共用的通道。
+  //     在这里（`ask_user` 与插件装配**之前**）建：两者的旁路播报都按调用时点取它，
+  //     顺序反了会拿到 undefined，表现为「提问时永远不弹提醒」。
+  //     `speak` 缺省跟随 TTS 配置，判据复用 `voiceReadiness`（与 Center 语音能力位同一份）。
+  bannerService = new BannerService({
+    logger: logger.child('banner'),
+    present: (payload) => windows?.showBanner(payload) ?? false,
+    hide: () => windows?.hideBanner(),
+    speakDefault: () => voiceReadiness(settings!.get()).tts,
+  })
+
   // 5. Skill 注册表（内置 skills/ + 用户技能目录）
   //    用户目录来自 `skills.userDir`（空串回落 `userData/skills`）——在此之前该配置项
   //    只是个死字段，运行时永远读 `userData/skills`（docs/08 §6）。
@@ -1143,6 +1166,9 @@ async function bootstrap(): Promise<void> {
         })
     },
     notify: (input) => notifications?.notify(input) ?? false,
+    // 插件 `ctx.banner`（docs/07 §2.2.3）：与 Agent 工具走**同一个** BannerService，
+    // 排队 / 去重 / 降级因此不会出现两套行为。返回 false = 没显示（不是异常）。
+    banner: (input) => bannerService?.show(input, { source: 'plugin' }).ok ?? false,
     resolveFetch: () => netFetch,
     // 插件主动推送（`ctx.ui.panelEvent`）：桌面小组件走自己的窗口，其余走对应渲染窗口。
     // 同一事件只投给发起插件自己的目标（manager 已校验归属）。
@@ -1514,6 +1540,14 @@ async function bootstrap(): Promise<void> {
     notify: createNotificationPort({
       notify: (request) => notifications?.notify(request) ?? false,
     }),
+    // `notify_banner`（2026-10-24）：流光提醒端口 → BannerService（排队 / 去重 / 降级共用一份）
+    banner: createBannerNotifyPort({
+      show: (request, options) =>
+        bannerService?.show(request, options) ?? { ok: false, reason: '提醒服务尚未就绪' },
+      dismiss: (id) => bannerService?.dismiss(id) ?? { dismissed: false, pending: 0 },
+      diagnostics: () =>
+        bannerService?.diagnostics() ?? { visible: false, pending: 0, shownCount: 0 },
+    }),
     imageGen: createImageGenPort(imageGenService),
     imageDisplay: imageDisplayPort,
     // `show_preview`（2026-10-03）：本地文件边界 / 相对路径基准都按**会话**解析
@@ -1603,6 +1637,28 @@ async function bootstrap(): Promise<void> {
     present: () => {
       windows?.showChat()
       windows?.focus('chat')
+    },
+    /**
+     * 提问的**流光提醒**（2026-10-24，docs/07 §2.2.3）：交互窗不在前台时才补一条 ——
+     * 用户正看着提问卡时再弹一条纯属重复打扰。
+     *
+     * 这个回调在 `present()` **之前**执行，所以读到的是「窗口是否本来就在前台」；
+     * 放在 `present()` 之后就永远是 true（它刚把窗口拉到前台），提醒等于不发。
+     * 不朗读（`speak: false`）：提问需要用户读题并作答，语音念一遍反而拖慢。
+     */
+    announce: (request) => {
+      if (windows?.isVisible('chat') === true && windows.isFocused('chat')) return
+      bannerService?.show(
+        {
+          title: request.header ?? 'Aurora 提问',
+          body: request.question,
+          speak: false,
+          sound: true,
+          // 同一次提问只提醒一次；超时重建的 requestId 不同，不会误合并
+          dedupeKey: `ask:${request.requestId}`,
+        },
+        { source: 'ask' },
+      )
     },
   })
   const centerCatalogCacheFile = join(userData, 'center-model-services.json')
@@ -2777,6 +2833,9 @@ async function bootstrap(): Promise<void> {
     // Agent 向用户提问（docs/06 §21）：`ask:answer` 回执 + `askUser:request` 推送。
     // 与内核端口是**同一个实例**（见 askUserService 的声明处注释）。
     ...(askUserService === undefined ? {} : { askUser: askUserService }),
+    // 流光提醒（docs/07 §2.2.3）：渲染层只有 `banner:dismiss` 一条回执，推送由服务的
+    // `present` 直接驱动窗口，不经过 IPC 层（少一层"推给谁"的判定）。
+    ...(bannerService === undefined ? {} : { banner: bannerService }),
     hotkey: hotkeys,
     // 写前快照（docs/06 §11.8）：ipc 的 snapshots:* 三条通道用它；配置变了由 ensureSnapshotPort 换实例
     jobs: jobStore,
@@ -2887,7 +2946,24 @@ async function bootstrap(): Promise<void> {
       preClassFired: smokeMode ? [...preClassFired] : undefined,
       automationRuns: smokeMode ? [...automationRunLog] : undefined,
       widgetWindows: smokeMode ? widgetManager?.diagnostics() : undefined,
+      // 流光提醒：服务队列 + 两个原生窗口的真实可见性（自测断言「show 后可见 / dismiss 后不可见」）
+      banner: smokeMode ? bannerDiagnostics() : undefined,
     }),
+    // 仅自测：`app:smokeBanner` 的触发器（窗口可见性由上面的 diagnostics 读回）
+    smokeBanner: (action) => smokeBannerAction(action),
+    /**
+     * 卡片内容高度上报（`banner:measure`）。
+     *
+     * 有正在显示的那一条时**只认它的 id** —— 迟到的上报（上一条量完时新的已经顶上来了）
+     * 会被丢掉，否则新卡片会按旧高度被裁切。
+     * 没有正在显示的（截图预览 / `?preview=1`）时只做高度钳制：那时页面上只有预览卡片，
+     * 不存在"把别的卡片量歪"的风险。
+     */
+    bannerCardResize: (request) => {
+      const current = bannerService?.currentId() ?? ''
+      if (request.id !== '' && current !== '' && request.id !== current) return false
+      return windows?.resizeBannerCard(request.height) ?? false
+    },
     onQuit: () => app.quit(),
     // 附件提取（docs/07 §2.3）：与 Center 远程附件共用 `extractAttachmentDigest`
     //（复用分类管线的提取器，走 utilityProcess 池以免一个几十 MB 的 PDF 卡住主进程）。
@@ -3292,6 +3368,53 @@ async function runCapture(dir: string): Promise<void> {
         act: SETTINGS_AWARENESS_RECORDS_ACT,
         check: SETTINGS_AWARENESS_RECORDS_CHECK,
       },
+      // 流光提醒（docs/07 §2.2.3，2026-10-24）：两个内部窗口各截一张 —— 它们职责不同
+      // （卡片可点 / 光带穿透），合不到一张图里；`preview=1` 让页面渲染固定的示例内容，
+      // 不依赖 BannerService（截图不该被"排队里还有几条"影响）。
+      {
+        name: 'banner-card',
+        file: 'banner-card.png',
+        query: { layer: 'card', preview: '1' },
+        check: BANNER_CARD_CAPTURE_CHECK,
+        nativeCheck: () => {
+          const card = manager.getBannerDiagnostics().card
+          return {
+            // 卡片窗：可见、置顶、不抢焦点（用户可能正在打字）
+            pass:
+              card.exists && card.visible && card.alwaysOnTop === true && card.focused === false,
+            ...card,
+          }
+        },
+      },
+      {
+        name: 'banner-glow',
+        file: 'banner-glow.png',
+        query: { layer: 'glow', preview: '1' },
+        check: BANNER_GLOW_CAPTURE_CHECK,
+        nativeCheck: () => {
+          const state = manager.getBannerDiagnostics().glow
+          const target = manager.getBannerGlowTargetBounds()
+          const bounds = state.bounds
+          // 覆盖整块显示器（与自感知流光同一条几何口径：用 bounds 而不是 workArea）
+          const coversDisplay =
+            bounds !== undefined &&
+            bounds.x <= target.x &&
+            bounds.y <= target.y &&
+            bounds.x + bounds.width >= target.x + target.width &&
+            bounds.y + bounds.height >= target.y + target.height
+          return {
+            pass:
+              state.exists &&
+              state.visible &&
+              state.alwaysOnTop === true &&
+              state.mousePassthrough &&
+              coversDisplay,
+            coversDisplay,
+            targetBounds: `${target.x},${target.y},${target.width},${target.height}`,
+            ...state,
+          }
+        },
+      },
     ],
     process.env['AURORA_CAPTURE_WINDOWS'],
     captureOnly,
@@ -3592,6 +3715,19 @@ async function runSmokeTest(userData: string): Promise<void> {
   )
   record('第二次请求带回了 tool 结果', stub.sawToolResult(), '')
   record('请求携带了工具清单（use_skill 已注册）', stub.sawTools(), '')
+  // 流光提醒的 Agent 入口（docs/07 §2.2.3）：工具表里必须有 `notify_banner`。
+  // 这里读的是**桩服务真实收到的请求体**（模型看到什么就是什么），而不是主进程的注册列表 ——
+  // 「注册了但没进请求」正是工具名过滤 / 门控这类改动最容易漏的中间层。
+  {
+    const allTools = stub
+      .getRecordedRequests()
+      .flatMap((request) => request.tools.map((tool) => String(tool.function?.name ?? '')))
+    record(
+      '工具清单里含 notify_banner（流光提醒）',
+      allTools.includes('notify_banner'),
+      `${allTools.length} 个工具`,
+    )
+  }
   // 分类管线确实调用过模型（低置信文件走了 LLM 分支）
   record(
     '分类管线调用过模型（结构化输出）',
@@ -6041,6 +6177,8 @@ async function shutdown(): Promise<void> {
   extractPool?.close()
   awarenessExtractPool?.close()
   officePool?.close()
+  // 流光提醒先收尾：清掉兜底定时器与队列，退出过程中不再操作已经开始销毁的窗口
+  bannerService?.dispose()
   // 会话与任务清单必须在退出前收尾（docs/06 §4 / §18，同一套防抖 + flush 约定）
   skillsService?.stopWatching()
   // 插件子进程先停（拒绝在途 RPC、释放句柄），再继续落盘
@@ -6452,8 +6590,51 @@ function notify(title: string, body: string, openPath?: string): void {
   notifications.notify({ title, body, ...(openPath === undefined ? {} : { openPath }) })
 }
 
-/** 系统通知载体（docs/05 §3.3）。展示失败返回 false，由 NotificationService 记日志降级。 */
-function createNotificationPresenter(): (request: {
+/**
+ * 流光提醒的运行态（仅开发自测）：服务侧队列 + 两个内部窗口的**原生**可见性。
+ *
+ * 为什么两者都读：服务说「有一条正在显示」与窗口真的可见是两件事 ——
+ * 窗口没建起来 / 建了但没 show 时，只看服务字段会给出假绿。
+ */
+function bannerDiagnostics(): BannerDiagnostics {
+  const service = bannerService?.diagnostics() ?? { visible: false, pending: 0, shownCount: 0 }
+  const state = windows?.getBannerDiagnostics()
+  return {
+    ...service,
+    cardVisible: state?.card.visible === true,
+    glowVisible: state?.glow.visible === true,
+  }
+}
+
+/**
+ * 仅开发自测：手动推一条 / 收一条流光提醒（`IPC.app.smokeBanner`）。
+ *
+ * 三个真实入口都不适合当自测触发器（Agent 要跑一整轮模型、插件要装包、提问要等 3 分钟），
+ * 因此留这一个受 `smokeMode` 保护的口子，只验证「show → 两扇窗可见 → dismiss → 都不可见」。
+ */
+function smokeBannerAction(action: 'show' | 'dismiss'): BannerDiagnostics {
+  if (bannerService !== undefined) {
+    if (action === 'show') {
+      bannerService.show(
+        {
+          title: '流光提醒自测',
+          body: '这是一条仅开发自测可见的提醒。',
+          speak: false,
+          sound: false,
+          // 每次调用换一个 key：自测只该验证显示链路，不该被去重挡住
+          dedupeKey: `smoke:banner:${Date.now()}`,
+        },
+        { source: 'smoke' },
+      )
+    } else {
+      const id = bannerService.currentId()
+      if (id !== '') bannerService.dismiss(id)
+    }
+  }
+  return bannerDiagnostics()
+}
+
+/** 系统通知载体（docs/05 §3.3）。展示失败返回 false，由 NotificationService 记日志降级。 */ function createNotificationPresenter(): (request: {
   title: string
   body: string
   openPath?: string

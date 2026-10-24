@@ -10,6 +10,8 @@ export const IPC = {
     smokeDiagnostics: 'app:smokeDiagnostics',
     /** 仅开发态自测用：把文件放进感知文件夹，触发真实的 chokidar add 事件 */
     smokeDropFile: 'app:smokeDropFile',
+    /** 仅开发态自测用：推一条 / 收一条流光提醒（验证窗口可见性，不影响真实来源） */
+    smokeBanner: 'app:smokeBanner',
   },
   settings: {
     get: 'settings:get',
@@ -243,6 +245,19 @@ export const IPC = {
   askUser: {
     request: 'askUser:request',
     answer: 'askUser:answer',
+  },
+  /**
+   * 流光提醒（Banner Notification，docs/07 §2.2.3）：独立于系统通知（`NotificationService`）
+   * 与 ClassIsland 提醒的第三条通道 —— 屏幕顶点流光 + 置顶卡片。
+   *
+   * `show` 是主进程 → banner 渲染层的推送（on/off 成对），`dismiss` 是渲染层 → 主进程的
+   * 关闭回执（invoke，带本次展示的 id，主进程据此丢弃迟到回执）。
+   */
+  banner: {
+    show: 'banner:show',
+    dismiss: 'banner:dismiss',
+    /** 渲染层上报卡片内容高度（窗口必须与卡片同大，不能靠字符数估算） */
+    measure: 'banner:measure',
   },
   mcp: {
     status: 'mcp:status',

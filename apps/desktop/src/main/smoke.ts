@@ -189,6 +189,36 @@ export function smokeScript(
     const appearanceRestored = expectOk('settings.update(appearance 还原)', await window.aurora.settings.update({ appearance: { theme: 'system', glass: true, awarenessGlow: true } }))
     record('外观已还原（主题跟随系统 / 毛玻璃开 / 流光开）', Boolean(appearanceRestored) && appearanceRestored.appearance.theme === 'system' && appearanceRestored.appearance.glass === true && appearanceRestored.appearance.awarenessGlow === true && document.documentElement.getAttribute('data-glass') === 'on', appearanceRestored ? JSON.stringify(appearanceRestored.appearance) : '')
 
+    // 2.2 流光提醒（2026-10-24，docs/07 §2.2.3）：独立于系统通知与 ClassIsland 提醒的第三条通道。
+    //     真实来源（Agent 工具 / 插件 / 提问）都不适合当自测触发器，因此走 app:smokeBanner
+    //     这个仅开发自测的口子；断言的是「默认不显示 → show 后两扇窗真的可见 → dismiss 后都不可见」
+    //     这一段真链路（窗口可见性渲染层读不到，只能由主进程诊断回报）。
+    {
+      const readBanner = async () => {
+        const result = await window.aurora.app.getSmokeDiagnostics()
+        return result && result.ok ? result.value.banner : undefined
+      }
+      const before = await readBanner()
+      record('流光提醒默认不显示', before !== undefined && before.visible === false && before.cardVisible === false && before.glowVisible === false, JSON.stringify(before))
+
+      const shown = await window.aurora.app.smokeBanner('show')
+      const shownDiag = shown && shown.ok ? shown.value : undefined
+      const visible = await waitFor(
+        readBanner,
+        (value) => Boolean(value && value.visible === true && value.cardVisible === true && value.glowVisible === true),
+        4000,
+      )
+      record('smokeBanner(show) 后卡片窗与光带窗都可见', Boolean(visible && visible.visible === true && visible.cardVisible === true && visible.glowVisible === true), JSON.stringify(visible ?? shownDiag))
+
+      const dismissed = await window.aurora.app.smokeBanner('dismiss')
+      const hidden = await waitFor(
+        readBanner,
+        (value) => Boolean(value && value.visible === false && value.cardVisible === false && value.glowVisible === false),
+        4000,
+      )
+      record('smokeBanner(dismiss) 后两扇窗都不可见', Boolean(hidden && hidden.visible === false && hidden.cardVisible === false && hidden.glowVisible === false), JSON.stringify(hidden ?? (dismissed && dismissed.ok ? dismissed.value : undefined)))
+    }
+
     // 3. 模型配置由主进程在启动自测前写入（指向本地桩 LLM），这里只做读写/脱敏断言：
     //    若在此处再写一次 baseUrl，会把桩服务地址覆盖成真实服务，导致对话断言失败。
     const update = expectOk('settings.update(llm)', await window.aurora.settings.update({

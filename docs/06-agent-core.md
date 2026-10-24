@@ -1643,7 +1643,7 @@ Content-Type: application/json
   的非实时路径；`output.audio.url` 的 24h 有效期对朗读场景（拿到即播）绰绰有余，
   Aurora 不做音频缓存。
 
-## 14. 扩展工具七件套（v0.0.1；`show_preview` / `show_image` 后续补入）
+## 14. 扩展工具八件套（v0.0.1；`show_preview` / `show_image` / `notify_banner` 后续补入）
 
 v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/betav2-spec.md §6.2），
 2026-10-03 起加 `show_preview`（把成果展示到桌面右栏的预览面板，见 07 §2.3 的
@@ -1662,6 +1662,7 @@ v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/b
 | `clipboard_read` () | `ClipboardPort.read()` | `createElectronClipboardPort`（Electron `clipboard.readText`） | **confirm**（隐私） |
 | `clipboard_write` {text} | `ClipboardPort.write(text)` | 同上（`clipboard.writeText`） | **confirm** |
 | `notify_user` {title, body} | `NotifyPort.show(title, body)` | `createNotificationPort`（映射到 `NotificationService.notify`，复用去重 / 点击打开 / 日志） | safe |
+| `notify_banner` {title, body, speak?, sound?} | `BannerNotifyPort.show({title, body, speak?, sound?})` | `createBannerNotifyPort` → `BannerService.show`（屏幕顶端流光 + 置顶卡片；排队 / 去重 / 超时兜底都在服务里） | safe |
 | `generate_image` {prompt, size?} | `ImageGenPort.generate({prompt, sessionId, size?})` | `createImageGenPort` → `ImageGenService`（§15） | **confirm**（花 API 费用） |
 | `show_preview` {target, title?} | `PreviewPort.show(target, {sessionId, title})` | `createPreviewPort`（目标校验 + 推送到 chat 窗口；URL 去向遵守 `urlMode`） | safe |
 | `show_image` {path, caption?} | `ImageDisplayPort.prepareImage(...)` | `createImageDisplayPort`（格式 / 大小 / 会话边界校验 + 图片元数据） | safe |
@@ -1684,6 +1685,11 @@ v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/b
   先按名字全量摘除再重建，与电脑操控工具同一拍热生效。
 - 敏感动作不靠开关、靠确认：`clipboard_read` / `clipboard_write` / `generate_image` 都是
   `sensitivity: 'confirm'`，每次调用过 §5 的 `confirmTool`（§9.1 的确认卡片）。
+- **`notify_user` 与 `notify_banner` 是两条并列的提醒通道**（2026-10-24）：前者走系统通知中心，
+  后者在屏幕顶端弹流光 + 置顶卡片（可选朗读 / 提示音）。两者都 `safe`、都不受门控；
+  谁也不能降级成对方（关掉系统通知时流光提醒照样可用）。`notify_banner` 的失败是**业务结果**
+  （去重合并 / 队列满 / 窗口不可用），回填给模型的是原因而不是异常；去重时还会明确告诉模型
+  「不用重试」。卡片渲染、朗读与窗口口径见 07 §2.2.3。
 - 内置浏览器工具组（§27，v35）**与本节同级**注册：`registerBrowserTools` 同样由
   `syncToolRegistries()` 全量重建、热生效；它也不受 `agent.tools.enabled` 门控，门控条件是
   `agent.browser.enabled === true` 且 `agent.permissionMode !== 'readonly'`（关闭时整组注销并

@@ -109,6 +109,8 @@ export const PLUGIN_CLIENT_CALLS = {
   storageList: 'storage.list',
   netFetch: 'net.fetch',
   notify: 'notify',
+  /** 流光提醒（2026-10-24，docs/07 §2.2.3）：与 `notify` 同属 `notifications` 权限 */
+  banner: 'banner',
   log: 'log',
   emitEvent: 'emitEvent',
   openPanel: 'ui.openPanel',
@@ -219,6 +221,14 @@ export interface PluginContext {
     }): Promise<{ status: number; headers: Record<string, string>; body: string }>
   }
   notify(input: { title: string; body: string }): Promise<boolean>
+  /**
+   * 流光提醒（2026-10-24，docs/07 §2.2.3）：在屏幕顶端弹一条置顶卡片 + 流光（可选朗读 / 提示音）。
+   *
+   * 与 `ctx.notify`（系统通知中心）是**两条独立通道**，谁也不能降级成对方。
+   * 需要 `notifications` 权限；返回 `false` 表示没显示（去重合并 / 队列满 / 窗口不可用），
+   * 不是异常 —— 插件应把它当"提醒已尽力"而不是重试。
+   */
+  banner(input: { title: string; body: string; speak?: boolean; sound?: boolean }): Promise<boolean>
   log(level: 'debug' | 'info' | 'warn' | 'error', message: string, detail?: unknown): void
   emitEvent(name: string, payload?: unknown): Promise<void>
   ui: {
@@ -265,8 +275,5 @@ export interface PluginModule {
     ctx: PluginContext,
   ): PluginWidgetResult | Promise<PluginWidgetResult>
   onEvent?(event: string, payload: unknown, ctx: PluginContext): void | Promise<void>
-  onConfigChanged?(
-    config: Record<string, unknown>,
-    ctx: PluginContext,
-  ): void | Promise<void>
+  onConfigChanged?(config: Record<string, unknown>, ctx: PluginContext): void | Promise<void>
 }

@@ -148,7 +148,6 @@ describe('createAskUserService', () => {
   })
 })
 
-
 /**
  * 结算通知（本轮，docs/12 §5）：本地作答 / 跳过 / 超时 / 中止都要触发 `onSettle`，
  * 且带上 outcome 与作答 —— Center 网页端靠它把卡片立刻收起（此前只能等自己的倒计时）。
@@ -210,5 +209,28 @@ describe('createAskUserService · 结算通知（onSettle）', () => {
     void service.ask(QUESTION, { sessionId: 'center-abc' })
     service.resolve({ requestId: pushed[0]!.requestId, answers: ['桌面'] })
     expect(outcomes).toEqual([])
+  })
+
+  it('旁路播报（流光提醒）在 present 之前触发，抛错不影响提问', async () => {
+    const order: string[] = []
+    const announced: AskUserRequest[] = []
+    const service = createAskUserService({
+      logger: createNoopLogger(),
+      present: () => order.push('present'),
+      announce: (request) => {
+        order.push('announce')
+        announced.push(request)
+        throw new Error('提醒窗口没建起来')
+      },
+    })
+    const pending = service.ask(QUESTION, { sessionId: 'main' })
+    // 顺序是硬要求：present() 会把交互窗拉到前台，播报判定必须在它之前
+    expect(order).toEqual(['announce', 'present'])
+    expect(announced[0]?.question).toBe(QUESTION.question)
+    expect(announced[0]?.header).toBe('目标目录')
+    const { requestId } = announced[0]!
+    service.resolve({ requestId, answers: ['桌面'] })
+    // 播报抛错不影响提问本身（端口必须保证返回）
+    await expect(pending).resolves.toEqual({ answers: ['桌面'] })
   })
 })

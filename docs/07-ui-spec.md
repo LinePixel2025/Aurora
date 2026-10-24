@@ -161,6 +161,59 @@
 - **锚点**：`plugin-config.page` / `plugin-config.config` / `plugin-config.save` /
   `plugin-config.restart` / `plugin-config.permissions`，截图场景 `plugin-config.png`。
 
+### 2.2.3 流光提醒（Banner Notification）
+
+> 2026-10-24 新增。**独立于**系统通知（`NotificationService` / Electron `Notification`）与
+> ClassIsland 提醒的第三条提醒通道：屏幕顶端出现流光，提醒内容以置顶卡片从流光中浮现。
+
+- **形态（两扇内部窗口）**：都不在 `WINDOW_NAMES` 里、无窗口状态机、不写几何持久化
+  （位置由「提示条所在显示器 + 内容高度」唯一决定）：
+  - **`banner-glow`**（光带窗）：覆盖**整块显示器** `bounds`（不用 `workArea`，避免任务栏缝隙）
+    的透明浮层，只在屏幕顶边画一条 **64px** 光谱流光带（贴在屏幕第 0 像素，其余区域全透明）；
+    `setIgnoreMouseEvents(true, { forward: true })` 完全鼠标穿透，因此「覆盖整屏」不等于「挡住整屏」。
+  - **`banner-card`**（卡片窗）：紧凑置顶卡片，**420px 宽**、高度按正文行数算（0/1/2/3 行），
+    水平居中、顶边下浮 **16px**；**不做鼠标穿透**（卡片上的关闭按钮要能点），
+    `focusable: false` + `showInactive()` 不抢焦点。
+  - **窗口矩形 = 卡片 + 上下左右各 12px**（阴影外边距）。这条几何是硬的：透明窗口多出来的
+    那块区域会挡住下面窗口的点击（透明 ≠ 可穿透），卡片缩水会在屏幕顶上留一个看不见的死区；
+    截图探针按「卡片四边各留 8–16px」把这条钉住。
+  - 两者都 `setAlwaysOnTop(true, 'screen-saver')` + 监听 `always-on-top-changed` 恢复；
+    显示顺序**先光带、后卡片**（卡片要在流光之上）。
+- **视觉（R1，Apple HIG 的克制分层）**：卡片用 `--bg-overlay` 实色填充 + 1px hairline
+  （`--border-subtle` 混透明）+ `--radius-lg` 大圆角 + `--shadow-2` 柔和阴影；左侧一条
+  **3px 语义色条**（info = `--aurora-blue`、success = `--status-ok`、warning = `--status-unread`、
+  error = `--status-error`）。**禁用品牌双色渐变**（`--aurora-gradient` 已是纯强调色），
+  卡片背景必须是实色（探针断言 `background-image === none`），不出现霓虹彩带 / 拟物。
+  光带是 Apple Intelligence 风格的多色光谱（品红 → 紫罗兰 → 强调色 → 青 → 琥珀），
+  每层经 `color-mix(..., transparent)` 压到 ≤36% 不透明度 + 大半径高斯模糊；
+  **类名与关键帧名是 `banner-glow-*`，刻意不复用自感知流光的 `glow-*` / `awareness-glow-*`**
+  （共用名字会让截图探针按 `animationName` 互相误命中）。
+- **内容（R2）**：标题（semibold 13.5px、单行省略）+ 正文（`--text-secondary` 12.5px、
+  最多 3 行 `-webkit-line-clamp`）。正文允许为空 —— 此时卡片只显示标题，不留空的第二行；
+  标题为空时服务回落成「Aurora 提醒」。
+- **行为**：
+  - 主进程 `BannerService`（`main/banner.ts`，**不 import electron**）负责**队列、去重、时长、
+    超时兜底**：同时只显示一条，其余排队（上限 8 条，超出拒绝并回原因）；去重按
+    `dedupeKey`（缺省 `title\0body`）在 3 秒窗口内合并；`durationMs` 缺省 **6000ms**、钳制 2–30s。
+  - 渲染层按 `durationMs - 320ms` 开始淡出、到点回执 `banner:dismiss(id)`；主进程另有
+    `durationMs + 1500ms` 的**兜底定时器**（渲染进程崩掉 / 脚本异常时照样收尾，卡片不会永远挂着）。
+  - 点击卡片任意位置或右上角关闭按钮都会立即回执关闭；主进程收到回执后隐藏两扇窗并推进队列。
+  - **提示音（R4）**：Web Audio 现场合成两声上行音（A5 → E6，快起慢落、峰值音量很低），
+    不新增音频资产（打包体积 / CSP / 资源缺失三件事一起省掉）；失败静默降级。
+  - **语音（R3）**：`speak` 为真且 **TTS 已配置**（`tts.enabled` + `tts.active` 指向完整 provider，
+    判据与对话窗朗读共用 `renderer/shared/tts-config.ts`）时经 `tts:synthesize` 合成
+    `title + '。' + body` 后播放；**未配置时静默跳过、不报错不重试**（口径同 06 §13.5）。
+    `speak` 缺省跟随 TTS 配置（主进程 `voiceReadiness(settings).tts` 解算后随载荷下发）。
+  - `prefers-reduced-motion: reduce` 时流光动画与卡片入场/退场全部退化为无动画。
+- **三个来源（R5）**：① Agent 工具 `notify_banner`（`safe`、不受 `agent.tools.enabled` 门控，
+  06 §14）；② 插件 `ctx.banner`（`notifications` 权限，15 §3）；③ `ask_user` 提问卡片弹出时
+  —— **仅当交互窗未在前台**（不可见或没有键盘焦点）才补一条，`speak: false`、`sound: true`。
+  三者都走同一个 `BannerService.show()`，排队与去重因此只有一份实现。
+- **截图与探针**：`banner-card.png` / `banner-glow.png` 两个场景（内部窗口由
+  `captureWindows` 现取，`?preview=1` 渲染固定示例内容）。判据只量矩形：卡片必须与窗口同大
+  （四边各留 8–16px）、标题单行、正文在卡片内、关闭按钮 ≥12px；光带贴住顶边、横向 ≥95% 视口、
+  厚度 ≤120px，且 600ms 前后 `background-position` 真有变化。
+
 ### 2.3 主界面（Chat Window）
 
 > **BetaV2**：交互窗（chat）升级为常驻**主界面**，本节规格按新口径改写；下文沿用「chat / 交互窗」
@@ -1488,6 +1541,10 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 ## 4. 通知与反馈
 
 - **系统通知**：分类完成（点击打开对应文件夹）、课前提醒、引导提醒。
+- **流光提醒（2026-10-24，§2.2.3）**：屏幕顶端流光 + 置顶卡片的第三条提醒通道，
+  由 Agent 工具 `notify_banner`、插件 `ctx.banner`、`ask_user` 提问三处触发；
+  卡片分「标题 + 正文」，可选语音朗读与提示音。与系统通知**互不替代**：系统通知可能被系统设置关掉，
+  流光提醒始终显示在最上层。
 - **窗口内 Toast**：错误提示（LLM 失败、MCP 断开、分类失败）与可恢复操作入口。
 
 ## 5. 视觉方向与设计令牌（SSOT）

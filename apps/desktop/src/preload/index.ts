@@ -48,6 +48,7 @@ const api: AuroraApi = {
     openLogs: () => invoke(IPC.app.openLogs),
     getSmokeDiagnostics: () => invoke(IPC.app.smokeDiagnostics),
     smokeDropFile: (request) => invoke(IPC.app.smokeDropFile, request),
+    smokeBanner: (action) => invoke(IPC.app.smokeBanner, action),
   },
   project: {
     status: () => invoke(IPC.project.status),
@@ -212,6 +213,13 @@ const api: AuroraApi = {
           : { answersByQuestion: input.answersByQuestion }),
         skipped: input.skipped === true,
       }),
+  },
+  // 流光提醒（docs/07 §2.2.3）：只收推送 + 回关闭回执，渲染层没有 show（来源在主进程）
+  banner: {
+    onShow: (listener) => subscribe(IPC.banner.show, listener),
+    dismiss: (id) => invoke(IPC.banner.dismiss, { id }),
+    // 卡片内容高度上报：窗口矩形必须等于「卡片 + 24px」，靠估算会在某些文案上留死区
+    measure: (request) => invoke(IPC.banner.measure, request),
   },
   mcp: {
     status: () => invoke(IPC.mcp.status),

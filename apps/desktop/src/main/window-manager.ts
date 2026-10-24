@@ -22,6 +22,7 @@ import {
   createInitialWindowState,
   hideWindow as hideInState,
   showWindow as showInState,
+  type BannerShowPayload,
   type Logger,
   type SettingsStore,
   type WindowName,
@@ -75,6 +76,48 @@ export interface AwarenessGlowDiagnostics {
   focused?: boolean
   mousePassthrough: boolean
 }
+
+/**
+ * 流光提醒的两个内部窗口的原生状态（自测 / 捕获用）。
+ *
+ * 两个窗口职责不同，诊断也**分开报**：卡片窗不可见可能是没建起来，也可能只是还在加载；
+ * 合成一个字段会把「窗口没建」与「页面没好」混成同一条故障。
+ */
+export interface BannerWindowDiagnostics {
+  exists: boolean
+  visible: boolean
+  bounds?: AwarenessGlowRect
+  alwaysOnTop?: boolean
+  focused?: boolean
+  mousePassthrough: boolean
+}
+
+/** 内部窗口名：不属于 `WINDOW_NAMES`，没有窗口状态机，只由业务直接驱动。 */
+type InternalWindowName = 'awareness-glow' | 'banner'
+
+/**
+ * 流光提醒卡片窗的几何（docs/07 §2.2.3）。
+ *
+ * 卡片宽度固定、高度按正文行数算：**窗口矩形必须与卡片一样大**，否则透明窗口多出来的
+ * 那块区域会挡住下面窗口的点击（透明 ≠ 可穿透）。卡片自带 12px 外边距画柔和阴影，
+ * 所以窗口 = 卡片 + 上下左右各 12px。
+ */
+const BANNER_CARD = {
+  width: 420,
+  margin: 12,
+  /** 标题行 20 + 上下内边距 11×2 = 42；正文每行 19 + 与标题的间距 6 */
+  baseHeight: 48,
+  lineHeight: 19,
+  gap: 6,
+  maxLines: 3,
+  /** 顶到屏幕上边缘的距离（卡片「从流光里落下」，不是贴死第 0 像素） */
+  topOffset: 16,
+  /** 一行正文大致容纳的汉字数（卡片内宽 420 − 左右内边距 20×2）：只用于**首帧**估算 */
+  charsPerLine: 28,
+  /** 卡片高度区间：46 只够标题 + 内边距；200 已能放 3 行正文还有余量（再高必然是误报） */
+  minHeight: 46,
+  maxHeight: 200,
+} as const
 
 interface WindowSpec {
   width: number
@@ -309,6 +352,16 @@ export class WindowManager {
   private awarenessGlowWindow: BrowserWindow | undefined
   private awarenessGlowLoad: Promise<void> | undefined
   private awarenessGlowMousePassthrough = false
+  /**
+   * 流光提醒（docs/07 §2.2.3）：两个内部窗口 —— 顶部流光带（整屏透明、鼠标穿透）与
+   * 置顶卡片（紧凑、可点）。都不在 `WINDOW_NAMES` 里、无状态机，也不写几何持久化：
+   * 它们的位置由「提示条所在显示器 + 内容高度」唯一决定。
+   */
+  private bannerGlowWindow: BrowserWindow | undefined
+  private bannerGlowLoad: Promise<void> | undefined
+  private bannerGlowMousePassthrough = false
+  private bannerCardWindow: BrowserWindow | undefined
+  private bannerCardLoad: Promise<void> | undefined
   /** 已成功启用原生材质的窗口；失败时同步回到不透明回退。 */
   private readonly nativeGlassWindows = new Set<WindowName>()
   private themeListenerActive = true
@@ -487,6 +540,203 @@ export class WindowManager {
     const task = this.load(win, 'awareness-glow', query)
     this.awarenessGlowLoad = task
     await task
+  }
+
+  // ───────────────────────── 流光提醒（docs/07 §2.2.3） ─────────────────────────
+
+  /**
+   * 显示一条流光提醒（`BannerService` 注入的 `present` 载体）。
+   *
+   * 两扇窗的分工：`banner-glow` 只在屏幕顶端画光带、整屏鼠标穿透；
+   * `banner-card` 是可点的置顶卡片（关闭按钮 / 点击卡片关闭），因此**不做穿透**。
+   * 合成一扇窗要么挡住整屏点击，要么卡片点不到 —— 分开是经过取舍的方案，别为了「少一扇窗」合并。
+   *
+   * 返回值表示「请求已交给两扇窗」：窗口加载是异步的，这里同步返回 true，
+   * 真正把画面推出去在 `deliverBanner()` 里等两扇窗首次加载完成之后。
+   */
+  showBanner(payload: BannerShowPayload): boolean {
+    const glow = this.ensureBannerGlow()
+    const card = this.ensureBannerCard()
+    if (glow.isDestroyed() || card.isDestroyed()) return false
+    const displayBounds = this.edgeBarDisplay().bounds
+    const glowBounds = awarenessGlowBounds(displayBounds)
+    if (!sameBounds(glow.getBounds(), glowBounds)) glow.setBounds(glowBounds)
+    const cardBounds = this.bannerCardBounds(payload, displayBounds)
+    if (!sameBounds(card.getBounds(), cardBounds)) card.setBounds(cardBounds)
+    void this.deliverBanner(glow, card, payload)
+    return true
+  }
+
+  /** 收起流光提醒（幂等；`BannerService` 注入的 `hide` 载体）。 */
+  hideBanner(): void {
+    const card = this.bannerCardWindow
+    if (card !== undefined && !card.isDestroyed()) card.hide()
+    const glow = this.bannerGlowWindow
+    if (glow !== undefined && !glow.isDestroyed()) glow.hide()
+  }
+
+  isBannerVisible(): boolean {
+    const card = this.bannerCardWindow
+    return card !== undefined && !card.isDestroyed() && card.isVisible()
+  }
+
+  /** 自测诊断：两个内部窗口的真实原生状态（不经过用户窗口 API）。 */
+  getBannerDiagnostics(): { glow: BannerWindowDiagnostics; card: BannerWindowDiagnostics } {
+    return {
+      glow: this.bannerWindowDiagnostics(this.bannerGlowWindow, this.bannerGlowMousePassthrough),
+      card: this.bannerWindowDiagnostics(this.bannerCardWindow, false),
+    }
+  }
+
+  /** 流光提醒光带窗的**期望**几何：与 `showBanner` / `ensureBannerGlow` 同一个取屏口径。 */
+  getBannerGlowTargetBounds(): AwarenessGlowRect {
+    return awarenessGlowBounds(this.edgeBarDisplay().bounds)
+  }
+
+  /** 截图核对：取卡片窗（内部窗口不在 `WINDOW_NAMES` 里，只能现取）。 */
+  ensureBannerForCapture(kind: 'card' | 'glow'): BrowserWindow {
+    return kind === 'card' ? this.ensureBannerCard() : this.ensureBannerGlow()
+  }
+
+  /** 截图核对：等对应窗口首次加载完成。 */
+  async whenBannerLoaded(kind: 'card' | 'glow'): Promise<void> {
+    await (kind === 'card' ? this.bannerCardLoad : this.bannerGlowLoad)
+  }
+
+  /** 截图核对：带 query 重载（`preview=1` 让卡片渲染固定的示例内容）。 */
+  async reloadBannerForCapture(
+    kind: 'card' | 'glow',
+    query: Record<string, string>,
+  ): Promise<void> {
+    const win = this.ensureBannerForCapture(kind)
+    const task = this.load(win, 'banner', { layer: kind, ...query })
+    if (kind === 'card') this.bannerCardLoad = task
+    else this.bannerGlowLoad = task
+    await task
+  }
+
+  /**
+   * 按渲染层量出的**卡片内容高度**调整卡片窗（`banner:measure`）。
+   *
+   * 两个关键点：
+   * - 窗口高度 = 卡片高度 + 24（上下各 12px 阴影外边距）**再加窗口边框差**：
+   *   Windows 上无边框窗口的 `getBounds()` 比 `getContentBounds()` 多出几个像素，
+   *   直接按「+24」算会让页面底部空出那几像素 —— 卡片下方就出现一条挡点击的透明死区。
+   *   这里用当前窗口两种矩形的差值自校准，不写死数字。
+   * - 只调高度、不动 x / y：水平居中与「贴顶下浮」由 `bannerCardBounds` 决定。
+   */
+  resizeBannerCard(cardHeight: number): boolean {
+    const win = this.bannerCardWindow
+    if (win === undefined || win.isDestroyed()) return false
+    const height = Math.round(
+      Math.min(BANNER_CARD.maxHeight, Math.max(BANNER_CARD.minHeight, cardHeight)),
+    )
+    const bounds = win.getBounds()
+    const contentHeight = win.getContentBounds().height
+    const frameDelta = Math.max(0, bounds.height - contentHeight)
+    const target = height + BANNER_CARD.margin * 2 + frameDelta
+    if (Math.abs(bounds.height - target) <= 1) return true
+    win.setBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: target })
+    this.options.logger.debug('流光提醒卡片窗高度已调整', { cardHeight: height, target })
+    return true
+  }
+
+  /** 截图核对：把对应窗口显示出来（不推数据，内容由 query / preview 决定）。 */
+  showBannerForCapture(kind: 'card' | 'glow'): void {
+    const win = kind === 'card' ? this.ensureBannerCard() : this.ensureBannerGlow()
+    if (win.isDestroyed()) return
+    if (kind === 'card') {
+      // 卡片窗**不动几何**：高度由渲染层量完回报（`resizeBannerCard`），
+      // 这里要是按估算值再 setBounds 一次，就会把刚量好的高度覆盖回估算值。
+      this.reassertBannerTopmost('card', win)
+      if (!win.isVisible()) win.showInactive()
+      return
+    }
+    const bounds = awarenessGlowBounds(this.edgeBarDisplay().bounds)
+    if (!sameBounds(win.getBounds(), bounds)) win.setBounds(bounds)
+    this.reassertBannerTopmost('glow', win)
+    if (!win.isVisible()) win.showInactive()
+  }
+
+  /**
+   * 把展示载荷推给两扇窗并显示它们。
+   *
+   * 顺序（先流光、后卡片）是有意的：卡片要在流光**之上**，否则光谱光带会盖住卡片顶部。
+   * 推送必须等首次加载完成 —— `show()` 之后立刻 `webContents.send` 时渲染层的
+   * `onShow` 监听还没挂上，消息会被丢掉（与 `showWithPayload` 同一个坑）。
+   */
+  private async deliverBanner(
+    glow: BrowserWindow,
+    card: BrowserWindow,
+    payload: BannerShowPayload,
+  ): Promise<void> {
+    await Promise.all([this.bannerGlowLoad, this.bannerCardLoad])
+    if (glow.isDestroyed() || card.isDestroyed()) return
+    glow.webContents.send(IPC.banner.show, payload)
+    card.webContents.send(IPC.banner.show, payload)
+    // 已可见时不再重复 show：反复 show 会扰动原生合成面（同 `showAwarenessGlow` 的理由）
+    if (!glow.isVisible()) {
+      this.reassertBannerTopmost('glow', glow)
+      glow.showInactive()
+    }
+    if (!card.isVisible()) {
+      this.reassertBannerTopmost('card', card)
+      card.showInactive()
+    }
+  }
+
+  /** 卡片窗几何：水平居中、贴顶下浮，高度按正文行数算（窗口 = 卡片 + 阴影外边距）。 */
+  private bannerCardBounds(
+    payload: BannerShowPayload | undefined,
+    displayBounds: AwarenessGlowRect,
+  ): AwarenessGlowRect {
+    const body = payload?.body ?? ''
+    const lines =
+      body === ''
+        ? 0
+        : Math.min(
+            BANNER_CARD.maxLines,
+            Math.max(1, Math.ceil(body.length / BANNER_CARD.charsPerLine)),
+          )
+    const cardHeight =
+      BANNER_CARD.baseHeight + (lines === 0 ? 0 : BANNER_CARD.gap + lines * BANNER_CARD.lineHeight)
+    const width = BANNER_CARD.width + BANNER_CARD.margin * 2
+    const height = cardHeight + BANNER_CARD.margin * 2
+    return {
+      x: Math.round(displayBounds.x + (displayBounds.width - width) / 2),
+      y: Math.round(displayBounds.y + BANNER_CARD.topOffset),
+      width,
+      height,
+    }
+  }
+
+  private bannerWindowDiagnostics(
+    win: BrowserWindow | undefined,
+    mousePassthrough: boolean,
+  ): BannerWindowDiagnostics {
+    if (win === undefined || win.isDestroyed()) {
+      return { exists: false, visible: false, mousePassthrough }
+    }
+    return {
+      exists: true,
+      visible: win.isVisible(),
+      bounds: win.getBounds(),
+      alwaysOnTop: win.isAlwaysOnTop(),
+      focused: win.isFocused(),
+      mousePassthrough,
+    }
+  }
+
+  private reassertBannerTopmost(
+    reason: 'created' | 'shown' | 'glow' | 'card',
+    win: BrowserWindow,
+  ): void {
+    if (win.isDestroyed()) return
+    try {
+      win.setAlwaysOnTop(true, WindowManager.EDGE_BAR_TOP_LEVEL)
+    } catch (error) {
+      this.options.logger.warn('恢复流光提醒置顶失败', { reason, error: String(error) })
+    }
   }
 
   /** 截图核对读取真实原生底色；原生玻璃窗口由材质断言接管，返回 undefined。 */
@@ -903,6 +1153,143 @@ export class WindowManager {
   }
 
   /**
+   * 流光提醒的**光带窗**（docs/07 §2.2.3）：覆盖整块显示器、完全鼠标穿透，
+   * 只在屏幕顶端画一条光谱流光带。窗口参数照抄 `ensureAwarenessGlow`（同一套已验证的形状），
+   * 但**不复用它的窗口、类名或关键帧** —— 两者各自独立驱动，避免互相污染。
+   */
+  private ensureBannerGlow(): BrowserWindow {
+    const existing = this.bannerGlowWindow
+    if (existing !== undefined && !existing.isDestroyed()) return existing
+
+    const bounds = awarenessGlowBounds(this.edgeBarDisplay().bounds)
+    const win = new BrowserWindow({
+      ...bounds,
+      show: false,
+      frame: false,
+      resizable: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      hasShadow: false,
+      thickFrame: false,
+      backgroundColor: '#00000000',
+      title: 'Aurora 流光提醒',
+      webPreferences: {
+        preload: this.options.preloadPath,
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        devTools: this.options.isDev,
+        backgroundThrottling: this.options.backgroundThrottling ?? true,
+      },
+    })
+
+    win.setMenuBarVisibility(false)
+    try {
+      // 覆盖整屏的浮层绝不能截获点击（同 `setIgnoreMouseEvents(true, { forward: true })` 的既有口径）
+      win.setIgnoreMouseEvents(true, { forward: true })
+      this.bannerGlowMousePassthrough = true
+    } catch (error) {
+      this.bannerGlowMousePassthrough = false
+      this.options.logger.warn('流光提醒光带窗鼠标穿透不可用', { error: String(error) })
+    }
+    this.reassertBannerTopmost('created', win)
+
+    win.on('always-on-top-changed', (_event, isAlwaysOnTop) => {
+      if (isAlwaysOnTop) return
+      setImmediate(() => {
+        const current = this.bannerGlowWindow
+        if (current !== undefined && !current.isDestroyed()) {
+          this.reassertBannerTopmost('glow', current)
+        }
+      })
+    })
+    win.on('closed', () => {
+      if (this.bannerGlowWindow === win) {
+        this.bannerGlowWindow = undefined
+        this.bannerGlowLoad = undefined
+        this.bannerGlowMousePassthrough = false
+      }
+    })
+    win.webContents.on('render-process-gone', (_event, details) => {
+      this.options.logger.error('流光提醒光带窗渲染进程异常退出', { reason: details.reason })
+      if (!win.isDestroyed()) win.destroy()
+    })
+
+    this.bannerGlowWindow = win
+    this.bannerGlowLoad = this.load(win, 'banner', { layer: 'glow' })
+    this.options.logger.debug('流光提醒光带窗已创建', { bounds })
+    return win
+  }
+
+  /**
+   * 流光提醒的**卡片窗**：紧凑置顶卡片，`focusable: false` + `showInactive()`（不抢焦点），
+   * 但**不做鼠标穿透** —— 卡片上的关闭按钮要能点。
+   */
+  private ensureBannerCard(): BrowserWindow {
+    const existing = this.bannerCardWindow
+    if (existing !== undefined && !existing.isDestroyed()) return existing
+
+    const bounds = this.bannerCardBounds(undefined, this.edgeBarDisplay().bounds)
+    const win = new BrowserWindow({
+      ...bounds,
+      show: false,
+      frame: false,
+      resizable: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      hasShadow: false,
+      thickFrame: false,
+      backgroundColor: '#00000000',
+      title: 'Aurora 流光提醒卡片',
+      webPreferences: {
+        preload: this.options.preloadPath,
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        devTools: this.options.isDev,
+        backgroundThrottling: this.options.backgroundThrottling ?? true,
+      },
+    })
+
+    win.setMenuBarVisibility(false)
+    this.reassertBannerTopmost('created', win)
+    win.on('always-on-top-changed', (_event, isAlwaysOnTop) => {
+      if (isAlwaysOnTop) return
+      setImmediate(() => {
+        const current = this.bannerCardWindow
+        if (current !== undefined && !current.isDestroyed()) {
+          this.reassertBannerTopmost('card', current)
+        }
+      })
+    })
+    win.on('closed', () => {
+      if (this.bannerCardWindow === win) {
+        this.bannerCardWindow = undefined
+        this.bannerCardLoad = undefined
+      }
+    })
+    win.webContents.on('render-process-gone', (_event, details) => {
+      this.options.logger.error('流光提醒卡片窗渲染进程异常退出', { reason: details.reason })
+      if (!win.isDestroyed()) win.destroy()
+    })
+
+    this.bannerCardWindow = win
+    this.bannerCardLoad = this.load(win, 'banner', { layer: 'card' })
+    this.options.logger.debug('流光提醒卡片窗已创建', { bounds })
+    return win
+  }
+
+  /**
    * 应用提示条透明度（docs/07 §2.2、docs/08 §1 `general.edgeBar.opacity`）。
    *
    * 只对已创建的窗口生效；窗口尚未创建时跳过（创建时会在 `ensure()` 里按当前值设置），
@@ -1164,6 +1551,17 @@ export class WindowManager {
   }
 
   /**
+   * 窗口当前是否持有键盘焦点（未创建 / 已销毁 = false）。
+   *
+   * 与 `isVisible` 的区别：可见但被压在下层（用户点了别的应用）时它是 false ——
+   * `ask_user` 的流光提醒正靠这条判定「用户是不是正看着卡片」，两条都要用上。
+   */
+  isFocused(name: WindowName): boolean {
+    const win = this.windows.get(name)
+    return win !== undefined && !win.isDestroyed() && win.isFocused()
+  }
+
+  /**
    * 向指定窗口推送事件（主进程 → 渲染层单向，docs/12 §6.3 `chat:remoteActivate` 用）。
    *
    * 与 `ensure` 不同，这里**绝不顺手创建窗口**：推送是"尽力而为"——
@@ -1195,6 +1593,8 @@ export class WindowManager {
     this.quitting = true
     const glow = this.awarenessGlowWindow
     if (glow !== undefined && !glow.isDestroyed()) glow.hide()
+    // 流光提醒的内部窗口同样只隐藏（退出流程里不销毁窗口，避免拖慢 app.quit）
+    this.hideBanner()
     // 待落盘的几何先按真实窗口现读一次落盘，再清掉去抖定时器 —— 否则最后一帧拖动会留在
     // 定时器里，等它触发时窗口已经不在（`persistGeometry` 会因 isDestroyed 直接跳过）。
     for (const name of [...this.geometryTimers.keys()]) {
@@ -1217,6 +1617,14 @@ export class WindowManager {
     if (glow !== undefined && !glow.isDestroyed()) glow.destroy()
     this.awarenessGlowWindow = undefined
     this.awarenessGlowLoad = undefined
+    for (const win of [this.bannerGlowWindow, this.bannerCardWindow]) {
+      if (win !== undefined && !win.isDestroyed()) win.destroy()
+    }
+    this.bannerGlowWindow = undefined
+    this.bannerGlowLoad = undefined
+    this.bannerGlowMousePassthrough = false
+    this.bannerCardWindow = undefined
+    this.bannerCardLoad = undefined
     for (const win of this.windows.values()) {
       if (!win.isDestroyed()) win.destroy()
     }
@@ -1227,7 +1635,7 @@ export class WindowManager {
 
   private async load(
     win: BrowserWindow,
-    name: WindowName | 'awareness-glow',
+    name: WindowName | InternalWindowName,
     query?: Record<string, string>,
   ): Promise<void> {
     const { rendererUrl, rendererDir } = this.options

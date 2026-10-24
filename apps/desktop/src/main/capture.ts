@@ -122,7 +122,15 @@ export const ASK_USER_CAPTURE_QUESTION: AskUserQuestion = {
 /** 第二个选项的 label（探针用它断言"点哪个就回哪个"） */
 export const ASK_USER_CAPTURE_SECOND = ASK_USER_CAPTURE_QUESTION.options?.[1]?.label ?? ''
 
-export type CaptureWindowName = WindowName | 'awareness-glow' | 'widget'
+/**
+ * 截图目标的窗口名。
+ *
+ * `banner-card` / `banner-glow` 是流光提醒的两个内部窗口（docs/07 §2.2.3）：它们不在
+ * `WINDOW_NAMES` 里、也不走窗口状态机，只能由 `WindowManager` 的捕获专用方法现取 ——
+ * 与 `awareness-glow` / 桌面小组件同一类目标。
+ */
+export type CaptureWindowName =
+  WindowName | 'awareness-glow' | 'widget' | 'banner-card' | 'banner-glow'
 
 export interface CaptureTarget {
   name: CaptureWindowName
@@ -286,8 +294,15 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       // 3) 后续页面复用同一个窗口，只走 reload。
       const requestedName = target.name
       const internalGlow = requestedName === 'awareness-glow'
+      // 流光提醒的两个内部窗口：卡片（可点）/ 光带（整屏穿透）。它们同样不走 ensure/show
+      const bannerKind: 'card' | 'glow' | undefined =
+        requestedName === 'banner-card'
+          ? 'card'
+          : requestedName === 'banner-glow'
+            ? 'glow'
+            : undefined
       const widgetTarget = target.widget
-      // 走 WindowManager 的目标名（widget 目标单独走下面的分支，不会到这里）
+      // 走 WindowManager 的目标名（widget / banner / 内部浮层单独走下面的分支，不会到这里）
       const windowName = requestedName as WindowName
       let win: BrowserWindow
       if (widgetTarget !== undefined) {
@@ -295,6 +310,9 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         if (resolved === undefined) throw new Error('桌面小组件窗口不存在')
         win = resolved
         await options.widgetLoaded?.(widgetTarget.pluginId, widgetTarget.widgetId)
+      } else if (bannerKind !== undefined) {
+        win = manager.ensureBannerForCapture(bannerKind)
+        await manager.whenBannerLoaded(bannerKind)
       } else if (internalGlow) {
         win = manager.ensureAwarenessGlowForCapture()
         await manager.whenAwarenessGlowLoaded()
@@ -305,15 +323,18 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       if (widgetTarget !== undefined) {
         await target.prepare?.()
       } else if (target.query !== undefined) {
-        if (internalGlow) await manager.reloadAwarenessGlow(target.query)
+        if (bannerKind !== undefined) await manager.reloadBannerForCapture(bannerKind, target.query)
+        else if (internalGlow) await manager.reloadAwarenessGlow(target.query)
         else await manager.reload(windowName, target.query)
       }
       if (widgetTarget === undefined) {
         await target.prepare?.()
-        if (internalGlow) manager.showAwarenessGlow()
+        if (bannerKind !== undefined) manager.showBannerForCapture(bannerKind)
+        else if (internalGlow) manager.showAwarenessGlow()
         else manager.show(windowName)
         // ensure() 里的加载是 fire-and-forget，必须显式等它结束（否则会截到空图）
-        if (internalGlow) await manager.whenAwarenessGlowLoaded()
+        if (bannerKind !== undefined) await manager.whenBannerLoaded(bannerKind)
+        else if (internalGlow) await manager.whenAwarenessGlowLoaded()
         else await manager.whenLoaded(windowName)
       }
       if (target.act !== undefined) {
@@ -5640,8 +5661,196 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
   }
 })()`
 
-export const SETTINGS_AWARENESS_RECORDS_ACT = `(async () => {
+/**
+ * 流光提醒卡片的静态预览（docs/07 §2.2.3，2026-10-24）。
+ *
+ * 只量矩形、不量存在：卡片必须与窗口一样大（窗口 = 卡片 + 12px 阴影外边距），
+ * 因为透明窗口多出来的那块区域会挡住下面窗口的点击 —— 卡片缩水这件事在视觉上"更好看"，
+ * 却会让一个死区出现在屏幕顶上。此外钉住：大圆角、实色填充（不得是渐变彩带）、
+ * 标题单行、正文在卡片内、关闭按钮可点尺寸。
+ */
+export const BANNER_CARD_CAPTURE_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    // 入场动效 420ms + 一帧余量
+    await wait(700)
+    const root = document.querySelector('[data-field="banner.card"]')
+    const card = root
+    const title = document.querySelector('[data-field="banner.title"]')
+    const body = document.querySelector('[data-field="banner.body"]')
+    const close = document.querySelector('[data-field="banner.close"]')
+    const accent = card === null ? null : card.querySelector('.banner-card-accent')
+    const viewportWidth = document.documentElement.clientWidth
+    const viewportHeight = document.documentElement.clientHeight
+    const rectOf = (element) => {
+      if (element === null) return null
+      const rect = element.getBoundingClientRect()
+      return {
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      }
+    }
+    const cardRect = rectOf(card)
+    const titleRect = rectOf(title)
+    const bodyRect = rectOf(body)
+    const closeRect = rectOf(close)
+    const accentRect = rectOf(accent)
+    const cardStyle = card === null ? null : getComputedStyle(card)
+    const opacity = cardStyle === null ? 0 : Number.parseFloat(cardStyle.opacity)
+    const radius = cardStyle === null ? 0 : Number.parseFloat(cardStyle.borderTopLeftRadius)
+    const backgroundImage = cardStyle === null ? '' : cardStyle.backgroundImage
+    const background = cardStyle === null ? '' : cardStyle.backgroundColor
+    const shadow = cardStyle === null ? '' : cardStyle.boxShadow
+    const titleText = title === null ? '' : (title.textContent || '').trim()
+    const bodyText = body === null ? '' : (body.textContent || '').trim()
+    // 卡片四边各留 12px：窗口比卡片大 24px（阴影外边距），这是「透明不挡点击」的前提
+    const fillsWindow =
+      cardRect !== null &&
+      cardRect.left >= 8 &&
+      cardRect.left <= 16 &&
+      cardRect.top >= 8 &&
+      cardRect.top <= 16 &&
+      cardRect.right >= viewportWidth - 16 &&
+      cardRect.right <= viewportWidth - 8 &&
+      cardRect.bottom >= viewportHeight - 16 &&
+      cardRect.bottom <= viewportHeight - 8
+    const insideCard = (inner) =>
+      inner !== null &&
+      cardRect !== null &&
+      inner.left >= cardRect.left &&
+      inner.top >= cardRect.top &&
+      inner.right <= cardRect.right &&
+      inner.bottom <= cardRect.bottom
+    /*
+     * 判据只写一份：pass 直接取 conditions 的乘积。
+     * 失败时报告里能直接看到是哪一条红，而不是一句看不出因果的 pass:false。
+     */
+    const conditions = {
+      cardPresent: card !== null,
+      fillsWindow,
+      opaque: opacity > 0.9,
+      rounded: radius >= 16,
+      // 实色填充（不得是渐变彩带）：--aurora-gradient 是纯强调色，卡片背景不该出现渐变
+      solidBackground: backgroundImage === 'none' && background !== 'rgba(0, 0, 0, 0)',
+      softShadow: shadow !== 'none',
+      hasTitle: titleText !== '',
+      hasBody: bodyText !== '',
+      titleSingleLine: titleRect !== null && titleRect.height > 0 && titleRect.height <= 26,
+      titleInsideCard: insideCard(titleRect),
+      bodyInsideCard: insideCard(bodyRect),
+      closeInsideCard: insideCard(closeRect),
+      closeClickable: closeRect !== null && closeRect.width >= 12 && closeRect.height >= 12,
+      accentBar: accentRect !== null && accentRect.width >= 2 && accentRect.height > 0,
+    }
+    const pass = Object.keys(conditions).every((key) => conditions[key] === true)
+    return {
+      card: cardRect,
+      title: titleRect,
+      body: bodyRect,
+      close: closeRect,
+      accent: accentRect,
+      viewportWidth,
+      viewportHeight,
+      opacity,
+      radius,
+      background,
+      backgroundImage,
+      shadow,
+      titleText,
+      bodyText,
+      fillsWindow,
+      conditions,
+      pass,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 流光提醒光带的静态预览（docs/07 §2.2.3）。
+ *
+ * 光带必须贴住屏幕顶边、横向铺满、厚度远小于视口；三层（bloom / halo / line）都在，
+ * 且 600ms 前后 `background-position` 真的有变化（否定"声明了动画但其实静止"）。
+ * 注意关键帧名是 `banner-glow-*`：**不能**用 `awareness-glow-*`，两套动画名字相同会让
+ * 探针互相误命中（这正是「流光类名不复用」那条硬规则要防的事）。
+ */
+export const BANNER_GLOW_CAPTURE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(700)
+    const root = document.querySelector('[data-field="banner.glow"]')
+    const band = document.querySelector('[data-field="banner.glow.band"]')
+    const rootStyle = root === null ? null : getComputedStyle(root)
+    const opacity = rootStyle === null ? 0 : Number.parseFloat(rootStyle.opacity)
+    const viewportWidth = document.documentElement.clientWidth
+    const viewportHeight = document.documentElement.clientHeight
+    const bandRect = band === null ? null : band.getBoundingClientRect()
+    const rect = bandRect === null ? null : {
+      left: Math.round(bandRect.left),
+      top: Math.round(bandRect.top),
+      right: Math.round(bandRect.right),
+      bottom: Math.round(bandRect.bottom),
+      width: Math.round(bandRect.width),
+      height: Math.round(bandRect.height),
+    }
+    const bloom = band === null ? null : band.querySelector('.banner-glow-bloom')
+    const halo = band === null ? null : band.querySelector('.banner-glow-halo')
+    const line = band === null ? null : band.querySelector('.banner-glow-line')
+    const bloomStyle = bloom === null ? null : getComputedStyle(bloom)
+    const haloStyle = halo === null ? null : getComputedStyle(halo)
+    const lineStyle = line === null ? null : getComputedStyle(line)
+    const haloPositionA = haloStyle === null ? '' : haloStyle.backgroundPosition
+    const linePositionA = lineStyle === null ? '' : lineStyle.backgroundPosition
+    await wait(600)
+    const haloPositionB = haloStyle === null ? '' : haloStyle.backgroundPosition
+    const linePositionB = lineStyle === null ? '' : lineStyle.backgroundPosition
+    const motionChanged = haloPositionA !== haloPositionB || linePositionA !== linePositionB
+    const bandOk =
+      rect !== null &&
+      rect.top <= 4 &&
+      rect.left <= 4 &&
+      rect.right >= viewportWidth - 4 &&
+      rect.width >= viewportWidth * 0.95 &&
+      rect.height > 0 &&
+      rect.height <= 120
+    const pass =
+      root !== null &&
+      root.classList.contains('is-active') &&
+      opacity > 0.9 &&
+      bandOk &&
+      bloom !== null &&
+      halo !== null &&
+      line !== null &&
+      (bloomStyle === null ? '' : bloomStyle.backgroundImage).includes('radial-gradient') &&
+      (bloomStyle === null ? '' : bloomStyle.filter).includes('blur') &&
+      (bloomStyle === null ? '' : bloomStyle.animationName).includes('banner-glow-breathe') &&
+      (haloStyle === null ? '' : haloStyle.animationName).includes('banner-glow-spectrum') &&
+      (lineStyle === null ? '' : lineStyle.animationName).includes('banner-glow-spectrum') &&
+      motionChanged
+    return {
+      band: rect,
+      viewportWidth,
+      viewportHeight,
+      opacity,
+      haloPositionA,
+      haloPositionB,
+      linePositionA,
+      linePositionB,
+      motionChanged,
+      bandOk,
+      pass,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+export const SETTINGS_AWARENESS_RECORDS_ACT = `(async () => {  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const more = document.querySelector('[data-field="fileAwareness.recent-more"]')
     if (more === null) return { ok: false, reason: '查看更多按钮未出现' }
@@ -14300,9 +14509,10 @@ export function parseCaptureTokens(value: string | undefined): string[] {
 /**
  * 按窗口名（`AURORA_CAPTURE_WINDOWS`）与场景文件名（`AURORA_CAPTURE_ONLY`）过滤截图清单。
  *
- * 两级过滤各管一件事：窗口名只能粗到某一类用户窗口（另有内部 `awareness-glow`），
- * 通常没法只跑"会话三分那一张"；`only` 按 `file` 做**子串**匹配 —— 写 `session-groups`
- * 或 `chat-session-groups.png` 都能命中，它才是把一轮五六十张收敛成"改到哪张跑哪张"的那级。
+ * 两级过滤各管一件事：窗口名只能粗到某一类用户窗口（另有内部 `awareness-glow` /
+ * `banner-card` / `banner-glow`），通常没法只跑"会话三分那一张"；`only` 按 `file` 做**子串**匹配 ——
+ * 写 `session-groups` 或 `chat-session-groups.png` 都能命中，它才是把一轮五六十张收敛成
+ * "改到哪张跑哪张"的那级。
  *
  * `only` 的取值用 `string[] | undefined` 而不是 `string | undefined`，是为了让
  * **"空数组"与"不传"语义分开**：`undefined` = 不按场景筛（全选），`[]` = 一张都不选。

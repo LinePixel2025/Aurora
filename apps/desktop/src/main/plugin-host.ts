@@ -108,6 +108,9 @@ function makeContext(signal: AbortSignal): PluginContext {
     },
     notify: (input: Parameters<PluginContext['notify']>[0]) =>
       clientCall<boolean>(PLUGIN_CLIENT_CALLS.notify, input, 10_000, signal),
+    // 流光提醒（docs/07 §2.2.3）：与 notify 同在 `notifications` 权限下，宿主侧校验
+    banner: (input: Parameters<PluginContext['banner']>[0]) =>
+      clientCall<boolean>(PLUGIN_CLIENT_CALLS.banner, input, 10_000, signal),
     log: (
       level: Parameters<PluginContext['log']>[0],
       message: Parameters<PluginContext['log']>[1],

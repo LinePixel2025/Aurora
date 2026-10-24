@@ -37,7 +37,7 @@ export const PLUGIN_PERMISSION_LABELS: Record<PluginPermission, string> = {
   config: '读写自己的配置项',
   net: '通过宿主代理发起 HTTP 请求',
   'net.private': '访问本机与内网地址',
-  notifications: '发送系统通知',
+  notifications: '发送系统通知与流光提醒',
   logging: '写入插件日志',
   'ui.panels': '在右栏添加面板',
   'ui.widgets': '在桌面或提示条放置小组件',
@@ -70,9 +70,6 @@ export const PLUGIN_CONTRIBUTION_PERMISSIONS = {
 } as const satisfies Record<string, PluginPermission>
 
 /** 判断某权限是否已声明（`net.private` 依赖 `net`，由清单校验层保证成对出现）。 */
-export function hasPermission(
-  granted: readonly string[],
-  permission: PluginPermission,
-): boolean {
+export function hasPermission(granted: readonly string[], permission: PluginPermission): boolean {
   return granted.includes(permission)
 }
