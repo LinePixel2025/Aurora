@@ -7,18 +7,23 @@
 
 ## 当前实现状态
 
-**当前发布 v0.5.1：插件系统 v36**（配置 Schema **v36**，迁移 `v35 → v36`，新增 `plugins`）——
-用户可安装第三方插件来扩展 Agent 能力与界面：插件包在 `manifest.json` 声明工具 / Skill / 斜杠命令 /
-自动化动作与事件 / 右栏面板 / **桌面与提示条小组件** / 主题 / 配置字段，代码跑在独立 `utilityProcess`，
-通过白名单 RPC 访问 Aurora API；支持本地 zip / 文件夹、开发目录热重载与 Aurora Center 插件市场。
-面板有两种形态：受控组件组成的声明式 schema，或 `aurora-plugin://` + 专用 preload 的沙箱 webview；
-插件还可用 `ctx.ui.panelEvent` 让已打开的面板 / 小组件无需刷新即时更新。
+**当前发布 v0.5.2：桌面小组件窗口层级与原生毛玻璃**（配置 Schema 仍为 **v36**，无新增迁移）——
+桌面小组件清单新增 `windowLevel`（`floating` / `normal` / `desktop`，默认 `floating`）与
+`windowMaterial`（`none` / `acrylic`，默认 `none`）：`normal` 不再置顶，`desktop` 用 Win32 owner
+亲和 + 最小化恢复守护尽力在显示桌面后保持可见（失败回落 `normal`）；Acrylic 需 Windows 11 22H2+
+且外观毛玻璃开启，窗口 shape 按卡片圆角裁剪，失败保持不透明卡片。用户可在插件详情逐 widget
+覆盖层级，覆盖值写入 `plugin-widget-layout.json`（不进 settings、不升 `CONFIG_VERSION`）。
+本版同时带上 v0.5.1 之后落地的独立 [plugin-dev-kit](../plugin-dev-kit/README.md) 工具包。
 **插件进程不是 OS 沙箱，安装即信任**（[14](./14-plugin-system.md)、[15](./15-plugin-development-guide.md)）。
-验收（2026-10-24 实测）：`pnpm test` 193 文件 / 2796 用例、`verify` 26/26（`version=36`、迁移 36/36）、
-端到端冒烟 **239/239**；截图新增 `chat-plugin-panel` / `chat-plugin-page` /
-`settings-plugins-installed` / `settings-plugins-detail` / `settings-plugins-marketplace` /
-`widget-desktop-plugin` / `edge-bar-plugin-widget` / `chat-plugin-panel-push`；
-Center `verify:web` **102/102**（含 `marketplace` / `plugins-admin`）。
+验收（2026-10-24 实测）：`pnpm test` 195 文件 / 2834 用例、`verify` 26/26（`version=36`、迁移 36/36）、
+端到端冒烟 **243/243**；全量截图 97 + 6 + 3 条，除既存范围外的 `chat-model-picker` 外全部通过。
+面向用户的说明见 [release-notes/v0.5.2.md](./release-notes/v0.5.2.md)。
+
+**上一发布 v0.5.1：插件系统 v36**（配置 Schema v36，迁移 `v35 → v36`，新增 `plugins`）——
+用户可安装第三方插件来扩展 Agent 能力与界面：清单声明工具 / Skill / 斜杠命令 / 自动化动作与事件 /
+右栏面板 / 桌面与提示条小组件 / 主题 / 配置字段，插件运行在独立 `utilityProcess`，
+支持本地 zip / 文件夹、开发目录热重载与 Aurora Center 插件市场；
+`ctx.ui.panelEvent` 可让已打开的面板 / 小组件无需刷新即时更新。
 面向用户的说明见 [release-notes/v0.5.1.md](./release-notes/v0.5.1.md)。
 
 **上一发布 v0.5.0**（内置浏览器 Agent 工具组 v35）；配置 Schema **v35**（迁移 `v34 → v35`，

@@ -2,10 +2,11 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「屏幕右缘提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前发布：**v0.5.1**（插件系统 v36 —— 工具 / Skill / 命令 / 自动化 / 面板 / 主题 / 配置全部清单化，
-> 新增**桌面与提示条小组件**和面板事件推送；独立进程、权限门控、Center 插件市场；配置 Schema v36），
+> 当前发布：**v0.5.2**（桌面小组件窗口层级与原生毛玻璃 —— `windowLevel` 支持
+> `floating` / `normal` / `desktop`，`windowMaterial` 支持 Windows 原生 Acrylic；
+> 含独立插件开发工具包 `plugin-dev-kit/`；配置 Schema 仍为 v36），
 > 详见 [`docs/README.md`](./docs/README.md)「当前实现状态」
-> 与 [release-notes/v0.5.1.md](./docs/release-notes/v0.5.1.md)。
+> 与 [release-notes/v0.5.2.md](./docs/release-notes/v0.5.2.md)。
 > 桌面客户端为 Electron 44.5.1（Chromium 152 / Node 24.18.1），恢复 Windows 原生最大化并保持 Acrylic；
 > 提示条用 `setShape()` 适配透明窗口平台最小宽度；剪贴板与 `console-message` 完成 Electron 44 API 迁移。
 > 历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。
@@ -35,7 +36,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 | `pnpm dev` | 启动 Electron（主进程 / preload / 渲染层 HMR） |
 | `pnpm build` | 构建三个包 + Electron 产物（`apps/desktop/out`） |
 | `pnpm typecheck` | 全仓类型检查（含 `vue-tsc`） |
-| `pnpm test` | vitest 单测（shared / agent-core / modes / 主进程纯逻辑），2602 项 |
+| `pnpm test` | vitest 单测（shared / agent-core / modes / 主进程纯逻辑），2834 项 |
 | `pnpm verify` | 真实磁盘的配置层验收脚本（需先 `pnpm build`），26 项断言 |
 | `pnpm lint` / `pnpm format` | ESLint / Prettier |
 | `pnpm icons` | 由 `scripts/assets/aurora-icon.png` 重新生成托盘 / 应用图标（含 `.ico`） |
@@ -43,7 +44,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 ### 端到端自测（真实 Electron + preload + IPC）
 
 ```powershell
-$env:AURORA_SMOKE='1'; pnpm dev   # 启动后自动跑 206 项链路断言，结果见日志并自动退出
+$env:AURORA_SMOKE='1'; pnpm dev   # 启动后自动跑 243 项链路断言，结果见日志并自动退出
 Get-Content "$env:TEMP\aurora-smoke-logs\aurora-*.log" | Select-String 'AURORA_SMOKE_RESULT'
 ```
 
