@@ -1,0 +1,89 @@
+{
+  "id": "com.example.classboard",
+  "name": "班级事务",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "description": "示例：本周值日桌面小组件、今日事务提示条小组件，以及可被 Agent 添加事务的面板。",
+  "author": { "name": "Aurora" },
+  "license": "MIT",
+  "main": "main.js",
+  "activation": "startup",
+  "permissions": [
+    "tools",
+    "commands",
+    "storage",
+    "config",
+    "logging",
+    "ui.panels",
+    "ui.widgets"
+  ],
+  "contributes": {
+    "tools": [
+      {
+        "name": "add_task",
+        "description": "添加一条班级事务，并即时刷新已打开的面板与小组件。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string", "description": "事务内容" },
+            "due": { "type": "string", "description": "截止时间（可选）" }
+          },
+          "required": ["text"]
+        },
+        "sensitivity": "confirm",
+        "readonly": false
+      },
+      {
+        "name": "list_tasks",
+        "description": "列出当前班级事务与本周值日。",
+        "parameters": { "type": "object", "properties": {} },
+        "sensitivity": "safe",
+        "readonly": true
+      }
+    ],
+    "commands": [
+      {
+        "name": "classboard",
+        "title": "班级事务",
+        "description": "打开班级事务面板",
+        "mode": "action"
+      }
+    ],
+    "panels": [
+      {
+        "id": "board",
+        "title": "班级事务",
+        "icon": "ListChecks",
+        "schema": "ui/panel.json"
+      }
+    ],
+    "widgets": [
+      {
+        "id": "duty-week",
+        "title": "本周值日",
+        "icon": "CalendarClock",
+        "slot": "desktop",
+        "schema": "ui/duty.json",
+        "defaultSize": { "width": 300, "height": 240 }
+      },
+      {
+        "id": "today-tasks",
+        "title": "今日事务",
+        "icon": "ListChecks",
+        "slot": "edge-bar",
+        "schema": "ui/tasks.json"
+      }
+    ]
+  },
+  "config": {
+    "fields": [
+      {
+        "key": "teamName",
+        "label": "班级名称",
+        "type": "text",
+        "description": "显示在面板与小组件标题下方",
+        "default": "高一(3)班"
+      }
+    ]
+  }
+}

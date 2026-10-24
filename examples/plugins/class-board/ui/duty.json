@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "nodes": [
+    { "type": "text", "text": "高一(3)班 · 本周值日", "tone": "muted" },
+    {
+      "type": "list",
+      "items": [
+        { "label": "周一", "value": "张同学" },
+        { "label": "周二", "value": "李同学" },
+        { "label": "周三", "value": "王同学" },
+        { "label": "周四", "value": "赵同学" },
+        { "label": "周五", "value": "陈同学" }
+      ]
+    }
+  ]
+}

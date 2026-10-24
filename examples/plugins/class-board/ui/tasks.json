@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "type": "row",
+      "children": [
+        { "type": "badge", "text": "待办 0", "tone": "ok" },
+        { "type": "badge", "text": "完成 0", "tone": "muted" }
+      ]
+    },
+    {
+      "type": "list",
+      "items": [{ "label": "今天没有待办", "value": "去面板里加一条", "tone": "muted" }]
+    },
+    {
+      "type": "button",
+      "text": "添加示例事务",
+      "action": { "method": "add-example", "toast": "已添加示例事务" }
+    }
+  ]
+}
