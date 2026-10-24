@@ -3,7 +3,7 @@
   "name": "Agent 插件模板",
   "version": "0.1.0",
   "apiVersion": 1,
-  "minAuroraVersion": "0.5.1",
+  "minAuroraVersion": "0.5.2",
   "description": "Aurora 插件模板：echo 工具、声明式面板、桌面与提示条小组件、事件推送。",
   "author": { "name": "Your Name" },
   "license": "MIT",

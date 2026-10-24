@@ -1,6 +1,6 @@
 # 给编码 Agent 的插件开发规则
 
-你正在为 **Aurora v0.5.1**（插件 API v1）开发插件。先读：
+你正在为 **Aurora v0.5.2**（插件 API v1）开发插件。先读：
 
 1. `docs/01-contract.md`（契约与安全边界，SSOT）
 2. `docs/02-guide.md`（逐节 API 用法）
