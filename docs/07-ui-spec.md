@@ -2472,5 +2472,5 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
 - **提示条小组件**：展开面板底部「小组件」区（`edge-bar.plugin-widgets`），只渲染声明式条目，
   单条最高 220px 内部滚动；无 widget 时整块不渲染，不改变提示条窗口 shape。
 - 截图锚点：`chat-plugin-panel` / `chat-plugin-page` / `settings-plugins-installed` /
-  `settings-plugins-marketplace` / `widget-desktop-plugin` / `edge-bar-plugin-widget` /
-  `chat-plugin-panel-push`（另含设置页深链 `settings-plugins.png`）。
+  `settings-plugins-detail` / `settings-plugins-marketplace` / `widget-desktop-plugin` /
+  `edge-bar-plugin-widget` / `chat-plugin-panel-push`（另含设置页深链 `settings-plugins.png`）。

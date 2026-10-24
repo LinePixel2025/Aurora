@@ -21,6 +21,7 @@ import type {
 } from '@aurora/shared'
 import {
   Blocks,
+  ChevronDown,
   FolderOpen,
   ListChecks,
   Play,
@@ -59,6 +60,8 @@ const deleteData = ref(false)
 /** 正在执行动作的插件 id（按钮禁用，避免连点产生并发安装/重启） */
 const busy = ref<string | null>(null)
 const market = ref<PluginMarketplaceListResult | null>(null)
+/** 展开了「详情」的插件 id（同一时间只展开一个，列表保持紧凑） */
+const expandedPlugin = ref<string | null>(null)
 /** 展开了配置表单的插件 id（同一时间只展开一个，避免页面无限变长） */
 const expandedConfig = ref<string | null>(null)
 
@@ -283,6 +286,23 @@ async function setTheme(key: string): Promise<void> {
 
 function toggleConfig(plugin: PluginSummary): void {
   expandedConfig.value = expandedConfig.value === plugin.id ? null : plugin.id
+}
+
+function toggleDetails(plugin: PluginSummary): void {
+  const open = expandedPlugin.value === plugin.id
+  expandedPlugin.value = open ? null : plugin.id
+  if (open) expandedConfig.value = null
+}
+
+/** 一行摘要：只报非零的贡献与权限数量，避免整列标签把卡片撑高。 */
+function pluginStats(plugin: PluginSummary): string {
+  const parts: string[] = []
+  if (plugin.tools.length > 0) parts.push(`${plugin.tools.length} 工具`)
+  if (plugin.commands.length > 0) parts.push(`${plugin.commands.length} 命令`)
+  if (plugin.panels.length > 0) parts.push(`${plugin.panels.length} 面板`)
+  if (plugin.widgets.length > 0) parts.push(`${plugin.widgets.length} 小组件`)
+  if (plugin.permissions.length > 0) parts.push(`${plugin.permissions.length} 项权限`)
+  return parts.join(' · ')
 }
 
 function askUninstall(plugin: PluginSummary): void {
@@ -550,14 +570,21 @@ onUnmounted(() => {
         </div>
 
         <template v-else>
-          <article v-for="plugin in installed" :key="plugin.id" class="plugin-item">
+          <article
+            v-for="plugin in installed"
+            :key="plugin.id"
+            class="plugin-item"
+            :class="{ 'is-expanded': expandedPlugin === plugin.id }"
+          >
             <div class="plugin-head">
               <div class="plugin-title">
-                <h3>{{ plugin.name }}</h3>
-                <span class="mono muted">{{ plugin.version }}</span>
-                <span class="badge">{{ SOURCE_TEXT[plugin.source] }}</span>
                 <StatusDot :tone="statusTone(plugin)" :title="STATUS_TEXT[plugin.status]" />
-                <span class="tiny muted">{{ STATUS_TEXT[plugin.status] }}</span>
+                <h3>{{ plugin.name }}</h3>
+                <span class="plugin-version mono">{{ plugin.version }}</span>
+                <span v-if="plugin.isDev" class="badge">开发</span>
+                <span v-if="plugin.status !== 'ready'" class="plugin-state">
+                  {{ STATUS_TEXT[plugin.status] }}
+                </span>
               </div>
               <div class="row plugin-actions">
                 <AppButton
@@ -569,6 +596,126 @@ onUnmounted(() => {
                 >
                   {{ plugin.enabled ? '停用' : '启用' }}
                 </AppButton>
+                <AppButton
+                  size="sm"
+                  variant="ghost"
+                  :aria-expanded="expandedPlugin === plugin.id"
+                  :data-field="`plugins.details.${plugin.id}`"
+                  @click="toggleDetails(plugin)"
+                >
+                  详情
+                  <ChevronDown
+                    class="chevron"
+                    :class="{ rotated: expandedPlugin === plugin.id }"
+                    :size="13"
+                    :stroke-width="1.8"
+                    aria-hidden="true"
+                  />
+                </AppButton>
+              </div>
+            </div>
+
+            <p v-if="plugin.description" class="plugin-desc">{{ plugin.description }}</p>
+            <p v-if="plugin.lastError" class="plugin-error">{{ plugin.lastError }}</p>
+
+            <p class="plugin-summary">
+              <span>{{ pluginStats(plugin) }}</span>
+              <span>{{ plugin.author }}</span>
+            </p>
+
+            <div
+              v-if="plugin.widgets.some((widget) => widget.slot === 'desktop')"
+              class="widget-switches"
+            >
+              <span class="block-label">桌面</span>
+              <label
+                v-for="widget in plugin.widgets.filter((item) => item.slot === 'desktop')"
+                :key="`widget-visible-${widget.id}`"
+                class="widget-switch"
+                :data-field="`plugins.widget-visible.${widget.id}`"
+              >
+                <input
+                  type="checkbox"
+                  :checked="widgetVisible(widget)"
+                  :disabled="busy === plugin.id || !plugin.enabled"
+                  @change="toggleWidgetVisible(plugin, widget)"
+                />
+                <span>{{ widget.title }}</span>
+              </label>
+            </div>
+
+            <div v-if="expandedPlugin === plugin.id" class="plugin-details">
+              <div class="detail-row">
+                <span class="detail-label">来源</span>
+                <span class="detail-value">{{ SOURCE_TEXT[plugin.source] }} · {{ plugin.author }}</span>
+              </div>
+
+              <div v-if="plugin.permissions.length > 0" class="detail-row">
+                <span class="detail-label">权限</span>
+                <div class="perm-chips">
+                  <AppTooltip
+                    v-for="permission in plugin.permissions"
+                    :key="permission"
+                    :text="PLUGIN_PERMISSION_LABELS[permission]"
+                  >
+                    <span class="perm-chip mono">{{ permission }}</span>
+                  </AppTooltip>
+                </div>
+              </div>
+
+              <div
+                v-if="
+                  plugin.panels.length > 0 ||
+                  plugin.commands.length > 0 ||
+                  plugin.widgets.length > 0
+                "
+                class="detail-row"
+              >
+                <span class="detail-label">扩展点</span>
+                <ul class="plain-list detail-value">
+                  <li v-for="panel in plugin.panels" :key="`panel-${panel.id}`">
+                    面板 · {{ panel.title }}
+                    <span class="muted">（{{ panel.kind === 'page' ? '页面' : '声明式' }}）</span>
+                  </li>
+                  <li v-for="command in plugin.commands" :key="`cmd-${command.name}`">
+                    命令 · <span class="mono">/{{ command.name }}</span>
+                    <span class="muted">{{ command.title }}</span>
+                  </li>
+                  <li v-for="widget in plugin.widgets" :key="`widget-${widget.id}`">
+                    小组件 · {{ widget.title }}
+                    <span class="muted">
+                      （{{ widget.slot === 'desktop' ? '桌面' : '提示条' }} ·
+                      {{ widget.kind === 'page' ? '页面' : '声明式' }}）
+                    </span>
+                  </li>
+                </ul>
+              </div>
+
+              <div v-if="plugin.configFields.length > 0" class="detail-row">
+                <span class="detail-label">配置</span>
+                <div class="detail-value detail-stack">
+                  <AppButton size="sm" variant="ghost" @click="toggleConfig(plugin)">
+                    {{ expandedConfig === plugin.id ? '收起配置' : '编辑配置' }}
+                  </AppButton>
+                  <PluginConfigForm
+                    v-if="expandedConfig === plugin.id"
+                    :plugin-id="plugin.id"
+                    :fields="plugin.configFields"
+                  />
+                </div>
+              </div>
+
+              <label v-if="!plugin.isDev" class="check-row trust-row">
+                <input
+                  type="checkbox"
+                  :checked="plugin.trusted"
+                  :disabled="busy === plugin.id"
+                  @change="toggleTrusted(plugin)"
+                />
+                <span> 信任此插件：清单声明为安全的工具将免确认，其余工具仍需每次确认 </span>
+              </label>
+
+              <div class="detail-actions">
                 <AppButton
                   size="sm"
                   variant="ghost"
@@ -587,16 +734,14 @@ onUnmounted(() => {
                 >
                   回滚到 {{ plugin.previousVersion }}
                 </AppButton>
-                <AppTooltip text="打开插件目录">
-                  <button type="button" class="icon-btn" @click="openFolder(plugin)">
-                    <FolderOpen :size="14" :stroke-width="1.7" aria-hidden="true" />
-                  </button>
-                </AppTooltip>
-                <AppTooltip text="打开插件日志">
-                  <button type="button" class="icon-btn" @click="openLog(plugin)">
-                    <ListChecks :size="14" :stroke-width="1.7" aria-hidden="true" />
-                  </button>
-                </AppTooltip>
+                <AppButton size="sm" variant="ghost" @click="openFolder(plugin)">
+                  <FolderOpen :size="13" :stroke-width="1.7" aria-hidden="true" />
+                  目录
+                </AppButton>
+                <AppButton size="sm" variant="ghost" @click="openLog(plugin)">
+                  <ListChecks :size="13" :stroke-width="1.7" aria-hidden="true" />
+                  日志
+                </AppButton>
                 <AppButton
                   v-if="!plugin.isDev"
                   size="sm"
@@ -608,135 +753,26 @@ onUnmounted(() => {
                   卸载
                 </AppButton>
               </div>
-            </div>
 
-            <p v-if="plugin.description" class="plugin-desc">{{ plugin.description }}</p>
-            <p v-if="plugin.lastError" class="plugin-error">{{ plugin.lastError }}</p>
-
-            <div class="meta-grid">
-              <p class="meta">
-                <span class="block-label">作者</span>
-                <span>{{ plugin.author }}</span>
-              </p>
-              <p class="meta">
-                <span class="block-label">工具</span>
-                <span>{{ plugin.tools.length }} 个</span>
-              </p>
-              <p class="meta">
-                <span class="block-label">命令</span>
-                <span>{{ plugin.commands.length }} 个</span>
-              </p>
-              <p class="meta">
-                <span class="block-label">面板</span>
-                <span>{{ plugin.panels.length }} 个</span>
-              </p>
-              <p class="meta">
-                <span class="block-label">小组件</span>
-                <span>{{ plugin.widgets.length }} 个</span>
-              </p>
-            </div>
-
-            <div v-if="plugin.permissions.length > 0" class="perm-chips">
-              <AppTooltip
-                v-for="permission in plugin.permissions"
-                :key="permission"
-                :text="PLUGIN_PERMISSION_LABELS[permission]"
-              >
-                <span class="perm-chip mono">{{ permission }}</span>
-              </AppTooltip>
-            </div>
-
-            <div
-              v-if="
-                plugin.panels.length > 0 ||
-                plugin.commands.length > 0 ||
-                plugin.widgets.length > 0
-              "
-              class="contrib-block"
-            >
-              <p class="block-label">扩展点</p>
-              <ul class="plain-list">
-                <li v-for="panel in plugin.panels" :key="`panel-${panel.id}`">
-                  面板 · {{ panel.title }}
-                  <span class="muted">（{{ panel.kind === 'page' ? '页面' : '声明式' }}）</span>
-                </li>
-                <li v-for="command in plugin.commands" :key="`cmd-${command.name}`">
-                  命令 · <span class="mono">/{{ command.name }}</span>
-                  <span class="muted">{{ command.title }}</span>
-                </li>
-                <li v-for="widget in plugin.widgets" :key="`widget-${widget.id}`">
-                  小组件 · {{ widget.title }}
-                  <span class="muted">
-                    （{{ widget.slot === 'desktop' ? '桌面' : '提示条' }} ·
-                    {{ widget.kind === 'page' ? '页面' : '声明式' }}）
-                  </span>
-                </li>
-              </ul>
-            </div>
-
-            <div
-              v-if="plugin.widgets.some((widget) => widget.slot === 'desktop')"
-              class="contrib-block"
-            >
-              <p class="block-label">桌面小组件</p>
-              <label
-                v-for="widget in plugin.widgets.filter((item) => item.slot === 'desktop')"
-                :key="`widget-visible-${widget.id}`"
-                class="check-row"
-                :data-field="`plugins.widget-visible.${widget.id}`"
-              >
-                <input
-                  type="checkbox"
-                  :checked="widgetVisible(widget)"
-                  :disabled="busy === plugin.id || !plugin.enabled"
-                  @change="toggleWidgetVisible(plugin, widget)"
-                />
-                <span>显示在桌面 · {{ widget.title }}</span>
-              </label>
-            </div>
-
-            <div v-if="plugin.configFields.length > 0" class="config-block">
-              <div class="row list-head">
-                <p class="block-label">插件配置</p>
-                <AppButton size="sm" variant="ghost" @click="toggleConfig(plugin)">
-                  {{ expandedConfig === plugin.id ? '收起' : '编辑配置' }}
-                </AppButton>
-              </div>
-              <PluginConfigForm
-                v-if="expandedConfig === plugin.id"
-                :plugin-id="plugin.id"
-                :fields="plugin.configFields"
-              />
-            </div>
-
-            <label v-if="!plugin.isDev" class="check-row trust-row">
-              <input
-                type="checkbox"
-                :checked="plugin.trusted"
-                :disabled="busy === plugin.id"
-                @change="toggleTrusted(plugin)"
-              />
-              <span> 信任此插件：清单声明为安全的工具将免确认，其余工具仍需每次确认 </span>
-            </label>
-
-            <div v-if="confirmingUninstall === plugin.id" class="uninstall-confirm">
-              <p class="tiny">卸载后插件目录会被删除，插件数据默认保留。</p>
-              <label class="check-row">
-                <input v-model="deleteData" type="checkbox" />
-                <span>同时删除插件数据与配置</span>
-              </label>
-              <div class="row">
-                <AppButton
-                  variant="danger"
-                  size="sm"
-                  :disabled="busy === plugin.id"
-                  @click="uninstall(plugin)"
-                >
-                  确认卸载
-                </AppButton>
-                <AppButton size="sm" variant="ghost" @click="confirmingUninstall = null">
-                  取消
-                </AppButton>
+              <div v-if="confirmingUninstall === plugin.id" class="uninstall-confirm">
+                <p class="tiny">卸载后插件目录会被删除，插件数据默认保留。</p>
+                <label class="check-row">
+                  <input v-model="deleteData" type="checkbox" />
+                  <span>同时删除插件数据与配置</span>
+                </label>
+                <div class="row">
+                  <AppButton
+                    variant="danger"
+                    size="sm"
+                    :disabled="busy === plugin.id"
+                    @click="uninstall(plugin)"
+                  >
+                    确认卸载
+                  </AppButton>
+                  <AppButton size="sm" variant="ghost" @click="confirmingUninstall = null">
+                    取消
+                  </AppButton>
+                </div>
               </div>
             </div>
           </article>
@@ -921,11 +957,15 @@ onUnmounted(() => {
 .plugin-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 6px;
   padding: var(--space-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--fill-1);
+}
+
+.plugin-item.is-expanded {
+  background: var(--fill-2);
 }
 
 .plugin-head {
@@ -955,9 +995,14 @@ onUnmounted(() => {
 }
 
 .plugin-desc {
+  display: -webkit-box;
   margin: 0;
+  overflow: hidden;
   color: var(--text-secondary);
   font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
 }
 
 .plugin-error {
@@ -980,19 +1025,102 @@ onUnmounted(() => {
   color: var(--aurora-blue);
 }
 
-.meta-grid {
-  display: flex;
-  gap: var(--space-4);
-  flex-wrap: wrap;
+.plugin-version {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
-.meta {
+.plugin-state {
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.plugin-summary {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.chevron {
+  transition: transform var(--transition-fast);
+}
+
+.chevron.rotated {
+  transform: rotate(180deg);
+}
+
+.widget-switches {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+.widget-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px 2px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.widget-switch input {
+  margin: 0;
+  accent-color: var(--aurora-blue);
+}
+
+.plugin-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: 2px;
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.detail-label {
+  flex: 0 0 46px;
+  padding-top: 1px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.detail-value {
+  min-width: 0;
   color: var(--text-secondary);
   font-size: var(--text-sm);
+}
+
+.detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.detail-actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  padding-top: var(--space-1);
 }
 
 .block-label {
@@ -1100,23 +1228,6 @@ onUnmounted(() => {
   margin: 0;
 }
 
-.icon-btn {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  transition:
-    color var(--transition-fast),
-    background var(--transition-fast);
-}
-
-.icon-btn:hover {
-  color: var(--text-primary);
-  background: var(--fill-2);
-}
-
 .dev-row {
   display: flex;
   align-items: center;
@@ -1135,15 +1246,6 @@ onUnmounted(() => {
   white-space: nowrap;
   color: var(--text-secondary);
   font-size: var(--text-sm);
-}
-
-.config-block,
-.contrib-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding-top: var(--space-2);
-  border-top: 1px dashed var(--border-subtle);
 }
 
 .section-card select {

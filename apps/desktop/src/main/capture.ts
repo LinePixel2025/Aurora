@@ -3434,13 +3434,66 @@ export const CHAT_PLUGIN_PAGE_CHECK = `(async () => {
 })()`
 
 /** 设置页插件「已安装」视图（P3）：示例插件由 runCapture 预装 */
+/**
+ * 插件「已安装」列表是异步拉取的（`plugins:list` + 布局），截图前必须等条目落定，
+ * 否则会截到「正在读取插件列表…」而探针仍因 tab 文案通过。
+ */
+export const SETTINGS_PLUGINS_INSTALLED_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (document.querySelector('.plugin-item') !== null) return { ok: true }
+    await wait(150)
+  }
+  return { ok: false, reason: '插件列表未加载' }
+})()`
+
 export const SETTINGS_PLUGINS_INSTALLED_CHECK = `(() => {
   const text = document.body ? document.body.innerText : ''
   const tab = document.querySelector('[data-field="plugins.tab-installed"]')
   const active = tab !== null && tab.classList.contains('active')
+  const item = document.querySelector('.plugin-item')
   return {
-    pass: active && text.includes('Hello Aurora') && text.includes('安装插件包'),
+    pass:
+      active &&
+      text.includes('Hello Aurora') &&
+      text.includes('安装插件包') &&
+      item !== null &&
+      (item.innerText.includes('详情') || item.innerText.includes('停用')),
     detail: text.slice(0, 200),
+  }
+})()`
+
+/** 展开「详情」后的紧凑次级区：权限 / 扩展点 / 配置 / 信任 / 动作。 */
+export const SETTINGS_PLUGINS_DETAIL_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const button = document.querySelector('[data-field="plugins.details.com.example.hello"]')
+    if (button !== null) {
+      button.click()
+      await wait(350)
+      const details = document.querySelector('.plugin-details')
+      // 详情在首屏下方：滚到可见区域再截图（否则只能截到卡片上半截）
+      if (details !== null) details.scrollIntoView({ block: 'center' })
+      await wait(300)
+      return { ok: details !== null }
+    }
+    await wait(150)
+  }
+  return { ok: false, reason: '详情按钮未出现' }
+})()`
+
+export const SETTINGS_PLUGINS_DETAIL_CHECK = `(() => {
+  const details = document.querySelector('.plugin-details')
+  const text = details === null ? '' : details.innerText
+  const actions = details === null ? [] : [...details.querySelectorAll('.detail-actions button')]
+  return {
+    pass:
+      details !== null &&
+      text.includes('权限') &&
+      text.includes('扩展点') &&
+      text.includes('信任此插件') &&
+      actions.some((button) => (button.textContent ?? '').includes('卸载')),
+    detail: text.slice(0, 220),
   }
 })()`
 
@@ -13837,7 +13890,15 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     name: 'settings',
     file: 'settings-plugins-installed.png',
     query: { page: 'plugins' },
+    act: SETTINGS_PLUGINS_INSTALLED_ACT,
     check: SETTINGS_PLUGINS_INSTALLED_CHECK,
+  })
+  plan.push({
+    name: 'settings',
+    file: 'settings-plugins-detail.png',
+    query: { page: 'plugins' },
+    act: SETTINGS_PLUGINS_DETAIL_ACT,
+    check: SETTINGS_PLUGINS_DETAIL_CHECK,
   })
   plan.push({
     name: 'settings',
