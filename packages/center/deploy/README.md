@@ -1,6 +1,6 @@
 # Aurora Center 服务器部署（Docker）
 
-`packages/center` 是纯 Node 程序（唯一运行时依赖 `ws`，另带 `@aurora/shared` 的两个常量），
+`packages/center` 是纯 Node 程序（运行时依赖 `ws` 与 `fflate`，另带 `@aurora/shared` 的两个常量），
 本目录提供**离线容器化部署**方案：构建机打出自包含产物 → 上传服务器 → docker compose 启动，
 服务器全程不需要访问 npm（适合国内云主机）。
 
@@ -12,7 +12,7 @@
 > 就是网页包旧了。
 >
 > `docker-compose.yml` 的 `image:` tag 跟 **Center 自己的版本号**（`packages/center/package.json`，
-> 当前 `0.4.9`，**不必与桌面端版本号相同**）走：更新 Center 先升那个版本号、同步换 tag，
+> 当前 `0.5.0`，**不必与桌面端版本号相同**）走：更新 Center 先升那个版本号、同步换 tag，
 > 别在同一 tag 上反复覆盖，否则排障时说不清线上跑的是哪一版。
 
 ## 0. Center 自身的更新口径（版本线独立）
@@ -35,7 +35,7 @@ pnpm --filter @aurora/center build
 OUT="$TEMP/aurora-center-deploy"
 rm -rf "$OUT"
 pnpm --filter @aurora/center deploy --prod --legacy "$OUT"
-rm -rf "$OUT/src" "$OUT/web" "$OUT/tsconfig.json" "$OUT/vite.config.ts"
+rm -rf "$OUT/src" "$OUT/web" "$OUT/verify" "$OUT/deploy" "$OUT/tsconfig.json" "$OUT/tsconfig.web.json" "$OUT/vite.config.ts"
 cp packages/center/deploy/Dockerfile packages/center/deploy/docker-compose.yml "$OUT/"
 
 tar -czf "$TEMP/aurora-center.tar.gz" -C "$OUT" .
