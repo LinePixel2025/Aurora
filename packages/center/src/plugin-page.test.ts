@@ -36,6 +36,14 @@ describe('injectPluginPageBridge', () => {
     expect(out).toContain('request')
     expect(out).toContain('onEvent')
   })
+
+  it('页面离开（pagehide）时按每帧令牌向父页发 bye，父页据此断开中继', () => {
+    const out = injectPluginPageBridge('<html><head></head></html>')
+    expect(out).toContain("addEventListener('pagehide'")
+    expect(out).toContain("kind: 'bye'")
+    expect(out).toContain('__auroraBridge')
+    expect(out).toContain('bridge: bridgeToken')
+  })
 })
 
 describe('sanitizeRequestHost', () => {

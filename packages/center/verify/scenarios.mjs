@@ -1940,6 +1940,34 @@ export const SCENARIOS = [
         }
       })
 
+      // 页面自行导航离开：桥在 pagehide 时发 bye → 父页断流并提示；再点刷新应能恢复
+      if (frame !== null) {
+        await frame
+          .evaluate(() => {
+            window.location.replace('about:blank')
+          })
+          .catch(() => undefined)
+      }
+      const leftNotice = await ctx.page
+        .waitForSelector('[data-field="plugin.page-left"]', { timeout: TIMEOUT })
+        .then(() => true)
+        .catch(() => false)
+      await ctx.page.click('[data-action="plugin.refresh"]').catch(() => undefined)
+      const restoredFrame = await waitForFrame(ctx.page, '/p/com.example.hello/1.0.0/ui/page.html')
+      let restored = false
+      if (restoredFrame !== null) {
+        await restoredFrame.waitForSelector('#count', { timeout: TIMEOUT }).catch(() => undefined)
+        await restoredFrame
+          .waitForFunction(
+            () => (document.getElementById('count')?.textContent ?? '').startsWith('计数：'),
+            { timeout: TIMEOUT },
+          )
+          .catch(() => undefined)
+        restored = await ctx.page.evaluate(
+          () => document.querySelector('[data-field="plugin.page-left"]') === null,
+        )
+      }
+
       return verdict(
         {
           iframe: frame !== null,
@@ -1953,8 +1981,10 @@ export const SCENARIOS = [
           bridged: countText === '计数：3（你好）',
           noError: requestError === '',
           clickBridged: call !== null,
+          leftDisconnected: leftNotice,
+          reopened: restored,
         },
-        { countText, requestError, shell, call },
+        { countText, requestError, shell, call, leftNotice, restored },
       )
     },
   },

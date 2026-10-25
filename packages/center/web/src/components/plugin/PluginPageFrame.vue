@@ -12,10 +12,7 @@
  * 页面语义（request/onEvent、`panel` 查询串）保持一致。
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import {
-  CENTER_PLUGIN_PAGE_HOST_SOURCE,
-  CENTER_PLUGIN_PAGE_SOURCE,
-} from '@aurora/shared/browser'
+import { CENTER_PLUGIN_PAGE_HOST_SOURCE, CENTER_PLUGIN_PAGE_SOURCE } from '@aurora/shared/browser'
 import {
   fetchPluginPanel,
   onPluginEvent,
@@ -36,20 +33,33 @@ const props = defineProps<{
   offline?: boolean
 }>()
 
-/** 页面级限流：并发 8、每秒 20 次、单次 15s（服务器侧另有 20 次/秒 + 20s 超时） */
+/**
+ * 页面级限流：并发 8、每秒 20 次。
+ * 超时必须高于服务器侧 pending 20s：否则页面先报超时，而写操作可能已经在桌面落地，
+ * 用户重试就会写两遍（与 hub 的 CENTER_PLUGIN_PENDING_TIMEOUT_MS 对齐）。
+ */
 const MAX_IN_FLIGHT = 8
 const MAX_PER_SECOND = 20
-const REQUEST_TIMEOUT_MS = 15_000
+const REQUEST_TIMEOUT_MS = 25_000
 
 const frameEl = ref<HTMLIFrameElement | null>(null)
 const loading = ref(true)
 const missing = ref(false)
 const error = ref('')
+/** 页面自己导航走了（桥收到 pagehide 后上报）：从此不再转发任何请求 / 事件 */
+const navigated = ref(false)
+
+/**
+ * 每次挂载一个关联令牌：页面导航后 `event.source` 已不是 `contentWindow`（旧文档的 source
+ * 对不上新 WindowProxy），`bye` 只能靠令牌归属；也避免上一帧迟到的 bye 误断新面板。
+ */
+const bridgeToken = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 
 const pageUrl = (): string => {
   const entry = props.entry.trim().replace(/^\/+/, '')
   if (entry === '') return ''
-  return `${pluginAssetUrl(props.pluginId, props.version, entry)}?panel=${encodeURIComponent(props.panelId)}`
+  const url = `${pluginAssetUrl(props.pluginId, props.version, entry)}?panel=${encodeURIComponent(props.panelId)}`
+  return `${url}&__auroraBridge=${encodeURIComponent(bridgeToken)}`
 }
 
 let disposed = false
@@ -64,7 +74,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function reply(id: string, payload: Record<string, unknown>): void {
-  if (disposed) return
+  if (disposed || navigated.value) return
   const target = frameEl.value?.contentWindow
   if (target === null || target === undefined) return
   try {
@@ -130,12 +140,31 @@ async function onRequest(id: string, method: string, params: unknown): Promise<v
   }
 }
 
-/** 只认本 iframe 的消息：`event.source` 是判断归属的唯一可靠依据（origin 为 'null'） */
+/**
+ * 页面自己导航走了：contentWindow 里已是另一份文档（外部站点也可能），
+ * 继续 postMessage 等于把面板数据投给第三方。断流并提示重新打开。
+ */
+function onPageLeft(): void {
+  if (disposed || navigated.value) return
+  navigated.value = true
+  loading.value = false
+  inFlight.clear()
+  release()
+}
+
+/**
+ * 请求只认 `event.source === contentWindow`（origin 为 'null'，source 是唯一可靠依据）；
+ * `bye` 在旧文档卸载时发出，导航后 source 已对不上新 WindowProxy，改用每帧令牌归属。
+ */
 function onWindowMessage(event: MessageEvent): void {
-  const frame = frameEl.value
-  if (frame === null || event.source !== frame.contentWindow) return
   const data = event.data
   if (!isRecord(data) || data['source'] !== CENTER_PLUGIN_PAGE_SOURCE) return
+  if (data['kind'] === 'bye') {
+    if (data['bridge'] === bridgeToken) onPageLeft()
+    return
+  }
+  const frame = frameEl.value
+  if (navigated.value || frame === null || event.source !== frame.contentWindow) return
   if (data['kind'] !== 'request') return
   const id = typeof data['id'] === 'string' ? data['id'] : ''
   const method = typeof data['method'] === 'string' ? data['method'] : ''
@@ -148,7 +177,7 @@ function onWindowMessage(event: MessageEvent): void {
 }
 
 function forwardEvent(event: { event: string; payload?: unknown }): void {
-  if (disposed) return
+  if (disposed || navigated.value) return
   const target = frameEl.value?.contentWindow
   if (target === null || target === undefined) return
   try {
@@ -167,7 +196,7 @@ function forwardEvent(event: { event: string; payload?: unknown }): void {
 }
 
 function subscribe(): void {
-  if (props.offline === true) return
+  if (props.offline === true || navigated.value) return
   const next = { clientId: props.clientId, pluginId: props.pluginId, panelId: props.panelId }
   if (
     subscription !== null &&
@@ -246,6 +275,7 @@ onBeforeUnmount(() => {
         设备已离线，页面显示的是最后一次加载的内容
       </div>
       <iframe
+        v-if="!navigated"
         ref="frameEl"
         class="frame-body"
         data-field="plugin.page-frame"
@@ -256,6 +286,9 @@ onBeforeUnmount(() => {
         @load="loading = false"
         @error="error = '插件页面加载失败'"
       ></iframe>
+      <p v-if="navigated" class="frame-notice frame-left" data-field="plugin.page-left">
+        插件页面已离开托管地址，连接已断开。请点右上角「刷新」重新打开。
+      </p>
     </div>
   </div>
 </template>
@@ -324,6 +357,10 @@ onBeforeUnmount(() => {
   background: var(--fill-1);
   color: var(--text-secondary);
   line-height: var(--leading-normal);
+}
+
+.frame-left {
+  margin: var(--space-3);
 }
 
 .frame-error {

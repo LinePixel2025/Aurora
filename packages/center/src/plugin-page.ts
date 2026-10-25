@@ -19,10 +19,13 @@ export const PLUGIN_PAGE_HOST_SOURCE = CENTER_PLUGIN_PAGE_HOST_SOURCE
 /**
  * 注入给页面的桥：与桌面 preload 的 `window.auroraPlugin` 同形
  * （`request(method, params)` / `onEvent(listener)`），底层走 postMessage。
+ * 页面离开（pagehide）时发 `bye`，父页收到后断开中继。
  */
 export const PLUGIN_PAGE_SHIM = `(function () {
   var PAGE_SOURCE = '${PLUGIN_PAGE_SOURCE}'
   var HOST_SOURCE = '${PLUGIN_PAGE_HOST_SOURCE}'
+  var bridgeToken = ''
+  try { bridgeToken = new URLSearchParams(window.location.search).get('__auroraBridge') || '' } catch (error) { /* 拿不到 query 就发空令牌 */ }
   var sequence = 0
   var pending = new Map()
   var listeners = []
@@ -66,6 +69,10 @@ export const PLUGIN_PAGE_SHIM = `(function () {
         try { listeners[i](data.event, data.payload) } catch (error) { /* 页面自己的回调异常 */ }
       }
     }
+  })
+  // 页面自己导航 / 被卸载：父页按每帧令牌归属 bye，随后断开中继，别把面板数据投给新文档
+  window.addEventListener('pagehide', function () {
+    post({ source: PAGE_SOURCE, kind: 'bye', bridge: bridgeToken })
   })
 })()`
 
