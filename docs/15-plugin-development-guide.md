@@ -371,6 +371,22 @@ const off = window.auroraPlugin.onEvent((event, payload) => console.log(event, p
 - 页面 `request` 的 `method` ≤ 64 字符，params ≤ 256 KB；
 - 推荐自己带一份暗色 / 亮色 CSS（页面拿不到宿主令牌）；可参考示例 `ui/page.css`。
 
+### 7.1 在 Aurora Center 上的差异
+
+同一份页面也会被 Center 托管（`/p/<id>/<version>/<entry>`，见 docs/12 §6.5），差别：
+
+- **能力更窄**：iframe 固定 `sandbox="allow-scripts"`（opaque origin），没有 `localStorage` /
+  `sessionStorage` / cookie / IndexedDB，也没有 `alert` / `confirm` / `prompt` / `showModal`、
+  表单提交、弹窗、下载、Worker、音视频；CSP 为 `connect-src 'none'`，**不能自己 `fetch`
+  （连包内 JSON 也不行）**。需要的数据一律经 `request` 拿。
+- **资源只从市场包出**：页面版本必须已发布到该 Center 的市场，本机目录 / 未发布版本打不开；
+  不要引用外部 CDN / 字体。
+- **`params` 原样到达** `invokePanel`：与桌面 `request(method, params)` 完全一致，没有额外的
+  `{ params, values }` 包装（那是声明式面板的）。
+- **视图状态与桌面共享**：Center 的切视图 / 切周会写回同一份插件状态，等于改桌面视图；
+  需要两端即时同步就在写操作后 `ctx.ui.panelEvent`。
+- 页面自行导航离开（`pagehide`）后中继会断开，用户需要重新打开面板。
+
 ---
 
 ## 7.5 桌面 / 提示条小组件

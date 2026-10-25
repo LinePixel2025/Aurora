@@ -522,6 +522,8 @@ interface ClientPluginInfo { id: string; name: string; version: string; panels: 
 数据链路**：schema 面板返回静态 schema + `invokePanel` 结果（失败回落静态 schema），page
 面板直接返回 `invokePanel` 结果。桌面 `plugins:panelData` IPC 行为不变（不允许页面型面板，
 页面型仍走 `plugins:pageRpc`）；Center 中继以 `allowPage: true` 复用。
+页面型面板的 `params` **原样直传**给 `invokePanel`（与桌面 `plugins:pageRpc` 同口径）；
+`{ params, values }` 只是声明式面板的包装，页面型绝不能复用（否则页面传来的字段全部丢失）。
 
 #### 网页端
 
@@ -533,8 +535,14 @@ interface ClientPluginInfo { id: string; name: string; version: string; panels: 
   `action.confirm` 走内置确认条后执行；`refresh` / `event` 语义与桌面 `PluginPanel.vue` 一致。
 - **页面型面板**：`PluginPageFrame.vue` 用 `<iframe sandbox="allow-scripts">` 打开 `/p/` 资源，
   经 `postMessage` 桥（`CENTER_PLUGIN_PAGE_SOURCE` / `CENTER_PLUGIN_PAGE_HOST_SOURCE`）转发
-  请求与 `plugin.event`；校验 `event.source === iframe.contentWindow`、只允许本面板绑定的
-  `pluginId/panelId`，8 个在途 + 20 次/秒 + 15s 超时。
+  请求与 `plugin.event`；请求校验 `event.source === iframe.contentWindow`（`bye` 用每帧令牌
+  归属），只允许本面板绑定的 `pluginId/panelId`，8 个在途 + 20 次/秒 + 25s 超时（高于服务器
+  pending 20s，避免页面先报超时、写操作却已落地导致重复写入）。页面自行导航离开
+  （`pagehide`）时桥上报 `bye`，父页断开中继并提示刷新，不把事件投给新文档；页面地址额外带
+  一个每次挂载随机的 `__auroraBridge` 关联参数（桥内部用，页面可忽略）。
+- **视图状态共享**：页面型面板读写插件自己的 `ui` 状态。Center 的切视图 / 切周会写回桌面
+  同一份状态（**Center 允许改桌面视图**）；桌面已打开的面板在下次加载 / 收到插件事件后跟随。
+  需要两端即时同步时由插件用 `ctx.ui.panelEvent` 推送，宿主不做通用回放。
 - 网页 WS 重连后，打开中的面板视图重新订阅；`plugin.event` 由 `state/plugin-events.ts`
   小事件总线投给当前视图。
 
@@ -563,6 +571,10 @@ interface ClientPluginInfo { id: string; name: string; version: string; panels: 
 - 管理员看不到他人设备的插件面板（只认 owner）。
 - 旧客户端不上报 `plugins` → 无入口；旧服务端不认识这些消息 → 忽略，均不报错。
 - 每账号最多 24 条侧栏插件入口，超出截断。
+- 页面型面板跑在 `sandbox="allow-scripts"` 的 opaque origin 里：没有 `localStorage` / cookie /
+  IndexedDB，没有 `alert` / `confirm` / `showModal`、表单提交、弹窗、下载、Worker / 音视频；
+  `connect-src 'none'`，脚本 / 样式只放行 Center Host 与内联。引用外部 CDN / 字体或自己
+  `fetch`（含包内 JSON）的页面会缺功能。
 
 ## 7. 客户端配置（`center` 分组，CONFIG_VERSION 17）
 
