@@ -101,6 +101,10 @@
 
 - 独立可部署的控制中心服务器 + `aurora-center` CLI + Web UI（构建产物随包静态服务），
   协议类型在 `packages/shared/src/center/protocol.ts` 三方共享。见 docs/12。
+- 插件侧栏面板镜像链路：网页 → Center Hub（owner 校验 / 订阅 refcount）→ 桌面 Connector
+  （`allowRemoteSession` 闸门）→ `readPluginPanelData`（与桌面 `plugins:panelData` 同一条
+  链路）→ 回执 / `plugin.event` 原路返回；页面型面板的静态资源由 Center 从市场 zip 的
+  `/p/` 直出。见 docs/12 §6.5。
 
 ## 4. 目录结构（monorepo，pnpm workspace）
 

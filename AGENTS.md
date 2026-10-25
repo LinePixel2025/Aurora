@@ -7,10 +7,15 @@
 ## 会话开始先加载项目记忆（第一个动作）
 
 **每次会话动手之前**先把记忆读进上下文：用 `skill` 工具加载 `memory-read`
-（等价动作 = 读 `Memory/README.md` + `Memory/` 下全部 `.md`）——**没有这个技能就直接读文件**。
+（等价动作 = 读 `Memory/README.md` 索引 + 按当前任务相关性读条目：路径 / 模块 / 错误串 / 动作四类检索词，
+**不强制全量**；但发布、配置 Schema、IPC 契约、权限、数据删除这类跨子系统改动要把相关标签整组读全）——
+**没有这个技能就直接读文件**。
 踩到新坑或确认长期口径时用 `memory-create` 落盘（一个主题一个 md、文件名带日期、同步更新 `Memory/README.md` 索引）。
-两个技能装在**系统共享技能根**（`~/.agents/skills`，即 DSH 的 `agentsHome` 根 / rank 500，与 find-skills、step-planner 同层；
+读写这两个技能装在**系统共享技能根**（`~/.agents/skills`，即 DSH 的 `agentsHome` 根 / rank 500，与 find-skills、step-planner 同层；
 2026-10-03 从用户级根 `~/.dsh/skills` 移来），不随本仓库分发 —— 别人克隆后按上一句直接读文件即可。
+**整理记忆走 `memory-summary`（同层，只能手动触发）**：用户说「整理 / 清理 / 精简记忆」或输入 `/memory-summary` 时，
+按项目现状删已失效 / 被推翻 / 冗杂的条目、合并同主题、精简正文并重排索引；它带 `disable-model-invocation: true`，
+模型**不会自动调用**，日常只写不删（`memory-create`）。
 **层级**：本文件的硬规则 > `Memory/` 的历史经验；任一条与当前实测冲突时，以实测为准并顺手更正记忆。
 
 ## 项目是什么
@@ -76,7 +81,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **提交前仍必须跑全量**。
 - **Center 网页端验收（视觉 + 行为）**：`pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
   —— 真实服务器子进程（临时数据目录）+ 协议忠实的桩客户端 + 系统 Edge，逐场景截图 / 读 DOM 并写 `report.json`
-  （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **102/102**（51 场景 × 暗/浅两档）。
+  （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **106/106**
+  （54 个场景定义：52 个 × 暗/浅两档 + `theme-dark` / `theme-light` 各一条）。
   整轮开跑前会用假上游 + 临时 `AURORA_CENTER_SECRET` 灌 20 条真实用量明细当夹具（见 docs/12 §10）。
   开关：`AURORA_CWEB_ONLY`（子串过滤 / 特殊值 `failed`）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_OUT`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
@@ -218,6 +224,17 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **插件推送（`ui.panelEvent`）必须在主进程校验**：panelId / widgetId 二选一、目标在本插件清单、
   面板目标要 `ui.panels`、小组件目标要 `ui.widgets`、payload ≤ 64 KB、每插件每秒 ≤ 20 条（超出丢弃记 warn）；
   路由只投给发起插件自己的面板 / 小组件（桌面窗口走 `plugins:widgetEvent`，右栏面板走 `plugins:panelEvent`）。
+- **插件侧栏面板上 Center 只认设备属主**（docs/12 §6.5）：`plugin.panelData` / `plugin.subscribe` /
+  `plugin.event` 都要求 `ownerUserId === 会话用户`，**管理员不跨用户**（插件内容是个人数据）；
+  **widgets（桌面 / 提示条）永不上 Center**，只镜像 `contributes.panels`。不新增清单字段 / 权限，
+  不升 `CONFIG_VERSION`，总闸复用 `center.allowRemoteSession`。`plugin.panelData` 的客户端链路必须
+  走 `main/plugins/panel-data.ts` 的 `readPluginPanelData()`（与桌面 `plugins:panelData` 同一条），
+  别在 connector 里另写一套。
+- **页面型插件的 `/p/` 路由必须排在 SPA 静态托管之前**：否则 index.html 吃掉资源；资源只能从
+  **已发布到本 Center 的市场 zip** 读（`plugins.readAsset`，路径防穿越 + MIME 白名单、无 svg），
+  HTML 必须注入 postMessage 桥并用**显式 Host** 的 CSP（sandbox iframe 是 opaque origin，
+  `'self'` 不可靠）；iframe 固定 `sandbox="allow-scripts"`，不放 `allow-same-origin` / `allow-popups`。
+  中继的调用 / 事件 / 订阅都有大小、速率、数量上限，日志只记 `pluginId / panelId / method`，不记 payload。
 - **页面型小组件的 guest 归属带 `widgetId`**：`plugins:pageRpc` 必须同时校验 guest 登记的小组件 id，
   且目标确实是该插件的页面型 widget；不要只按 pluginId 放行。
 - **插件事件自动化有防自激守卫**：同一 `(pluginId, event)` 在自动化执行期间的重入会被忽略；

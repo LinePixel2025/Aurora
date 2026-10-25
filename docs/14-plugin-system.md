@@ -366,6 +366,24 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 设置 → 插件列表只保留总览、启停与「配置」入口；配置表单、桌面小组件显隐 / 层级、
   权限与扩展点、重启 / 回滚 / 卸载等管理动作在单例独立窗口里（默认 880×760、最小 620×520，
   关闭 = 隐藏，规格见 docs/07 §2.2.2）。
+
+### 5.7 Center 侧栏面板镜像
+
+插件**不需要任何额外声明**，桌面连上 Center 后，已启用插件的侧栏面板会自动出现在 Center
+工作台侧栏（docs/12 §6.5）：
+
+- **只有侧栏面板**（`ui.panels`）会上 Center；桌面小组件与提示条小组件（`ui.widgets`）
+  **永不出现**，也不新增清单字段 / 权限；
+- 声明式面板：网页端用同构渲染器直接画，按钮 / 输入经 `plugin.panelData` → 客户端
+  `invokePanel` 实时执行并回传 schema；
+- 页面型面板：网页端在 `sandbox="allow-scripts"` 的 iframe 里打开
+  `/p/<pluginId>/<version>/<entry>`，资源**只从已发布到该 Center 的市场包取**（本机文件不
+  出机）；该版本未发布时面板明确提示，不白屏；页面里的 `window.auroraPlugin` 与桌面
+  §5.2 同名同形，只是底层从 `pageRpc` 换成 postMessage 桥；
+- 推送（§5.5）只在该面板被网页订阅时转发；Center 侧日志不记 payload。
+- 总闸是客户端的 `center.allowRemoteSession`：关闭后网页端不出现任何插件入口（目录不上报），
+  已打开的面板调用回 `E_REMOTE_DISABLED`。
+- 权限口径：只在**设备属主**自己的账号里可见 / 可操作，管理员不跨用户。
 - 打开链：`plugins:openWindow` → 主进程校验插件存在 → 复用窗口并等页面加载完成后经
   `plugins:windowRequest` 推送 `{ requestId, pluginId }`；已打开时只重推参数。
 - 保存配置仍走 `plugins:setConfig`，插件侧收到 `config.changed`；重启成功后由
@@ -482,7 +500,8 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 ## 11. 市场（Aurora Center）
 
 - 公开路由（无需登录）：`GET /api/plugins`（搜索 / 分页 / 排序）、`GET /api/plugins/:id`、
-  `GET /api/plugins/:id/download?version=`（带 `X-Checksum-Sha256`）、`GET /api/plugins/:id/icon`；
+  `GET /api/plugins/:id/download?version=`（带 `X-Checksum-Sha256`）、`GET /api/plugins/:id/icon`、
+  `GET|HEAD /p/:id/:version/<path>`（页面型面板静态资源，§5.7）；
 - 管理员：`GET /api/admin/plugins`、`POST /api/admin/plugins/upload`（zip → staging）、
   `POST /api/admin/plugins/publish`、`DELETE /api/admin/plugins/:id/:version`、
   `POST /api/admin/plugins/:id/icon`（PNG ≤ 256 KB）；
@@ -505,7 +524,7 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
   `settings-plugins-detail.png` / `plugin-config.png` / `settings-plugins-marketplace.png` /
   `widget-desktop-plugin.png` / `edge-bar-plugin-widget.png` / `chat-plugin-panel-push.png` +
   设置页 `settings-plugins.png`；
-- Center：`verify:web` 的 `marketplace` / `plugins-admin` 场景；
+- Center：`verify:web` 的 `marketplace` / `plugins-admin` / `plugin-panel` / `plugin-page` 场景；
 - 独立校验：`node scripts/verify-plugin.mjs <目录|zip>`。
 
 已知限制：

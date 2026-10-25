@@ -1017,6 +1017,13 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
     确认卡与提问卡同一条待办栏（先到先得、幂等）；固定位 / 门控口径
     （未配置 STT 连麦克风按钮都不渲染）。`data-field` / `data-action` 命名两端同名
     （`chat.mic` / `chat.ask-user-card` / `chat.trace-live` / `chat.task-card` / `chat.todo-card` …）。
+- **Center 工作台的插件分区（docs/12 §6.5）**：登录后侧栏主导航下方动态出现「插件」分区 ——
+  每个插件侧栏面板一条入口（按 `pluginId/panelId` 去重，多设备时页内切设备），只列当前账号
+  自有且在线的设备，最多 24 条，无条目时整块不渲染；`data-action="nav.plugin.<key>"`，
+  激活态同时比对路由与 query。面板页标题 = 面板 `title`（同名加插件名前缀）：
+  声明式面板复用与桌面同构的渲染器（按钮确认条 / 输入 values / `refresh` / `event` 语义一致），
+  页面型面板是 `sandbox="allow-scripts"` 的 iframe（opaque origin，不能访问父页）；
+  设备离线时页内明确显示离线态，不静默空白。移动端仍只走抽屉，不塞底部导航。
 
 ### 输入框规格（2026-09 输入框重做；2026-09-29 减负轮）
 

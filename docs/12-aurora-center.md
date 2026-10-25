@@ -117,6 +117,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
   { type: 'confirm.request', request }         // 敏感工具确认请求（ConfirmRequestPayload：confirmId/sessionId/toolName/input/createdAt/expiresAt）
   { type: 'ask.request', request }             // 向用户提问的请求（AskUserRequestPayload，v0.3.3；§5 第 4 步）
   { type: 'ask.settled', requestId, sessionId, outcome }  // 提问已在客户端结算（本轮；outcome = answered/skipped/timedOut/aborted）
+  { type: 'plugin.event', pluginId, panelId, event, payload? }  // 插件面板推送（§6.5）；只投给订阅者
 
 服务器 → 客户端
   { type: 'welcome', serverVersion, clientId }
@@ -137,6 +138,9 @@ CenterCommand =
   | { kind: 'file.send',      requestId, fileId, name, size }  // 服务器 → 客户端下发文件（本轮，§5）；客户端用自身令牌下载后落盘
   | { kind: 'stt.transcribe', requestId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）；客户端用本机已配 provider 转写
   | { kind: 'tts.synthesize', requestId, text }               // 朗读合成中转（v0.3.2，§6.4）；result.data 携带 { audioBase64, mimeType }
+  | { kind: 'plugin.panelData', requestId, pluginId, panelId, method?, params?, values? }  // 插件面板调用（§6.5）；result.data 携带 { schema?, toast?, data? }
+  | { kind: 'plugin.subscribe', requestId, pluginId, panelId }    // 订阅面板事件（§6.5）；同一连接同面板只下发一次
+  | { kind: 'plugin.unsubscribe', requestId, pluginId, panelId }  // 退订（§6.5）
 ```
 
 - `sessionId` 由**服务器分配**，固定形如 `center-<短随机串>`（客户端渲染层据此把
@@ -201,6 +205,9 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'file.send', requestId, clientId, fileId }           // 把暂存文件推给该客户端落盘（本轮，§5）
   { type: 'stt.transcribe',  requestId, clientId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）
   { type: 'tts.synthesize',  requestId, clientId, text }               // 朗读合成中转（v0.3.2，§6.4）
+  { type: 'plugin.panelData', requestId, clientId, pluginId, panelId, method?, params?, values? }  // 插件面板调用（§6.5，只认属主）
+  { type: 'plugin.subscribe', requestId, clientId, pluginId, panelId }    // 订阅面板事件（§6.5）
+  { type: 'plugin.unsubscribe', requestId, clientId, pluginId, panelId }  // 退订（§6.5）
 
 服务器 → 网页
   { type: 'clients', clients: ClientInfo[] }              // 连接后与每次变动时的全量快照
@@ -211,6 +218,7 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'confirm.request', clientId, sessionId, request }  // 客户端转来的确认卡
   { type: 'ask.request', clientId, sessionId, request }      // 客户端转来的提问卡（v0.3.3）；网页重连时服务器回放未过期项
   { type: 'ask.settled', clientId, sessionId, requestId, outcome }  // 提问已在客户端结算（本轮），网页据此收起卡片
+  { type: 'plugin.event', clientId, pluginId, panelId, event, payload? }  // 插件面板推送（§6.5）；只投给订阅者且只认属主
 ```
 
 路由规则（`hub.ts`）：命令按 `clientId` 找到该客户端的连接；`session.event` / `confirm.request` /
@@ -356,7 +364,8 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
   agent: { permissionMode, tools: { enabled, files, search, open, terminal } },
   center: { allowRemoteSession, allowRemoteConfig, allowFileTransfer },
   llm: { activeProviderId, model, reasoningEffort },   // v0.2.3 起
-  voice: { stt: boolean, tts: boolean } }              // v0.3.2 起：本机语音能力位（§6.4）
+  voice: { stt: boolean, tts: boolean },               // v0.3.2 起：本机语音能力位（§6.4）
+  plugins?: ClientPluginInfo[] }                       // §6.5：已启用插件的侧栏面板目录（不含小组件）
 ```
 
 `voice` 为**可选字段**（旧客户端不下发）：`stt` = 本机 STT 可用（`stt.enabled` + 激活
@@ -369,6 +378,7 @@ provider 的 `baseUrl`/`model` 齐全，同桌面端门控口径）；`tts` = �
 `hello` 派生的占位快照只带 capabilities、不含 `voice`，因此 `hub.registerClient` 在覆盖已存
 快照时**沿用旧 `voice`**（新连接的第一条真 `status` 毫秒级到达即刷新）——否则每次重连都会把
 带 voice 的完整快照换成"没有语音"，恰好在此刻新连上的网页页签会读到一个没有麦克风按钮的界面。
+`plugins`（§6.5）同款沿用：重连瞬间网页侧栏的插件入口不会闪没。
 ⚠️ 排查「配置了语音但网页没有按钮」时按这个顺序看：① 本机设置页是否**启用**了 STT/TTS
 （`enabled` + `active` 指向存在的 provider，TTS 还要 `voice` 齐全）——桌面端同款门控，
 桌面没有按钮则网页也不会有；② 网页包是否与客户端同版本（语音 UI 自 v0.3.2 才有，
@@ -453,6 +463,106 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
   另：朗读的 `audio.play()` 发生在合成回执之后，按「瞬态激活」判定自动播放的浏览器
   （Safari）在合成耗时超过激活窗口时可能拒绝播放——表现为「朗读失败」红条，属浏览器
   策略限制，不是链路故障。
+
+### 6.5 插件侧栏面板镜像
+
+桌面插件在 Center 登录后，**把本机已启用插件的侧栏面板镜像到 Center 网页**：工作台侧栏
+出现「插件」分区（每个插件面板一条入口），内容经在线桌面客户端实时中继。**只镜像侧栏面板
+（`contributes.panels`）**；桌面小组件与提示条小组件（`contributes.widgets`）永不上 Center。
+不新增清单字段、不新增权限、不升 `CONFIG_VERSION`。
+
+#### 发现（`ClientStatus.plugins`）
+
+```ts
+interface ClientPluginPanelInfo {
+  id: string
+  title: string
+  icon?: string                  // 清单 icon（PLUGIN_PANEL_ICONS 内的名字）
+  kind: 'schema' | 'page'
+  entry?: string                 // 仅 page
+}
+interface ClientPluginInfo { id: string; name: string; version: string; panels: ClientPluginPanelInfo[] }
+```
+
+- 桌面侧纯函数 `buildPluginCatalog()`（`main/center/plugin-panels.ts`）只保留 **enabled**
+  且**至少有一个侧栏面板**的插件，按 `id` 排序，最多 `CENTER_PLUGIN_CATALOG_LIMIT`（64）个。
+- 仅在 `center.allowRemoteSession` 为真时上报（复用「允许 Center 远程操作本机」总闸）：
+  闸门关闭 = 网页端没有任何插件入口。
+- 重推时机：连接建立、`settings:changed`、`plugins:changed`（安装 / 卸载 / 启停 / 重载）。
+  `hub.registerClient` 与 `voice` 同款：新连接的占位快照缺 `plugins` 时**沿用旧目录**，
+  避免重连瞬间网页端入口集体消失。
+- `plugins` 是可选字段：旧客户端不下发 → 网页端无入口（不报错）。
+
+#### 中继协议
+
+| 消息 | 方向 | 语义与边界 |
+|---|---|---|
+| `plugin.panelData` | web → server → client | 调用面板：声明式面板的 `refresh` / 按钮 method / 表单 values，页面型面板的任意 method（≤ 64 字符）。`params` / `values` 序列化后合计 ≤ **256 KB**；`result.data` 携带 `{ schema?, toast?, data? }` |
+| `plugin.subscribe` / `plugin.unsubscribe` | web → server → client | 订阅 / 退订面板事件。服务器本地立即回执，按**网页连接 refcount** 记账：首次订阅才下发客户端，归零 / 网页断开才下发退订 |
+| `plugin.event` | client → server → web | 客户端 `ctx.ui.panelEvent` 的推送（payload ≤ **64 KB**），只投给订阅了该面板且是该设备属主的网页连接 |
+
+- **归属只认 owner**：插件内容属个人数据，`plugin.panelData` / `subscribe` / `event` 都要求
+  `record.ownerUserId === 会话用户`，**管理员不跨用户放行**（与确认卡 / 提问卡的「属主 + 管理员」
+  口径刻意不同）。非属主回 `E_FORBIDDEN`，设备不存在回 `E_CLIENT_NOT_FOUND`。
+- **服务器预检**：目标 `pluginId/panelId` 必须出现在该客户端最近一次 `ClientStatus.plugins`
+  目录里（无目录 = `E_UNSUPPORTED`，目录里没有 = `E_PANEL_NOT_FOUND`）；每连接每秒
+  `CENTER_PLUGIN_CALL_PER_SECOND`（20）次调用上限（超出 `E_RATE_LIMITED`）；每连接订阅上限
+  `CENTER_PLUGIN_SUBSCRIPTION_LIMIT`（64）；`plugin.panelData` 的 pending 超时
+  `CENTER_PLUGIN_PENDING_TIMEOUT_MS`（20s）。
+- **客户端闸门**：`plugin.panelData` 与订阅都受 `center.allowRemoteSession` 约束，关闭时回
+  `E_REMOTE_DISABLED`；客户端再守一道 method 长度 / params / values 大小（旧服务器或伪造帧）。
+- **结果校验**：声明式面板返回的 schema 过 `validatePanelSchema`，非法回
+  `E_INVALID_SCHEMA: …`；整个回执序列化后 > `CENTER_PLUGIN_RESULT_MAX_BYTES`（512 KB）回
+  `E_RESULT_TOO_LARGE`。客户端断开时清空本地订阅表，服务器重连后按现存订阅补发。
+- 日志只记 `pluginId / panelId / method`，**不记 params / values / payload**。
+
+#### 客户端调用链路
+
+`main/plugins/panel-data.ts` 的 `readPluginPanelData()` 是**桌面 IPC 与 Center 中继的同一条
+数据链路**：schema 面板返回静态 schema + `invokePanel` 结果（失败回落静态 schema），page
+面板直接返回 `invokePanel` 结果。桌面 `plugins:panelData` IPC 行为不变（不允许页面型面板，
+页面型仍走 `plugins:pageRpc`）；Center 中继以 `allowPage: true` 复用。
+
+#### 网页端
+
+- **侧栏**：`buildPluginNav()` 只收起**在线 + `ownerUserId === 当前用户`** 的设备的目录，
+  按 `pluginId/panelId` 去重（多设备时页内切设备），同名面板加插件名前缀，最多 24 条。
+  地址 `#/plugin?client=<id>&plugin=<id>&panel=<id>`；移动端仍只走抽屉，不塞底部导航。
+- **声明式面板**：`PluginSchemaRenderer.vue` 与桌面同构（复制一份，节点分支与 `data-*` 口径
+  一致），资源地址经 `resolveAsset` 指到 `/p/<pluginId>/<version>/<path>`；按钮
+  `action.confirm` 走内置确认条后执行；`refresh` / `event` 语义与桌面 `PluginPanel.vue` 一致。
+- **页面型面板**：`PluginPageFrame.vue` 用 `<iframe sandbox="allow-scripts">` 打开 `/p/` 资源，
+  经 `postMessage` 桥（`CENTER_PLUGIN_PAGE_SOURCE` / `CENTER_PLUGIN_PAGE_HOST_SOURCE`）转发
+  请求与 `plugin.event`；校验 `event.source === iframe.contentWindow`、只允许本面板绑定的
+  `pluginId/panelId`，8 个在途 + 20 次/秒 + 15s 超时。
+- 网页 WS 重连后，打开中的面板视图重新订阅；`plugin.event` 由 `state/plugin-events.ts`
+  小事件总线投给当前视图。
+
+#### 页面资源托管（`/p/`）
+
+- 页面型面板的资源**只能来自已发布到本 Center 的市场包**（桌面本地文件不能给网页用）：
+  `GET|HEAD /p/<pluginId>/<version>/<path>`（公开，包本身可下载），路由必须排在 SPA 静态托管
+  **之前**，否则 index.html 会吃掉。
+- `plugins.readAsset()`：按版本找 zip、解压后按路径取文件；版本级 LRU（≤ 4 个版本 / 64 MB）；
+  `normalizePluginPath` 防穿越；MIME 白名单（html / js / mjs / css / json / png / jpg / jpeg /
+  webp / woff2，**不收 svg**）；非 HTML 资源加 `Cache-Control: public, max-age=31536000,
+  immutable`，HTML 用 `no-cache`（桥注入随 Center 版本变）。
+- HTML 响应注入 `window.auroraPlugin = { request(method, params), onEvent(fn) }`（
+  `packages/center/src/plugin-page.ts`）并加 CSP：
+  `default-src 'none'; script-src 'unsafe-inline' <host>; style-src 'unsafe-inline' <host>;
+  img-src <host> data:; font-src <host> data:; connect-src 'none'; form-action 'none';
+  base-uri 'none'; frame-ancestors <host>; sandbox allow-scripts`。
+  `<host>` 取请求 `Host`（正则净化，非法回落 `localhost`）——sandbox iframe 是 **opaque
+  origin**，CSP 里的 `'self'` 不可靠，所以显式列出。
+- **版本必须已发布到本 Center**：iframe 打开前 HEAD 预检，未发布的版本明确提示
+  「该版本未发布到本 Center」，不静默白屏；声明式面板不受影响。
+
+#### 已知限制
+
+- 小程序（`contributes.widgets`，桌面 / 提示条）**永不上 Center**；只镜像侧栏面板。
+- 管理员看不到他人设备的插件面板（只认 owner）。
+- 旧客户端不上报 `plugins` → 无入口；旧服务端不认识这些消息 → 忽略，均不报错。
+- 每账号最多 24 条侧栏插件入口，超出截断。
 
 ## 7. 客户端配置（`center` 分组，CONFIG_VERSION 17）
 
@@ -543,14 +653,16 @@ aurora-center version
 
 - 技术栈：Vue 3 + vite + 原生 CSS（不引 UI 库）。hash 路由：`#/login`（登录 / 注册切换）、
   `#/`（未登录官网，登录后控制台）、`#/files`（文件管理）、`#/device`（设备授权确认页，未登录可访问）、
-  `#/admin`（用户 / 全部客户端）、`#/automations`（自动化）。
+  `#/admin`（用户 / 全部客户端）、`#/automations`（自动化）、
+  `#/plugin?client=&plugin=&panel=`（插件侧栏面板镜像，§6.5）。
 - **未登录官网**：`#/` 与 `#/login` 共用公开壳。首屏直接给出产品定位、主下载按钮、
   “进入控制台”入口与真实控制台预览；后续依次是三个能力区、更新与安全区、下载区和页脚。
   官网只读公开 `/api/updates/current`，不连接 WebSocket、不读取客户端列表；未发布或接口失败时
   仍保持完整页面并提供通用下载入口。
 - **登录后工作台**：左侧 220px 固定导航（品牌 / 控制台 / 用量 / 自动化 / 文件 / 管理 /
   账号 / 退出），右侧是页面工作区。顶栏只保留当前页标题、设备在线数、WebSocket 状态
-  和移动端菜单；不再是五枚导航按钮横排。
+  和移动端菜单；不再是五枚导航按钮横排。主导航下方是**动态「插件」分区**（§6.5）：
+  只列当前账号自有且在线设备的侧栏面板，每个面板一条入口，无条目时整块不渲染。
 - **控制台（保留三栏语义，重做层级）**：`设备列表(280px) | 会话流(1fr, 内容列 860px 中轴)
   | 控制面板(320px, 可收起，状态存 localStorage)`；待办栏常驻会话流上方。
   设备行、会话行、消息行使用 CSS containment 降低重排外溢；长消息流不再对整表启用逐条过渡。
@@ -613,7 +725,8 @@ aurora-center version
   （子串过滤；特殊值 `failed` = 只重跑上次失败的）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
   `AURORA_CWEB_BROWSER`（指定浏览器；找不到浏览器时**明确 SKIP 并退出 0**）。
-  覆盖 48 个场景 ×（暗/浅两档）＝ 96 条断言：官网首页（下载信息、真实控制台预览、无重型分包） /
+  覆盖 54 个场景定义 → **106 条断言**（52 个按暗/浅两档各跑一遍，`theme-dark` / `theme-light`
+  两个固定档各一条）：官网首页（下载信息、真实控制台预览、无重型分包） /
   登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
   语音门控两态 / 建会话 / 用户气泡 / 流式光标 / Markdown 代码块与外链（含复制按钮回执）/
   轨迹折叠与阅读顺序（思考 → 工具行 → 正文）/ 思考块（220px 内滚 + 秒数）/ 工具三态与
@@ -630,6 +743,8 @@ aurora-center version
   同宽、同一 `z-index`，互斥且都在卡上方；分别发出 `session.setPermission` / `session.setModel` /
   `llm.switch`）/ **粘贴图片**（`composer-paste`，2026-10-18：合成 `ClipboardEvent` + PNG →
   卡内缩略图 → 发送后 stub 收到 `session.input.attachments.length === 1` → 移除后消失）/
+  **插件侧栏面板镜像**（`plugin-panel` / `plugin-page`，本轮，§6.5：侧栏「插件」分区两条入口 →
+  声明式面板渲染 + 按钮操作回执 → 页面型面板 iframe 经 postMessage 桥拿到计数并响应刷新）/
   主题两档 / **Center 系统字体与不下载中文 TTF**（`font-system-performance`，本轮）/
   **`prefers-reduced-motion` 兜底把过渡压到 1ms**（`reduced-motion`，本轮）/
   移动端单栏抽屉 / 移动端工作台（底部导航、KPI 堆叠、管理表与**官方模型表**卡片化）。
@@ -721,6 +836,12 @@ aurora-center version
   不进 CONFIG_VERSION；放开它的理由与 §6.2 的禁令不矛盾——禁令防的是"远程一把
   改掉所有会话的闸门"，会话级覆盖的作用面被限制在 Center 自己创建 / 可见的远程会话上。
 - Center 不存储会话历史（只转发事件流）；文件暂存 24h 自动删除，网页端也可手动删除。
+- **插件侧栏面板只认设备属主**（§6.5）：管理员不跨用户查看 / 操作他人插件面板（插件内容
+  属个人数据）；**小组件（桌面 / 提示条）永不上 Center**；页面型面板只从**已发布到本 Center
+  的市场 zip** 提供、跑在 opaque-origin 的 `sandbox="allow-scripts"` iframe 里（无 Node、
+  无父页访问、`connect-src 'none'`）；调用 / 事件 / 订阅都有大小、速率与数量上限，
+  日志只记 `pluginId / panelId / method`，不记 payload；插件侧仍有清单声明校验、权限与
+  10s RPC 超时。
 - 客户端一次只连一个 Center；`clientId` 本机生成、持久化于配置（非凭据）。
 
 ## 12. 官方模型网关（v31）
@@ -822,6 +943,8 @@ publish 才原子切换 index；同版本不可覆盖，删除当前版本后 `l
 - `GET /api/plugins/:id`
 - `GET /api/plugins/:id/download?version=`（`X-Checksum-Sha256` + `Content-Disposition`）
 - `GET /api/plugins/:id/icon`
+- `GET|HEAD /p/:id/:version/<path>`（**页面型插件面板的静态资源**，§6.5：从市场 zip 直出，
+  路径穿越防护 + MIME 白名单 + 版本级 LRU；HTML 注入 postMessage 桥并加 CSP）
 
 **管理员路由**（`role === 'admin'`）：
 
@@ -845,3 +968,7 @@ aurora-center plugins unpublish --server <url> --user <名> --id <插件 id> --v
 **桌面客户端**：`PluginMarketplaceClient` 读取 `center.serverUrl`（公开列表无需令牌），
 下载后校验大小与 SHA-256，再交给 `PluginManager.install`（来源 `marketplace`）；
 校验失败不落任何安装状态。`plugins:checkUpdates` 返回有更新的插件。
+
+**与 Center 面板镜像的关系**（§6.5）：声明式面板由网页端直接渲染（内容经客户端中继），
+不依赖市场包；**页面型面板的静态资源只从市场包取** —— 桌面本机的插件文件不能给网页用，
+所以该版本必须**已发布到本 Center**，否则面板明确提示「该版本未发布到本 Center」。
