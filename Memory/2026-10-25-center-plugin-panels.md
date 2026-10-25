@@ -62,6 +62,28 @@ source: 模型自动记录
    调用）必须把夹具计数复位；口径变了同改夹具，别让新场景被旧状态收税。
 8. **Puppeteer 可以检查 opaque-origin iframe**（`page.frames()` 按 URL 找 frame 后读 DOM），
    所以页面型面板能做真实的「iframe 内读数 + 点按钮 → 桥请求」断言，不必只截一张图。
+9. **页面型面板的 `params` 在 Center 路径被多包一层**（2026-10-25 修复）：
+   `panel-data.ts` 的 page 分支曾复用声明式面板的 `{ params, values }` 包装，而桌面
+   `plugins:pageRpc` 与 docs/15 的页面约定都是**直传**。插件侧 `asParams(params)` 只判
+   `typeof === 'object'`，包装对象也通过，于是 `p.text` / `p.view` 全变 `undefined`——
+   Center 页面**切视图无效**（`save-view` 把旧的 `ui.view` 原样存回、返回同一视图）、
+   **写操作报「请先输入事务内容」**。修法：page 分支直传 `input.params ?? {}`；单测必须断言
+   `invokePanel` 第 4 参的形状，别只断言返回层级——旧用例的 mock 忽略入参，所以一直绿。
+10. **沙箱页自行导航后父页仍会投递事件**（2026-10-25 修复）：父页一律
+    `postMessage(..., '*')`（opaque origin 没有可用的 targetOrigin），页面点链接跳到外部站点后
+    `contentWindow` 已换文档，`plugin.event` 的 payload 会投给第三方。修法：shim 在
+    `pagehide` 时发 `{ kind: 'bye', bridge }`，父页收到后置 `navigated`、清空在途、退订并移除
+    iframe。**坑中坑**：导航后旧文档的 `event.source` 已经**不等于** `iframe.contentWindow`
+    （2026-10-25 Chrome 实测为 false），所以 `bye` 不能走 source 归属校验——父页每次挂载生成
+    随机 `__auroraBridge` 放进页面 URL，`bye` 回带令牌；上一帧迟到的 bye 也不会误断新面板。
+
+## 口径（2026-10-25 用户确认）
+
+- **Center 允许改桌面视图**：页面型面板直接读写插件自己的 `ui` 状态，不做隔离；Center 的
+  切视图 / 切周写回桌面同一份状态。桌面已打开的面板在下次加载 / 收到插件事件后跟随；
+  需要即时同步由插件 `ctx.ui.panelEvent` 负责，宿主不做通用回放。
+- 页面侧超时（25s）必须**高于**服务器 pending（20s）：否则页面先报超时、写操作却可能已落地，
+  用户重试会重复写入。
 
 ## 验证
 
@@ -70,6 +92,10 @@ source: 模型自动记录
   `plugin-page`（CSP / shim / host 净化）、`buildPluginNav`（owner / 在线 / 去重 / 上限）。
 - Center：`pnpm --filter @aurora/center build` + `verify:web`，新增 `plugin-panel` /
   `plugin-page` 两个场景，基线 **102 → 106**（54 个场景定义：52 个 × 暗/浅 + 2 个固定档）。
+- 2026-10-25 修复后：`panel-data.test.ts` 断言页面 `params` 直传；`plugin-page` 场景追加
+  「自行导航离开 → 断流提示 → 刷新恢复」两条断言（场景数不变，基线仍 106）；
+  `typecheck` + 全量 `pnpm test`（204 文件 / 2928 例）+ center build + `verify:web`
+  的 `plugin-page` 暗/浅 2/2 通过。
 - 本机 Edge 在此环境启动 puppeteer 失败时，用
   `AURORA_CWEB_BROWSER='C:\Program Files\Google\Chrome\Application\chrome.exe'` 跑
   （环境问题，不是代码回归）。
