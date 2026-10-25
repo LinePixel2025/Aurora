@@ -24,7 +24,13 @@ import type {
 } from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import type { CenterStatusInfo } from '@aurora/agent-core'
-import { CENTER_SESSION_PREFIX } from '@aurora/shared'
+import {
+  CENTER_PLUGIN_CALL_MAX_BYTES,
+  CENTER_PLUGIN_RESULT_MAX_BYTES,
+  CENTER_SESSION_PREFIX,
+  validatePanelSchema,
+} from '@aurora/shared'
+import type { PluginPanelPayload } from '../plugins/panel-data.js'
 import { isAutomationSession } from '../automation/session-id.js'
 import { checkRemotePatch } from './remote-control.js'
 
@@ -187,6 +193,20 @@ export interface CenterConnectorDeps {
     synthesize(text: string): Promise<{ audioBase64: string; mimeType: string }>
   }
   /**
+   * 插件侧栏面板中继（docs/12 §6.5）：装配层注入桌面同一条面板数据链路
+   * （`readPluginPanelData`，schema 面板与页面型面板都支持）。未注入时相关命令回
+   * `E_UNSUPPORTED`（老装配器兼容）。
+   */
+  pluginPanels?: {
+    invoke(input: {
+      pluginId: string
+      panelId: string
+      method?: string
+      params?: unknown
+      values?: Record<string, unknown>
+    }): Promise<PluginPanelPayload>
+  }
+  /**
    * 结算一张在途敏感工具确认卡（`confirm.resolve` 命令，docs/12 §5.1）。
    * 返回是否命中（false = 已超时 / 已被本地结算 / id 未知）；未注入时不拦截。
    */
@@ -255,6 +275,11 @@ export class CenterConnector {
    * FIFO 上限见 CONFIRM_QUEUE_LIMIT。`kind` 只用于诊断计数，不影响发送顺序。
    */
   private readonly outboundQueue: { kind: 'confirm' | 'ask'; message: unknown }[] = []
+  /**
+   * 网页端订阅的插件面板（`plugin.subscribe` / `plugin.unsubscribe`）。
+   * 断线即清空（服务器会在重连后补发订阅）；`plugin.event` 只在这里命中时才上行。
+   */
+  private readonly panelSubscriptions = new Set<string>()
 
   constructor(deps: CenterConnectorDeps) {
     this.deps = deps
@@ -329,6 +354,62 @@ export class CenterConnector {
       return
     }
     this.scheduleConnect(0)
+  }
+
+  /**
+   * 插件目录变化（安装 / 卸载 / 启停 / 重启 / 开发目录变更）后重推状态快照，
+   * 让 Center 侧栏立即增删入口（docs/12 §6.5）。未连接时什么都不做 —— 下次 open 会带新快照。
+   */
+  notifyPluginsChanged(): void {
+    if (this.socket === undefined) return
+    try {
+      this.socket.send(JSON.stringify({ type: 'status', status: this.deps.statusSnapshot() }))
+    } catch (error) {
+      this.logger.warn('重推插件目录失败', { error: String(error) })
+    }
+  }
+
+  /**
+   * 插件面板推送转发（docs/12 §6.5）：已连接 + 远程总闸开 + 网页端订阅了该面板时才上行。
+   * 未订阅的面板不上行 —— 服务器虽然也只投给订阅者，但没必要产生无收件人的流量。
+   */
+  notifyPanelEvent(event: {
+    pluginId: string
+    panelId?: string
+    event: string
+    payload?: unknown
+  }): void {
+    const socket = this.socket
+    if (socket === undefined || event.panelId === undefined) return
+    if (!this.deps.config().allowRemoteSession) return
+    if (!this.panelSubscriptions.has(`${event.pluginId}/${event.panelId}`)) return
+    if (event.event === '' || event.event.length > 64) return
+    if (event.payload !== undefined) {
+      try {
+        if (Buffer.byteLength(JSON.stringify(event.payload), 'utf8') > 64 * 1024) {
+          this.logger.warn('插件面板推送超过 64 KB，已丢弃', {
+            pluginId: event.pluginId,
+            panelId: event.panelId,
+          })
+          return
+        }
+      } catch {
+        return
+      }
+    }
+    try {
+      socket.send(
+        JSON.stringify({
+          type: 'plugin.event',
+          pluginId: event.pluginId,
+          panelId: event.panelId,
+          event: event.event,
+          ...(event.payload === undefined ? {} : { payload: event.payload }),
+        } satisfies CenterClientMessage),
+      )
+    } catch (error) {
+      this.logger.warn('转发插件面板推送失败', { error: String(error) })
+    }
   }
 
   status(): CenterStatusInfo {
@@ -547,6 +628,8 @@ export class CenterConnector {
   private teardownSocket(): void {
     const socket = this.socket
     this.socket = undefined
+    // 订阅表随连接作废：服务器在重连后按网页端现存订阅补发 `plugin.subscribe`
+    this.panelSubscriptions.clear()
     if (this.pingWatchdog !== undefined) {
       clearInterval(this.pingWatchdog)
       this.pingWatchdog = undefined
@@ -944,6 +1027,86 @@ export class CenterConnector {
           ...(cmd.skipped === true ? { skipped: true } : {}),
         })
         reply(true, { settled: resolved ?? false })
+        return
+      }
+      case 'plugin.panelData': {
+        // 插件侧栏面板调用（docs/12 §6.5）：复用 `center.allowRemoteSession` 总闸；
+        // 服务器已做目录 / 大小预检，这里再守一道（旧服务器 / 伪造帧）。
+        if (!config.allowRemoteSession) {
+          reply(false, undefined, 'E_REMOTE_DISABLED')
+          return
+        }
+        const port = this.deps.pluginPanels
+        if (port === undefined) {
+          reply(false, undefined, 'E_UNSUPPORTED')
+          return
+        }
+        const method = cmd.method ?? 'refresh'
+        if (
+          typeof method !== 'string' ||
+          method === '' ||
+          method.length > 64 ||
+          (cmd.params !== undefined && (typeof cmd.params !== 'object' || cmd.params === null)) ||
+          (cmd.values !== undefined && (typeof cmd.values !== 'object' || cmd.values === null))
+        ) {
+          reply(false, undefined, 'E_INVALID_ARGUMENT')
+          return
+        }
+        try {
+          const paramsBytes = Buffer.byteLength(JSON.stringify(cmd.params ?? null), 'utf8')
+          const valuesBytes = Buffer.byteLength(JSON.stringify(cmd.values ?? null), 'utf8')
+          if (paramsBytes + valuesBytes > CENTER_PLUGIN_CALL_MAX_BYTES) {
+            reply(false, undefined, 'E_INVALID_ARGUMENT')
+            return
+          }
+        } catch {
+          reply(false, undefined, 'E_INVALID_ARGUMENT')
+          return
+        }
+        try {
+          const result = await port.invoke({
+            pluginId: cmd.pluginId,
+            panelId: cmd.panelId,
+            method,
+            ...(cmd.params === undefined ? {} : { params: cmd.params }),
+            ...(cmd.values === undefined ? {} : { values: cmd.values }),
+          })
+          if (result.schema !== undefined) {
+            const check = validatePanelSchema(result.schema)
+            if (!check.ok) {
+              reply(false, undefined, `E_INVALID_SCHEMA: ${check.errors.join('；')}`)
+              return
+            }
+          }
+          if (Buffer.byteLength(JSON.stringify(result), 'utf8') > CENTER_PLUGIN_RESULT_MAX_BYTES) {
+            reply(false, undefined, 'E_RESULT_TOO_LARGE')
+            return
+          }
+          reply(true, result)
+        } catch (error) {
+          reply(false, undefined, error instanceof Error ? error.message : String(error))
+        }
+        return
+      }
+      case 'plugin.subscribe':
+      case 'plugin.unsubscribe': {
+        if (!config.allowRemoteSession) {
+          reply(false, undefined, 'E_REMOTE_DISABLED')
+          return
+        }
+        if (
+          typeof cmd.pluginId !== 'string' ||
+          cmd.pluginId === '' ||
+          typeof cmd.panelId !== 'string' ||
+          cmd.panelId === ''
+        ) {
+          reply(false, undefined, 'E_INVALID_ARGUMENT')
+          return
+        }
+        const key = `${cmd.pluginId}/${cmd.panelId}`
+        if (cmd.kind === 'plugin.subscribe') this.panelSubscriptions.add(key)
+        else this.panelSubscriptions.delete(key)
+        reply(true)
         return
       }
       default:

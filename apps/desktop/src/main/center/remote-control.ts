@@ -10,6 +10,7 @@
 import {
   CENTER_REMOTE_CONFIG_PREFIXES,
   resolveModelParams,
+  type ClientPluginInfo,
   type ClientStatus,
   type Settings,
   type SttSettings,
@@ -91,6 +92,11 @@ export function buildClientStatus(
   settings: Settings,
   version: string,
   platform: string,
+  /**
+   * 已安装插件目录（docs/12 §6.5）：只在 `center.allowRemoteSession` 打开时由调用方传入；
+   * 未传 = 网页端没有插件入口（旧客户端同口径）。
+   */
+  plugins?: ClientPluginInfo[],
 ): ClientStatus {
   // 生效 LLM 快照（docs/12 §6.3）：只取展示用的三个字段，凭据（apiKeyEnc / baseUrl）绝不进快照。
   // 无激活 provider（active 为空 / 指向不存在的 id）时给安全缺省 —— 空串 + 'auto'，
@@ -130,6 +136,7 @@ export function buildClientStatus(
     // 语音能力位（v0.3.2，docs/12 §6.4）：网页端据此决定是否渲染麦克风 / 朗读按钮
     //（与桌面端同口径：未配置连按钮都不出现）
     voice: voiceReadiness(settings),
+    ...(plugins === undefined ? {} : { plugins }),
   }
 }
 

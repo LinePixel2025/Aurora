@@ -31,6 +31,7 @@ export * from './utils/logger.js'
 // （CSS 不是 JS 模块，由 build 脚本拷进 dist，两端各自 import 该路径）；
 // 视觉资产改这里就必须同时核对两端截图（与改 md.css 同一条规矩）。
 export * from './browser/icons.js'
+export * from './browser/pluginPanelIcons.js'
 export * from './browser/toolIcons.js'
 export * from './browser/toolLabels.js'
 // 吸底状态机（core 纯逻辑 + Vue 薄壳）与实测高度折叠动画钩子：

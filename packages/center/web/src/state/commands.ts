@@ -779,6 +779,70 @@ export async function updateConfig(
   })
 }
 
+// ───────────────────────── 插件侧栏面板中继（docs/12 §6.5） ─────────────────────────
+
+/** `plugin.panelData` 的回执体：声明式面板带 schema / toast，页面型面板带 data */
+export interface PluginPanelReply {
+  schema?: unknown
+  toast?: string
+  data?: unknown
+}
+
+export interface PluginPanelCall {
+  clientId: string
+  pluginId: string
+  panelId: string
+  /** 缺省 `refresh`（与桌面面板首发一致） */
+  method?: string
+  params?: Record<string, unknown>
+  /** 面板控件当前值（每次请求都带上，插件侧从 `params.values` 读回） */
+  values?: Record<string, string | number | boolean>
+}
+
+/** 调用一次插件面板（refresh / 按钮动作 / 事件回调共用） */
+export async function fetchPluginPanel(call: PluginPanelCall): Promise<PluginPanelReply> {
+  const data = await command<PluginPanelReply>({
+    type: 'plugin.panelData',
+    requestId: nextRequestId(),
+    clientId: call.clientId,
+    pluginId: call.pluginId,
+    panelId: call.panelId,
+    ...(call.method === undefined ? {} : { method: call.method }),
+    ...(call.params === undefined ? {} : { params: call.params }),
+    ...(call.values === undefined ? {} : { values: call.values }),
+  })
+  return data ?? {}
+}
+
+/** 订阅面板推送（服务器按连接 + 面板 refcount，重复订阅幂等） */
+export async function subscribePluginPanel(
+  clientId: string,
+  pluginId: string,
+  panelId: string,
+): Promise<void> {
+  await command({
+    type: 'plugin.subscribe',
+    requestId: nextRequestId(),
+    clientId,
+    pluginId,
+    panelId,
+  })
+}
+
+export async function unsubscribePluginPanel(
+  clientId: string,
+  pluginId: string,
+  panelId: string,
+): Promise<void> {
+  await command({
+    type: 'plugin.unsubscribe',
+    requestId: nextRequestId(),
+    clientId,
+    pluginId,
+    panelId,
+  })
+}
+
 // ───────────────────────── 登录 / 启动 ─────────────────────────
 
 /** 页面加载时调用：恢复本地登录态（过期则清除），并尝试水合客户端列表 */

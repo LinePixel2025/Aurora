@@ -1847,3 +1847,257 @@ describe('Aurora Center · 消息附件（session.input.attachments）', () => {
     }
   })
 })
+
+describe('Hub · 插件侧栏面板中继（docs/12 §6.5）', () => {
+  const PLUGIN_STATUS: ClientStatus = {
+    ...STATUS,
+    plugins: [
+      {
+        id: 'com.example.hello',
+        name: 'Hello',
+        version: '1.0.0',
+        panels: [
+          { id: 'board', title: '看板', icon: 'ListChecks', kind: 'schema' },
+          { id: 'info', title: '页面', kind: 'page', entry: 'ui/page.html' },
+        ],
+      },
+    ],
+  }
+
+  async function setup(): Promise<{
+    harness: Harness
+    client: { sent: unknown[]; conn: ClientConn }
+    owner: { id: string; sent: unknown[]; conn: WebConn }
+    admin: { id: string; sent: unknown[]; conn: WebConn }
+  }> {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    harness.hub.handleClientMessage('c1', { type: 'status', status: PLUGIN_STATUS })
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    const admin = harness.connectWeb({ id: 'u-admin', username: 'root', role: 'admin' })
+    client.sent.length = 0
+    owner.sent.length = 0
+    admin.sent.length = 0
+    return { harness, client, owner, admin }
+  }
+
+  const messageOf = (sent: unknown[], type: string): unknown[] =>
+    sent.filter((item) => (item as { type?: string }).type === type)
+
+  it('调用转发给目标客户端，回执按 requestId 回到发起页签', async () => {
+    const { harness, client, owner } = await setup()
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.panelData',
+      requestId: 'p-1',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      method: 'submit',
+      params: { a: 1 },
+      values: { name: 'x' },
+    })
+    const cmd = (client.sent.at(-1) as { cmd: { kind: string; requestId: string } }).cmd
+    expect(cmd).toMatchObject({
+      kind: 'plugin.panelData',
+      requestId: 'p-1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      method: 'submit',
+      params: { a: 1 },
+      values: { name: 'x' },
+    })
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: cmd.requestId,
+      ok: true,
+      data: { toast: '已保存' },
+    })
+    expect(messageOf(owner.sent, 'result').at(-1)).toMatchObject({
+      requestId: 'p-1',
+      ok: true,
+      data: { toast: '已保存' },
+    })
+  })
+
+  it('授权只认设备属主：管理员也拿不到别人设备的面板（E_FORBIDDEN）', async () => {
+    const { harness, client, admin } = await setup()
+    harness.hub.handleWebMessage(admin.conn, {
+      type: 'plugin.panelData',
+      requestId: 'p-admin',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(admin.sent.at(-1)).toMatchObject({ ok: false, error: 'E_FORBIDDEN' })
+    expect(client.sent).toHaveLength(0)
+  })
+
+  it('目录里没有的面板拒绝；旧客户端没有 plugins 字段回 E_UNSUPPORTED', async () => {
+    const { harness, client, owner } = await setup()
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.panelData',
+      requestId: 'p-missing',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'ghost',
+    })
+    expect(owner.sent.at(-1)).toMatchObject({ ok: false, error: 'E_PANEL_NOT_FOUND' })
+
+    // 新客户端重报不带 plugins 的快照（旧版本 / 闸门关闭）
+    harness.hub.handleClientMessage('c1', { type: 'status', status: STATUS })
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.panelData',
+      requestId: 'p-unsupported',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(owner.sent.at(-1)).toMatchObject({ ok: false, error: 'E_UNSUPPORTED' })
+    expect(client.sent).toHaveLength(0)
+  })
+
+  it('离线设备回 E_CLIENT_OFFLINE，且不下发命令', async () => {
+    const { harness, owner } = await setup()
+    harness.hub.removeClient('c1')
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.panelData',
+      requestId: 'p-offline',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(owner.sent.at(-1)).toMatchObject({ ok: false, error: 'E_CLIENT_OFFLINE' })
+  })
+
+  it('订阅按网页连接 refcount：首订阅才下发，最后一个退订才停推', async () => {
+    const { harness, client, owner } = await setup()
+    const second = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    second.sent.length = 0
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.subscribe',
+      requestId: 'sub-1',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(owner.sent.at(-1)).toMatchObject({ type: 'result', requestId: 'sub-1', ok: true })
+    expect(client.sent.at(-1)).toMatchObject({
+      cmd: { kind: 'plugin.subscribe', pluginId: 'com.example.hello', panelId: 'board' },
+    })
+    expect(messageOf(client.sent, 'cmd')).toHaveLength(1)
+
+    // 同一用户的第二个页签重复订阅：本地回执，但不重复下发
+    harness.hub.handleWebMessage(second.conn, {
+      type: 'plugin.subscribe',
+      requestId: 'sub-2',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(second.sent.at(-1)).toMatchObject({ ok: true })
+    expect(messageOf(client.sent, 'cmd')).toHaveLength(1)
+
+    // 只退订一个页签：引用未归零，不下发 unsubscribe
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.unsubscribe',
+      requestId: 'unsub-1',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(messageOf(client.sent, 'cmd')).toHaveLength(1)
+
+    // 第二个页签也退订：归零，下发 unsubscribe
+    harness.hub.handleWebMessage(second.conn, {
+      type: 'plugin.unsubscribe',
+      requestId: 'unsub-2',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(client.sent.at(-1)).toMatchObject({ cmd: { kind: 'plugin.unsubscribe' } })
+  })
+
+  it('事件只投给订阅了该面板的属主页签（管理员非属主收不到）', async () => {
+    const { harness, owner, admin } = await setup()
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.subscribe',
+      requestId: 'sub',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    owner.sent.length = 0
+    admin.sent.length = 0
+
+    harness.hub.handleClientMessage('c1', {
+      type: 'plugin.event',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      event: 'tick',
+      payload: { count: 3 },
+    })
+    expect(owner.sent.at(-1)).toMatchObject({
+      type: 'plugin.event',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      event: 'tick',
+      payload: { count: 3 },
+    })
+    expect(messageOf(admin.sent, 'plugin.event')).toHaveLength(0)
+
+    // 退出订阅后不再收
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.unsubscribe',
+      requestId: 'unsub',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    owner.sent.length = 0
+    harness.hub.handleClientMessage('c1', {
+      type: 'plugin.event',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      event: 'tick',
+    })
+    expect(messageOf(owner.sent, 'plugin.event')).toHaveLength(0)
+  })
+
+  it('客户端重连时按网页端现存订阅补发 plugin.subscribe', async () => {
+    const { harness, owner } = await setup()
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.subscribe',
+      requestId: 'sub',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    // 模拟重连：同一 clientId 注册新连接
+    const sent: unknown[] = []
+    harness.hub.registerClient(
+      { clientId: 'c1', send: (m) => sent.push(m), close: () => {} },
+      PLUGIN_STATUS,
+    )
+    expect(sent.at(-1)).toMatchObject({
+      cmd: { kind: 'plugin.subscribe', pluginId: 'com.example.hello', panelId: 'board' },
+    })
+  })
+
+  it('网页断开时退订并通知客户端停推', async () => {
+    const { harness, client, owner } = await setup()
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'plugin.subscribe',
+      requestId: 'sub',
+      clientId: 'c1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    client.sent.length = 0
+    harness.hub.removeWeb(owner.id)
+    expect(client.sent.at(-1)).toMatchObject({ cmd: { kind: 'plugin.unsubscribe' } })
+  })
+})

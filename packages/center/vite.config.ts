@@ -22,6 +22,11 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      // 页面型插件面板的资源由服务器从市场包吐（docs/12 §6.5）：dev:web 下不代理就是 404
+      '/p': {
+        target: process.env.AURORA_CENTER_URL ?? 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
     },
   },
   build: {

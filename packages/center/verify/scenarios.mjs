@@ -178,6 +178,22 @@ async function panelSessionIds(page) {
   )
 }
 
+/**
+ * 等一个子 frame 出现（页面型插件面板的 iframe）。
+ *
+ * 插件页面是 **sandbox + opaque origin**（`allow-scripts`，无 `allow-same-origin`），
+ * Puppeteer 23 仍能拿到它并 evaluate；超时返回 null，让场景把"没加载出来"写进读数。
+ */
+async function waitForFrame(page, urlPart, timeoutMs = TIMEOUT) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const frame = page.frames().find((item) => item.url().includes(urlPart))
+    if (frame !== undefined) return frame
+    if (Date.now() > deadline) return null
+    await sleep(120)
+  }
+}
+
 /** 轨迹容器在流式期间是 `chat.trace-live`，收尾后才是 `chat.trace` —— 两种都算"轨迹在" */
 async function ensureTraceOpen(page) {
   return page.evaluate(() => {
@@ -1779,6 +1795,166 @@ export const SCENARIOS = [
           title: reading.title === '插件管理',
         },
         { reading },
+      )
+    },
+  },
+
+  // ── 26c. 插件侧栏面板：自动入口 + 声明式渲染 + 远程操作（docs/12 §6.5） ──
+  {
+    name: 'plugin-panel',
+    async run(ctx) {
+      await fresh(ctx, { hash: '#/console' })
+      await ctx.page.waitForSelector('[data-action="nav.plugin.com.example.hello-board"]', {
+        timeout: TIMEOUT,
+      })
+      const nav = await ctx.page.evaluate(() => {
+        const buttons = [...document.querySelectorAll('[data-action^="nav.plugin."]')]
+        return {
+          entries: buttons.length,
+          labels: buttons.map((button) => button.textContent.trim()),
+          section: document.querySelector('.sidebar-section-label')?.textContent?.trim() ?? '',
+        }
+      })
+
+      await ctx.page.click('[data-action="nav.plugin.com.example.hello-board"]')
+      await ctx.page.waitForSelector('[data-panel="plugin-schema"] .node-button', {
+        timeout: TIMEOUT,
+      })
+      const initial = await ctx.page.evaluate(() => {
+        const scope = document.querySelector('[data-panel="plugin-schema"]')
+        return {
+          hash: window.location.hash,
+          count: scope?.querySelector('.node-kv .kv-value')?.textContent?.trim() ?? '',
+          title:
+            document.querySelector('[data-panel="plugin-panel"] h1')?.textContent?.trim() ?? '',
+          active:
+            document
+              .querySelector('[data-action="nav.plugin.com.example.hello-board"]')
+              ?.classList.contains('active') ?? false,
+        }
+      })
+
+      // 远程操作：点面板按钮 → `plugin.panelData(method=bump)` → 桩机计数 +1 并回新 schema
+      const since = ctx.stub.mark()
+      await ctx.page.click('[data-panel="plugin-schema"] .node-button')
+      await ctx.page
+        .waitForFunction(
+          () =>
+            document
+              .querySelector('[data-panel="plugin-schema"] .node-kv .kv-value')
+              ?.textContent?.trim() === '4',
+          { timeout: TIMEOUT },
+        )
+        .catch(() => undefined)
+      const after = await ctx.page.evaluate(() => {
+        const scope = document.querySelector('[data-panel="plugin-schema"]')
+        return {
+          count: scope?.querySelector('.node-kv .kv-value')?.textContent?.trim() ?? '',
+          toast: document.querySelector('[data-field="plugin.toast"]')?.textContent?.trim() ?? '',
+        }
+      })
+      const call = await ctx.stub.waitForCommand('plugin.panelData', {
+        since,
+        timeout: 3000,
+        where: (cmd) => cmd.method === 'bump',
+      })
+
+      return verdict(
+        {
+          navEntries: nav.entries === 2,
+          navLabels: nav.labels.some((label) => label.includes('忙碌计数')),
+          navPageLabel: nav.labels.some((label) => label.includes('插件页面')),
+          section: nav.section === '插件',
+          routed:
+            initial.hash.includes('plugin=com.example.hello') &&
+            initial.hash.includes('panel=board'),
+          title: initial.title === '忙碌计数',
+          active: initial.active === true,
+          schemaRendered: initial.count === '3',
+          updated: after.count === '4',
+          toast: after.toast.includes('计数更新为 4'),
+          command: call !== null && call.panelId === 'board',
+        },
+        { nav, initial, after, call },
+      )
+    },
+  },
+
+  // ── 26d. 页面型插件面板：市场 zip + sandbox iframe + postMessage 桥 ──
+  {
+    name: 'plugin-page',
+    async run(ctx) {
+      await fresh(ctx, { hash: '#/console' })
+      await ctx.page.waitForSelector('[data-action="nav.plugin.com.example.hello-info"]', {
+        timeout: TIMEOUT,
+      })
+      await ctx.page.click('[data-action="nav.plugin.com.example.hello-info"]')
+      await ctx.page.waitForSelector('[data-panel="plugin-page-frame"] iframe', {
+        timeout: TIMEOUT,
+      })
+      const frame = await waitForFrame(ctx.page, '/p/com.example.hello/1.0.0/ui/page.html')
+      let countText = ''
+      let requestError = ''
+      if (frame !== null) {
+        await frame.waitForSelector('#count', { timeout: TIMEOUT }).catch(() => undefined)
+        await frame
+          .waitForFunction(
+            () => (document.getElementById('count')?.textContent ?? '').startsWith('计数：'),
+            { timeout: TIMEOUT },
+          )
+          .catch(() => undefined)
+        countText = await frame
+          .evaluate(() => document.getElementById('count')?.textContent?.trim() ?? '')
+          .catch(() => '')
+        requestError = await frame
+          .evaluate(() => {
+            const text = document.getElementById('count')?.textContent ?? ''
+            return text.startsWith('请求失败') ? text : ''
+          })
+          .catch(() => '')
+      }
+
+      // 页面里的按钮再走一次桥（不是页面加载时那次自动请求）
+      const since = ctx.stub.mark()
+      if (frame !== null) {
+        await frame.click('#refresh').catch(() => undefined)
+      }
+      const call = await ctx.stub.waitForCommand('plugin.panelData', {
+        since,
+        timeout: 4000,
+        where: (cmd) => cmd.panelId === 'info' && cmd.method === 'status',
+      })
+
+      const shell = await ctx.page.evaluate(() => {
+        const iframe = document.querySelector('[data-panel="plugin-page-frame"] iframe')
+        return {
+          sandbox: iframe?.getAttribute('sandbox') ?? '',
+          src: iframe?.getAttribute('src') ?? '',
+          unavailable:
+            document.querySelector('[data-field="plugin.page-unavailable"]')?.textContent?.trim() ??
+            '',
+          title:
+            document.querySelector('[data-panel="plugin-panel"] h1')?.textContent?.trim() ?? '',
+          presence:
+            document.querySelector('[data-field="plugin.presence"]')?.textContent?.trim() ?? '',
+        }
+      })
+
+      return verdict(
+        {
+          iframe: frame !== null,
+          sandbox: shell.sandbox === 'allow-scripts',
+          servedFromZip:
+            shell.src.includes('/p/com.example.hello/1.0.0/ui/page.html') &&
+            shell.src.includes('panel=info'),
+          published: shell.unavailable === '',
+          title: shell.title === '插件页面',
+          online: shell.presence === '在线',
+          bridged: countText === '计数：3（你好）',
+          noError: requestError === '',
+          clickBridged: call !== null,
+        },
+        { countText, requestError, shell, call },
       )
     },
   },

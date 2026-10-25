@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 登录后的固定导航：状态、页面入口与账号动作集中在同一条控制轨上。 */
-import { LogOut } from '@aurora/shared/browser'
-import { WORKBENCH_NAV } from '../lib/nav'
+import { LogOut, pluginPanelIcon } from '@aurora/shared/browser'
+import { WORKBENCH_NAV, type PluginNavItem } from '../lib/nav'
 import type { RouteName } from '../router'
 import type { Me } from '../lib/api'
 
@@ -10,14 +10,24 @@ const props = defineProps<{
   user: Me | null
   onlineCount: number
   totalCount: number
+  /** 本人设备的插件面板入口（App 用 `buildPluginNav` 生成） */
+  pluginItems: PluginNavItem[]
+  /** 当前打开的面板键（`routeName === 'plugin'` 时有效） */
+  activePluginKey: string
 }>()
 
 const emit = defineEmits<{
   (event: 'navigate', name: RouteName): void
+  (event: 'openPlugin', item: PluginNavItem): void
   (event: 'logout'): void
 }>()
 
 const navItems = WORKBENCH_NAV
+
+/** `data-action` 里避免出现 `::`（截图 / 验收选择器直接按属性值匹配） */
+function actionOf(key: string): string {
+  return `nav.plugin.${key.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+}
 </script>
 
 <template>
@@ -35,20 +45,43 @@ const navItems = WORKBENCH_NAV
       <span>{{ props.onlineCount }} / {{ props.totalCount }} 台在线</span>
     </div>
 
-    <nav class="sidebar-nav">
-      <button
-        v-for="item in navItems.filter((entry) => !entry.admin || props.user?.role === 'admin')"
-        :key="item.name"
-        type="button"
-        class="sidebar-nav-item"
-        :class="{ active: props.routeName === item.name }"
-        :data-action="`nav.${item.name}`"
-        @click="emit('navigate', item.name)"
-      >
-        <component :is="item.icon" :size="17" :stroke-width="1.75" aria-hidden="true" />
-        <span>{{ item.label }}</span>
-      </button>
-    </nav>
+    <div class="sidebar-scroll">
+      <nav class="sidebar-nav">
+        <button
+          v-for="item in navItems.filter((entry) => !entry.admin || props.user?.role === 'admin')"
+          :key="item.name"
+          type="button"
+          class="sidebar-nav-item"
+          :class="{ active: props.routeName === item.name }"
+          :data-action="`nav.${item.name}`"
+          @click="emit('navigate', item.name)"
+        >
+          <component :is="item.icon" :size="17" :stroke-width="1.75" aria-hidden="true" />
+          <span>{{ item.label }}</span>
+        </button>
+      </nav>
+
+      <nav v-if="props.pluginItems.length > 0" class="sidebar-nav sidebar-plugins" aria-label="插件面板">
+        <div class="sidebar-section-label">插件</div>
+        <button
+          v-for="item in props.pluginItems"
+          :key="item.key"
+          type="button"
+          class="sidebar-nav-item"
+          :class="{ active: props.routeName === 'plugin' && props.activePluginKey === item.key }"
+          :data-action="actionOf(item.key)"
+          @click="emit('openPlugin', item)"
+        >
+          <component
+            :is="pluginPanelIcon(item.icon)"
+            :size="17"
+            :stroke-width="1.75"
+            aria-hidden="true"
+          />
+          <span class="sidebar-plugin-label">{{ item.label }}</span>
+        </button>
+      </nav>
+    </div>
 
     <div class="sidebar-account">
       <div class="account-avatar" aria-hidden="true">
@@ -157,9 +190,31 @@ const navItems = WORKBENCH_NAV
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-ok) 16%, transparent);
 }
 
+.sidebar-scroll {
+  display: grid;
+  gap: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+}
+
 .sidebar-nav {
   display: grid;
   gap: 4px;
+}
+
+.sidebar-section-label {
+  padding: 0 11px 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-plugin-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-nav-item {

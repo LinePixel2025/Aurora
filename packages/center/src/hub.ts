@@ -12,6 +12,11 @@ import { randomBytes } from 'node:crypto'
 import {
   CENTER_INPUT_ATTACHMENT_LIMIT,
   CENTER_INPUT_IMAGE_MAX_BYTES,
+  CENTER_PLUGIN_CALL_MAX_BYTES,
+  CENTER_PLUGIN_CALL_PER_SECOND,
+  CENTER_PLUGIN_EVENT_MAX_BYTES,
+  CENTER_PLUGIN_PENDING_TIMEOUT_MS,
+  CENTER_PLUGIN_SUBSCRIPTION_LIMIT,
   CENTER_REMOTE_CONFIG_PREFIXES,
   CENTER_SESSION_PREFIX,
   type AskSettleOutcome,
@@ -92,6 +97,8 @@ const INPUT_ATTACHMENT_PENDING_TIMEOUT_MS = 5 * 60_000
 function pendingTimeoutMs(cmd: CenterCommand): number {
   if (VOICE_KINDS.has(cmd.kind)) return VOICE_PENDING_TIMEOUT_MS
   if (FILE_KINDS.has(cmd.kind)) return FILE_PENDING_TIMEOUT_MS
+  // 插件侧 RPC 自身 10s 超时，中转留出余量（docs/12 §6.5）
+  if (cmd.kind === 'plugin.panelData') return CENTER_PLUGIN_PENDING_TIMEOUT_MS
   // 附件是同一 kind 的载荷差异，只能看 cmd 本身（其余 kind 用集合判定即可）
   if (cmd.kind === 'session.input' && (cmd.attachments?.length ?? 0) > 0) {
     return INPUT_ATTACHMENT_PENDING_TIMEOUT_MS
@@ -163,6 +170,26 @@ function attachmentIdsOf(value: unknown): string[] | undefined {
 
 const pendingKey = (webConnId: string, requestId: string): string => `${webConnId}:${requestId}`
 
+/** 插件面板订阅键：clientId 也进键，多设备同名面板互不串（docs/12 §6.5） */
+const pluginSubKey = (clientId: string, pluginId: string, panelId: string): string =>
+  `${clientId}\u0000${pluginId}\u0000${panelId}`
+
+/** 插件面板命令的 method / event 名长度上限（与桌面面板 RPC 同口径） */
+const PLUGIN_NAME_MAX = 64
+
+/**
+ * JSON 序列化后的字节数；循环引用等不可序列化值返回 `undefined`（调用方按非法处理）。
+ * 插件面板的 params / values / payload 都按**序列化后**的字节数限流。
+ */
+function jsonByteLength(value: unknown): number | undefined {
+  try {
+    const text = JSON.stringify(value)
+    return typeof text === 'string' ? Buffer.byteLength(text, 'utf8') : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** 会话类命令（带 sessionId）：forwardCommand 时未记账则顺带补记属主（与 create 同款） */
 const SESSION_OWNER_KINDS: ReadonlySet<string> = new Set([
   'session.input',
@@ -193,6 +220,18 @@ export class Hub {
     string,
     { clientId: string; sessionId: string; request: AskUserRequestPayload }
   >()
+  /**
+   * 插件面板订阅（docs/12 §6.5）：网页连接 → 订阅键集合；订阅键 → 引用计数 + 目标。
+   * 引用计数跨页签共享 —— 只在第一个页签订阅时向客户端下发 `plugin.subscribe`，
+   * 最后一个退订 / 断线时才下发 `plugin.unsubscribe`。
+   */
+  private readonly webPluginSubs = new Map<string, Set<string>>()
+  private readonly pluginRefs = new Map<
+    string,
+    { clientId: string; pluginId: string; panelId: string; count: number }
+  >()
+  /** 插件面板调用限速：网页连接 → 最近 1 秒内的调用时间戳 */
+  private readonly pluginCallLog = new Map<string, number[]>()
 
   constructor(private readonly deps: HubDeps) {}
 
@@ -205,17 +244,23 @@ export class Hub {
     // 页签就会读到一个没有麦克风 / 朗读按钮的界面。新连接的第一条真 `status` 毫秒级到达即
     // 刷新，这里只需保住旧值。首次连接（或服务器重启后）没有旧值，行为不变。
     const previous = this.statusByClient.get(conn.clientId)
-    this.statusByClient.set(
-      conn.clientId,
-      previous?.voice === undefined || status.voice !== undefined
-        ? status
-        : { ...status, voice: previous.voice },
-    )
+    const merged: ClientStatus = { ...status }
+    // 同 voice：hello 派生的占位快照不带插件目录，别把上一轮完整目录覆盖没了
+    if (previous?.voice !== undefined && status.voice === undefined) merged.voice = previous.voice
+    if (previous?.plugins !== undefined && status.plugins === undefined) {
+      merged.plugins = previous.plugins
+    }
+    this.statusByClient.set(conn.clientId, merged)
     conn.send({
       type: 'welcome',
       serverVersion: this.deps.serverVersion(),
       clientId: conn.clientId,
     })
+    // 重连补订阅（docs/12 §6.5）：网页端订阅还在，客户端侧的订阅表随断线清空
+    for (const entry of this.pluginRefs.values()) {
+      if (entry.clientId !== conn.clientId || entry.count <= 0) continue
+      conn.send({ type: 'cmd', cmd: this.pluginSubscriptionCommand('subscribe', entry) })
+    }
     this.broadcastClients()
   }
 
@@ -247,6 +292,12 @@ export class Hub {
 
   removeWeb(connId: string): void {
     this.webConns.delete(connId)
+    this.pluginCallLog.delete(connId)
+    const subs = this.webPluginSubs.get(connId)
+    this.webPluginSubs.delete(connId)
+    if (subs === undefined) return
+    // 网页断线 = 这一连接的全部订阅退订；归零的才通知客户端停推
+    for (const key of subs) this.releasePluginSub(key)
   }
 
   isOnline(clientId: string): boolean {
@@ -482,6 +533,17 @@ export class Hub {
           text: message.text,
         })
         break
+      // ── 插件侧栏面板中继（docs/12 §6.5）：授权**只认设备属主**（管理员不跨用户），
+      // 因为插件面板内容属于个人数据。转发 / 订阅 / 事件三条链都按同一条口径。
+      case 'plugin.panelData':
+        this.forwardPluginCall(conn, message)
+        break
+      case 'plugin.subscribe':
+        this.subscribePlugin(conn, message, true)
+        break
+      case 'plugin.unsubscribe':
+        this.subscribePlugin(conn, message, false)
+        break
       default:
         break // 协议只增不改：未知类型忽略
     }
@@ -603,6 +665,179 @@ export class Hub {
       text: message.text,
       ...(attachments.length === 0 ? {} : { attachments }),
     })
+  }
+
+  /**
+   * 插件面板调用（docs/12 §6.5）：授权（仅属主）→ 在线 → 目录命中 → 载荷上限 →
+   * 限速 → 转发。目录来自客户端最近一次 `ClientStatus.plugins`，不在目录里的面板
+   * 一律不下发（旧客户端 / 已卸载 / 闸门关闭都是这条）。
+   */
+  private forwardPluginCall(
+    conn: WebConn,
+    message: Extract<CenterWebMessage, { type: 'plugin.panelData' }>,
+  ): void {
+    const { requestId, clientId } = message
+    const ids = this.pluginIdsOf(message)
+    if (ids === undefined) {
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_INVALID_ARGUMENT' })
+      return
+    }
+    const denial = this.authorizeOwner(conn, clientId) ?? this.pluginPanelError(clientId, ids)
+    if (denial !== undefined) {
+      conn.send({ type: 'result', requestId, ok: false, error: denial })
+      return
+    }
+    const method = message.method ?? 'refresh'
+    if (
+      typeof method !== 'string' ||
+      method === '' ||
+      method.length > PLUGIN_NAME_MAX ||
+      (message.params !== undefined && !isRecord(message.params)) ||
+      (message.values !== undefined && !isRecord(message.values))
+    ) {
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_INVALID_ARGUMENT' })
+      return
+    }
+    const payloadBytes = jsonByteLength({ params: message.params, values: message.values })
+    if (payloadBytes === undefined || payloadBytes > CENTER_PLUGIN_CALL_MAX_BYTES) {
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_INVALID_ARGUMENT' })
+      return
+    }
+    if (!this.allowPluginCall(conn.id)) {
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_RATE_LIMITED' })
+      return
+    }
+    this.forwardCommand(conn, clientId, {
+      kind: 'plugin.panelData',
+      requestId,
+      pluginId: ids.pluginId,
+      panelId: ids.panelId,
+      method,
+      ...(message.params === undefined ? {} : { params: message.params }),
+      ...(message.values === undefined ? {} : { values: message.values }),
+    })
+  }
+
+  /**
+   * 订阅 / 退订（docs/12 §6.5）：服务器本地立即回执；按网页连接 + 引用计数决定是否
+   * 向客户端下发。重复订阅幂等，退订未订阅项也幂等（网页重连后重复调用是常态）。
+   */
+  private subscribePlugin(
+    conn: WebConn,
+    message: Extract<CenterWebMessage, { type: 'plugin.subscribe' | 'plugin.unsubscribe' }>,
+    subscribe: boolean,
+  ): void {
+    const { requestId, clientId } = message
+    const ids = this.pluginIdsOf(message)
+    if (ids === undefined) {
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_INVALID_ARGUMENT' })
+      return
+    }
+    const denial = this.authorizeOwner(conn, clientId) ?? this.pluginPanelError(clientId, ids)
+    if (denial !== undefined) {
+      conn.send({ type: 'result', requestId, ok: false, error: denial })
+      return
+    }
+    const key = pluginSubKey(clientId, ids.pluginId, ids.panelId)
+    const subs = this.webPluginSubs.get(conn.id) ?? new Set<string>()
+    if (subscribe) {
+      if (!subs.has(key)) {
+        if (subs.size >= CENTER_PLUGIN_SUBSCRIPTION_LIMIT) {
+          conn.send({ type: 'result', requestId, ok: false, error: 'E_LIMIT_EXCEEDED' })
+          return
+        }
+        subs.add(key)
+        this.webPluginSubs.set(conn.id, subs)
+        this.retainPluginSub(key, { clientId, ...ids })
+      }
+    } else if (subs.delete(key)) {
+      if (subs.size === 0) this.webPluginSubs.delete(conn.id)
+      this.releasePluginSub(key)
+    }
+    conn.send({ type: 'result', requestId, ok: true })
+  }
+
+  /** 订阅引用 +1；首个订阅者才向客户端下发 `plugin.subscribe` */
+  private retainPluginSub(
+    key: string,
+    ids: { clientId: string; pluginId: string; panelId: string },
+  ): void {
+    const existing = this.pluginRefs.get(key)
+    if (existing !== undefined) {
+      existing.count += 1
+      return
+    }
+    this.pluginRefs.set(key, { ...ids, count: 1 })
+    this.clientConns
+      .get(ids.clientId)
+      ?.send({ type: 'cmd', cmd: this.pluginSubscriptionCommand('subscribe', ids) })
+  }
+
+  /** 订阅引用 -1；归零时向客户端下发 `plugin.unsubscribe` 并摘除记账 */
+  private releasePluginSub(key: string): void {
+    const entry = this.pluginRefs.get(key)
+    if (entry === undefined) return
+    entry.count -= 1
+    if (entry.count > 0) return
+    this.pluginRefs.delete(key)
+    this.clientConns
+      .get(entry.clientId)
+      ?.send({ type: 'cmd', cmd: this.pluginSubscriptionCommand('unsubscribe', entry) })
+  }
+
+  private pluginSubscriptionCommand(
+    action: 'subscribe' | 'unsubscribe',
+    ids: { pluginId: string; panelId: string },
+  ): CenterCommand {
+    const requestId = `plugin-${action}-${randomBytes(6).toString('hex')}`
+    return action === 'subscribe'
+      ? { kind: 'plugin.subscribe', requestId, pluginId: ids.pluginId, panelId: ids.panelId }
+      : { kind: 'plugin.unsubscribe', requestId, pluginId: ids.pluginId, panelId: ids.panelId }
+  }
+
+  /** 入站 id 形状守卫：两个 id 都是非空短字符串（畸形帧整体拒绝） */
+  private pluginIdsOf(
+    message: { pluginId: unknown; panelId: unknown },
+  ): { pluginId: string; panelId: string } | undefined {
+    const { pluginId, panelId } = message
+    if (typeof pluginId !== 'string' || pluginId === '' || pluginId.length > 128) return undefined
+    if (typeof panelId !== 'string' || panelId === '' || panelId.length > 128) return undefined
+    return { pluginId, panelId }
+  }
+
+  /** 目录命中判定：无目录 = E_UNSUPPORTED；目录里没有该插件 / 面板 = E_PANEL_NOT_FOUND */
+  private pluginPanelError(
+    clientId: string,
+    ids: { pluginId: string; panelId: string },
+  ): string | undefined {
+    const plugins = this.statusByClient.get(clientId)?.plugins
+    if (plugins === undefined) return 'E_UNSUPPORTED'
+    const plugin = plugins.find((item) => item.id === ids.pluginId)
+    if (plugin === undefined || !plugin.panels.some((item) => item.id === ids.panelId)) {
+      return 'E_PANEL_NOT_FOUND'
+    }
+    return undefined
+  }
+
+  /** 每秒调用上限（滑动窗口；超限只拒绝当次，不清空窗口） */
+  private allowPluginCall(webConnId: string): boolean {
+    const now = Date.now()
+    const recent = (this.pluginCallLog.get(webConnId) ?? []).filter((at) => now - at < 1000)
+    if (recent.length >= CENTER_PLUGIN_CALL_PER_SECOND) {
+      this.pluginCallLog.set(webConnId, recent)
+      return false
+    }
+    recent.push(now)
+    this.pluginCallLog.set(webConnId, recent)
+    return true
+  }
+
+  /** 插件面板的授权口径：**只认设备属主**，管理员也不跨用户（插件内容是个人数据） */
+  private authorizeOwner(conn: WebConn, clientId: string): string | undefined {
+    const record = this.deps.clients.get(clientId)
+    if (record === undefined) return 'E_CLIENT_NOT_FOUND'
+    if (record.ownerUserId !== conn.user.id) return 'E_FORBIDDEN'
+    return undefined
   }
 
   /**
@@ -826,6 +1061,33 @@ export class Hub {
           const record = this.deps.clients.get(clientId)
           if (web.user.role !== 'admin' && record?.ownerUserId !== web.user.id) continue
           web.send({ type: 'client.status', clientId, status: message.status })
+        }
+        break
+      }
+      case 'plugin.event': {
+        // 插件面板推送（docs/12 §6.5）：形状 / 上限守卫 → 只投给**订阅了该面板且是属主**
+        // 的网页连接（管理员也只在他是属主时收到）。客户端→网页没有 requestId，畸形帧忽略。
+        const ids = this.pluginIdsOf(message)
+        if (ids === undefined || typeof message.event !== 'string' || message.event === '') return
+        if (message.event.length > PLUGIN_NAME_MAX) return
+        if (message.payload !== undefined) {
+          const bytes = jsonByteLength(message.payload)
+          if (bytes === undefined || bytes > CENTER_PLUGIN_EVENT_MAX_BYTES) return
+        }
+        const record = this.deps.clients.get(clientId)
+        if (record === undefined) return
+        const key = pluginSubKey(clientId, ids.pluginId, ids.panelId)
+        for (const web of this.webConns.values()) {
+          if (web.user.id !== record.ownerUserId) continue
+          if (!this.webPluginSubs.get(web.id)?.has(key)) continue
+          web.send({
+            type: 'plugin.event',
+            clientId,
+            pluginId: ids.pluginId,
+            panelId: ids.panelId,
+            event: message.event,
+            ...(message.payload === undefined ? {} : { payload: message.payload }),
+          })
         }
         break
       }

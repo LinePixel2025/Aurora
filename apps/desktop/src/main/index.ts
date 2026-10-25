@@ -141,6 +141,7 @@ import {
   buildClientStatus,
   voiceReadiness,
 } from './center/remote-control.js'
+import { buildPluginCatalog } from './center/plugin-panels.js'
 import { SkillsService } from './skills.js'
 import { ClassIslandNotifier, ClassIslandProvider } from './classisland.js'
 import { applyProxy, createNetFetch } from './net.js'
@@ -234,6 +235,7 @@ import {
 import { registerBrowserTools } from './tools/index.js'
 // 插件系统（docs/14）：贡献在清单里声明，运行在独立 utilityProcess（非 OS 沙箱）
 import { PluginManager } from './plugins/manager.js'
+import { readPluginPanelData } from './plugins/panel-data.js'
 import { UsageStatsStore } from './usage-stats.js'
 import { PluginMarketplaceClient } from './plugins/marketplace.js'
 import { createUtilityPluginProcessFactory } from './plugins/process.js'
@@ -1212,6 +1214,8 @@ async function bootstrap(): Promise<void> {
         return
       }
       windows?.sendTo('chat', IPC.plugins.panelEvent, event)
+      // Center 侧栏面板（docs/12 §6.5）：网页端订阅了该面板时才上行（connector 内判定）
+      centerConnector?.notifyPanelEvent(event)
     },
   })
   await pluginManager.init()
@@ -2322,8 +2326,16 @@ async function bootstrap(): Promise<void> {
         allowFileTransfer: center.allowFileTransfer,
       }
     },
-    statusSnapshot: () =>
-      buildClientStatus(centerSettings.get(), app.getVersion(), process.platform),
+    statusSnapshot: () => {
+      const current = centerSettings.get()
+      // 插件目录（docs/12 §6.5）复用「允许 Center 远程操作本机」总闸：闸门关闭时不下发，
+      // 网页端就没有插件入口；也不新增设置项 / 不升 CONFIG_VERSION。
+      const plugins =
+        current.center.allowRemoteSession && pluginManager !== undefined
+          ? buildPluginCatalog(pluginManager.list())
+          : undefined
+      return buildClientStatus(current, app.getVersion(), process.platform, plugins)
+    },
     // 语音中转（docs/12 §6.4）：与 `stt:transcribe` / `tts:synthesize` IPC **同一实例**
     //（sttService / tts 都在上方装配）；门控判定与 ClientStatus.voice 能力位共用
     // voiceReadiness（remote-control.ts），不在 connector 里另写一套口径。
@@ -2340,6 +2352,14 @@ async function bootstrap(): Promise<void> {
     version: app.getVersion(),
     platform: process.platform,
     hostname: () => osHostname(),
+    // 插件侧栏面板中继（docs/12 §6.5）：与桌面 `plugins:panelData` 同一条数据链路，
+    // 这里允许页面型面板（桌面 IPC 仍只走 `plugins:pageRpc`）
+    pluginPanels: {
+      invoke: (input) => {
+        if (pluginManager === undefined) throw new Error('插件系统尚未装配')
+        return readPluginPanelData(pluginManager, input, { allowPage: true })
+      },
+    },
     // 网页端对提问卡的作答（docs/12 §5，v0.3.3）走 AskUserService.resolve 结算；
     // 未知 / 已结算 requestId 幂等返回 false（本地卡与网页卡先到先得，settled=false 也算 ok）。
     resolveAsk: (input) => askUserService?.resolve(input) ?? false,
@@ -6660,6 +6680,8 @@ function syncPluginContributions(): void {
     windows?.sendTo(name, IPC.plugins.changed, {})
   }
   widgetManager?.broadcast(IPC.plugins.changed, {})
+  // Center 侧栏的插件入口跟随目录变化（docs/12 §6.5）：安装 / 卸载 / 启停 / 重启都重推快照
+  centerConnector?.notifyPluginsChanged()
 }
 
 function syncClassification(): void {

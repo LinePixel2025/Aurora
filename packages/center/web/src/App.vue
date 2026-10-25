@@ -19,7 +19,7 @@ import { navigate, route } from './router'
 import PublicHeader from './components/PublicHeader.vue'
 import WorkbenchSidebar from './components/WorkbenchSidebar.vue'
 import { PanelLeft } from '@aurora/shared/browser'
-import { WORKBENCH_NAV } from './lib/nav'
+import { WORKBENCH_NAV, buildPluginNav, type PluginNavItem } from './lib/nav'
 
 const LandingView = defineAsyncComponent(() => import('./views/LandingView.vue'))
 const LoginView = defineAsyncComponent(() => import('./views/LoginView.vue'))
@@ -31,6 +31,7 @@ const FilesView = defineAsyncComponent(() => import('./views/FilesView.vue'))
 const AdminView = defineAsyncComponent(() => import('./views/AdminView.vue'))
 const MarketplaceView = defineAsyncComponent(() => import('./views/MarketplaceView.vue'))
 const PluginsAdminView = defineAsyncComponent(() => import('./views/PluginsAdminView.vue'))
+const PluginPanelView = defineAsyncComponent(() => import('./views/PluginPanelView.vue'))
 
 onMounted(() => {
   void boot()
@@ -54,12 +55,23 @@ const activeView = computed(() => {
     if (route.value.name === 'login') return LoginView
     return LandingView
   }
+  if (route.value.name === 'plugin') return PluginPanelView
   if (route.value.name === 'usage') return UsageView
   if (route.value.name === 'automations') return AutomationsView
   if (route.value.name === 'files') return FilesView
   if (route.value.name === 'admin') return AdminView
   return ConsoleView
 })
+
+/**
+ * 视图重挂载键：插件面板靠 query 区分（同一路由名切换面板时必须重挂，
+ * 否则内层 `pluginId/panelId` 变了而组件实例复用，旧 schema 会留在屏上）。
+ */
+const viewKey = computed(() =>
+  route.value.name === 'plugin'
+    ? `plugin:${route.value.query.get('plugin') ?? ''}/${route.value.query.get('panel') ?? ''}`
+    : route.value.name,
+)
 
 watch(
   [booted, needsLogin, route],
@@ -97,7 +109,32 @@ const onlineCount = computed(
   () => [...state.clients.values()].filter((entry) => entry.client.online).length,
 )
 
+/**
+ * 侧栏「插件」分区（docs/12 §6.5）：只取本人名下在线设备的 `ClientStatus.plugins`。
+ * 请求实时镜像桌面右栏面板 —— 旧客户端不报目录 / `allowRemoteSession` 关闭时自然为空。
+ */
+const pluginItems = computed(() =>
+  buildPluginNav(
+    [...state.clients.values()].map((entry) => ({
+      clientId: entry.client.clientId,
+      online: entry.client.online,
+      ownerUserId: entry.client.ownerUserId,
+      ...(entry.status?.plugins === undefined ? {} : { plugins: entry.status.plugins }),
+    })),
+    currentUser.value?.id ?? '',
+  ),
+)
+
+const activePluginKey = computed(() =>
+  route.value.name === 'plugin'
+    ? `${route.value.query.get('plugin') ?? ''}::${route.value.query.get('panel') ?? ''}`
+    : '',
+)
+
 const pageTitle = computed(() => {
+  if (route.value.name === 'plugin') {
+    return pluginItems.value.find((item) => item.key === activePluginKey.value)?.label ?? '插件面板'
+  }
   const titles: Record<string, string> = {
     console: '控制台',
     usage: '用量',
@@ -109,6 +146,16 @@ const pageTitle = computed(() => {
   }
   return titles[route.value.name] ?? 'Aurora Center'
 })
+
+/** 打开插件面板：多设备时默认第一台在线设备，页内可再切换 */
+function onOpenPlugin(item: PluginNavItem): void {
+  mobileNavOpen.value = false
+  navigate('plugin', {
+    client: item.clientIds[0] ?? '',
+    plugin: item.pluginId,
+    panel: item.panelId,
+  })
+}
 
 function onNavigate(name: Parameters<typeof navigate>[0]): void {
   mobileNavOpen.value = false
@@ -159,7 +206,10 @@ const bottomNavItems = computed(() =>
         :user="currentUser"
         :online-count="onlineCount"
         :total-count="state.clients.size"
+        :plugin-items="pluginItems"
+        :active-plugin-key="activePluginKey"
         @navigate="onNavigate"
+        @open-plugin="onOpenPlugin"
         @logout="onLogout"
       />
       <Transition name="fade">
@@ -199,7 +249,7 @@ const bottomNavItems = computed(() =>
 
         <main class="workbench-main" :data-route="route.name">
           <Suspense>
-            <component :is="activeView" :key="route.name" />
+            <component :is="activeView" :key="viewKey" />
             <template #fallback>
               <div class="route-loading"><span class="spinner" /></div>
             </template>

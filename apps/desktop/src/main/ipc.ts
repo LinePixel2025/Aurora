@@ -24,6 +24,7 @@ import { buildAttachmentPreview, type ImageReadPort } from './attachments.js'
 import { prepareAttachments, type AttachmentDigest } from './attachment-prepare.js'
 import { PastedImageError, writePastedImage } from './pasted-image.js'
 import type { PluginManager } from './plugins/manager.js'
+import { readPluginPanelData } from './plugins/panel-data.js'
 import type { WidgetManager } from './plugins/widgets.js'
 import type { PluginMarketplaceClient } from './plugins/marketplace.js'
 import { pluginPageGuestOf } from './page-protocol.js'
@@ -1275,35 +1276,16 @@ export function registerIpc(deps: DesktopDeps): () => void {
   )
   handle<PluginPanelDataResult>(IPC.plugins.panelData, async (request: PluginPanelDataRequest) => {
     if (plugins === undefined) return pluginsMissing<PluginPanelDataResult>()
-    const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
-    const panelId = typeof request?.panelId === 'string' ? request.panelId : ''
-    if (pluginId === '' || panelId === '') {
-      return err('E_INVALID_ARGUMENT', '缺少插件或面板 id')
-    }
-    const panel = plugins.get(pluginId)?.panels.find((item) => item.id === panelId)
-    if (panel === undefined) return err('E_INVALID_ARGUMENT', '插件面板不存在')
-    if (panel.kind === 'page') {
-      return err('E_INVALID_ARGUMENT', '页面型面板请通过插件页面打开')
-    }
     try {
-      let schema: PluginPanelSchema | undefined
-      const file = await plugins.panelSchemaFile(pluginId, panelId)
-      if (file !== undefined) schema = JSON.parse(file) as PluginPanelSchema
-      // 插件可以返回动态 schema；失败时保留静态 schema（面板不至于整块打不开）
-      try {
-        const result = await plugins.invokePanel(pluginId, panelId, request.method ?? 'refresh', {
-          params: request.params,
-          values: request.values ?? {},
-        })
-        if (result.schema !== undefined) schema = result.schema as PluginPanelSchema
-        return ok({
-          ...(schema === undefined ? {} : { schema }),
-          ...(result.toast === undefined ? {} : { toast: result.toast }),
-        })
-      } catch (error) {
-        if (schema === undefined) throw error
-        return ok({ schema })
-      }
+      return ok(
+        await readPluginPanelData(plugins, {
+          pluginId: request?.pluginId ?? '',
+          panelId: request?.panelId ?? '',
+          method: request?.method,
+          params: request?.params,
+          values: request?.values,
+        }),
+      )
     } catch (error) {
       return pluginError(error)
     }

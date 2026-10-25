@@ -143,4 +143,58 @@ describe('PluginStore', () => {
     expect(store.get(MANIFEST.id)?.iconUrl).toBe(`/api/plugins/${MANIFEST.id}/icon`)
     expect(store.iconPathOf(MANIFEST.id)).toContain('icons')
   })
+
+  describe('readAsset（页面型面板资源）', () => {
+    const PAGE = '<!doctype html><html><head><title>p</title></head><body>hi</body></html>'
+
+    async function publishPage() {
+      const body = archive({
+        'ui/page.html': PAGE,
+        'ui/app.js': 'console.log("hi")',
+        'ui/style.css': 'body{margin:0}',
+        'ui/logo.png': new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+        'ui/data.svg': '<svg/>',
+      })
+      const staged = await store.stage(body)
+      await store.publish(staged.token)
+    }
+
+    it('按路径取文件并给出 MIME；HTML 不 immutable，其余 immutable', async () => {
+      await publishPage()
+      const html = await store.readAsset(MANIFEST.id, '1.0.0', 'ui/page.html')
+      expect(html?.mime).toBe('text/html; charset=utf-8')
+      expect(html?.immutable).toBe(false)
+      expect(html?.body.toString('utf8')).toBe(PAGE)
+
+      const js = await store.readAsset(MANIFEST.id, '1.0.0', 'ui/app.js')
+      expect(js?.mime).toBe('text/javascript; charset=utf-8')
+      expect(js?.immutable).toBe(true)
+
+      const css = await store.readAsset(MANIFEST.id, '1.0.0', './ui/style.css')
+      expect(css?.mime).toBe('text/css; charset=utf-8')
+
+      const png = await store.readAsset(MANIFEST.id, '1.0.0', 'ui/logo.png')
+      expect(png?.mime).toBe('image/png')
+    })
+
+    it('穿越 / 非白名单类型 / 缺文件 / 未知版本一律 undefined', async () => {
+      await publishPage()
+      expect(await store.readAsset(MANIFEST.id, '1.0.0', '../evil.js')).toBeUndefined()
+      expect(await store.readAsset(MANIFEST.id, '1.0.0', 'ui/../../evil.js')).toBeUndefined()
+      expect(await store.readAsset(MANIFEST.id, '1.0.0', 'ui/data.svg')).toBeUndefined()
+      expect(await store.readAsset(MANIFEST.id, '1.0.0', 'ui/missing.js')).toBeUndefined()
+      expect(await store.readAsset(MANIFEST.id, '9.9.9', 'ui/page.html')).toBeUndefined()
+      expect(await store.readAsset('com.example.other', '1.0.0', 'ui/page.html')).toBeUndefined()
+    })
+
+    it('缓存命中后仍返回同一内容；删除版本后不再可读', async () => {
+      await publishPage()
+      const first = await store.readAsset(MANIFEST.id, '1.0.0', 'ui/app.js')
+      const second = await store.readAsset(MANIFEST.id, '1.0.0', 'ui/app.js')
+      expect(second?.body.equals(first!.body)).toBe(true)
+
+      expect(await store.remove(MANIFEST.id, '1.0.0')).toBe(true)
+      expect(await store.readAsset(MANIFEST.id, '1.0.0', 'ui/app.js')).toBeUndefined()
+    })
+  })
 })

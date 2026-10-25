@@ -17,6 +17,7 @@ export type RouteName =
   | 'device'
   | 'marketplace'
   | 'pluginsAdmin'
+  | 'plugin'
 
 export interface Route {
   name: RouteName
@@ -39,6 +40,7 @@ function parse(): Route {
     'device',
     'marketplace',
     'pluginsAdmin',
+    'plugin',
   ]
   return {
     name: known.includes(name) ? name : 'home',

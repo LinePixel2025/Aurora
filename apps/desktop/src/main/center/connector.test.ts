@@ -1407,3 +1407,208 @@ describe('CenterConnector · 语音中转（docs/12 §6.4）', () => {
     })
   })
 })
+
+describe('CenterConnector · 插件侧栏面板中继（docs/12 §6.5）', () => {
+  function openSocket(harness: Harness): FakeSocket {
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    return socket
+  }
+
+  async function sendCmd(socket: FakeSocket, cmd: Record<string, unknown>): Promise<void> {
+    socket.emit('message', JSON.stringify({ type: 'cmd', cmd }))
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  function results(socket: FakeSocket): Record<string, unknown>[] {
+    return socket.sent
+      .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .filter((message) => message['type'] === 'result')
+  }
+
+  it('schema 面板：调注入的 panelPanels.invoke 并回执 schema / toast', async () => {
+    const harness = makeConnector()
+    const invoke = vi.fn(
+      async (): Promise<never> =>
+        ({
+          schema: { version: 1, nodes: [{ type: 'text', text: 'hi' }] },
+          toast: '已刷新',
+        }) as never,
+    )
+    harness.deps.pluginPanels = { invoke }
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'plugin.panelData',
+      requestId: 'pp-1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      method: 'submit',
+      params: { a: 1 },
+      values: { name: 'x' },
+    })
+    expect(invoke).toHaveBeenCalledWith({
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      method: 'submit',
+      params: { a: 1 },
+      values: { name: 'x' },
+    })
+    expect(results(socket).at(-1)).toMatchObject({
+      requestId: 'pp-1',
+      ok: true,
+      data: {
+        schema: { version: 1, nodes: [{ type: 'text', text: 'hi' }] },
+        toast: '已刷新',
+      },
+    })
+  })
+
+  it('页面型面板：invoke 返回的 data 原样回执（页面桥按 result.data 取用）', async () => {
+    const harness = makeConnector()
+    harness.deps.pluginPanels = {
+      invoke: async () => ({ data: { data: { count: 2, greeting: '你好' } } }),
+    }
+    const socket = openSocket(harness)
+    await sendCmd(socket, {
+      kind: 'plugin.panelData',
+      requestId: 'pp-page',
+      pluginId: 'com.example.hello',
+      panelId: 'info',
+      method: 'status',
+    })
+    expect(results(socket).at(-1)).toMatchObject({
+      requestId: 'pp-page',
+      ok: true,
+      data: { data: { data: { count: 2, greeting: '你好' } } },
+    })
+  })
+
+  it('闸门关闭 / 未注入 → E_REMOTE_DISABLED / E_UNSUPPORTED；非法 schema 拒绝', async () => {
+    const disabled = makeConnector({ allowRemoteSession: false })
+    disabled.deps.pluginPanels = { invoke: vi.fn() }
+    const socket = openSocket(disabled)
+    await sendCmd(socket, {
+      kind: 'plugin.panelData',
+      requestId: 'pp-off',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(results(socket).at(-1)).toMatchObject({ ok: false, error: 'E_REMOTE_DISABLED' })
+
+    const missing = makeConnector()
+    const missingSocket = openSocket(missing)
+    await sendCmd(missingSocket, {
+      kind: 'plugin.panelData',
+      requestId: 'pp-missing',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(results(missingSocket).at(-1)).toMatchObject({ ok: false, error: 'E_UNSUPPORTED' })
+
+    const harness = makeConnector()
+    harness.deps.pluginPanels = {
+      invoke: async (): Promise<never> =>
+        ({ schema: { version: 1, nodes: [{ type: 'evil' }] } }) as never,
+    }
+    const invalid = openSocket(harness)
+    await sendCmd(invalid, {
+      kind: 'plugin.panelData',
+      requestId: 'pp-bad',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(String(results(invalid).at(-1)?.['error'])).toMatch(/^E_INVALID_SCHEMA/)
+  })
+
+  it('method 超长 / params 超 256 KB → E_INVALID_ARGUMENT，且不调 invoke', async () => {
+    const harness = makeConnector()
+    const invoke = vi.fn()
+    harness.deps.pluginPanels = { invoke }
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'plugin.panelData',
+      requestId: 'pp-method',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      method: 'x'.repeat(65),
+    })
+    expect(results(socket).at(-1)).toMatchObject({ ok: false, error: 'E_INVALID_ARGUMENT' })
+
+    await sendCmd(socket, {
+      kind: 'plugin.panelData',
+      requestId: 'pp-big',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      params: { text: 'x'.repeat(300 * 1024) },
+    })
+    expect(results(socket).at(-1)).toMatchObject({ ok: false, error: 'E_INVALID_ARGUMENT' })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('订阅后才转发事件；断线清空订阅（等服务器重连补发）', async () => {
+    const harness = makeConnector()
+    const socket = openSocket(harness)
+
+    harness.connector.notifyPanelEvent({
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      event: 'tick',
+    })
+    expect(socket.sent.filter((raw) => raw.includes('plugin.event'))).toHaveLength(0)
+
+    await sendCmd(socket, {
+      kind: 'plugin.subscribe',
+      requestId: 'sub-1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    expect(results(socket).at(-1)).toMatchObject({ ok: true })
+
+    harness.connector.notifyPanelEvent({
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      event: 'tick',
+      payload: { count: 1 },
+    })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'plugin.event',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      event: 'tick',
+      payload: { count: 1 },
+    })
+
+    // 退订
+    await sendCmd(socket, {
+      kind: 'plugin.unsubscribe',
+      requestId: 'unsub-1',
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+    })
+    const before = socket.sent.length
+    harness.connector.notifyPanelEvent({
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      event: 'tick',
+    })
+    expect(socket.sent.length).toBe(before)
+
+    // 断线重连后本地订阅表已清空：事件不会在服务器补发订阅前偷跑
+    socket.emit('close')
+    vi.advanceTimersByTime(2000)
+    const next = harness.lastSocket()
+    next.emit('open')
+    harness.connector.notifyPanelEvent({
+      pluginId: 'com.example.hello',
+      panelId: 'board',
+      event: 'tick',
+    })
+    expect(next.sent.filter((raw) => raw.includes('plugin.event'))).toHaveLength(0)
+  })
+})

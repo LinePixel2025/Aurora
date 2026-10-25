@@ -32,6 +32,29 @@ export const CENTER_INPUT_ATTACHMENT_LIMIT = 5
  */
 export const CENTER_INPUT_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 
+// ── 插件面板中继上限（本轮，docs/12 §6.5）──
+/** `plugin.panelData` 的 params / values 序列化上限（与插件页面 RPC 的 256 KB 同口径） */
+export const CENTER_PLUGIN_CALL_MAX_BYTES = 256 * 1024
+/** `plugin.event` 的 payload 序列化上限（与桌面 `ui.panelEvent` 的 64 KB 同口径） */
+export const CENTER_PLUGIN_EVENT_MAX_BYTES = 64 * 1024
+/** 插件面板命令的等待回执时限（插件侧 RPC 超时 10s，留出中转余量） */
+export const CENTER_PLUGIN_PENDING_TIMEOUT_MS = 20_000
+/** 每条网页连接的插件面板订阅上限（防止订阅表膨胀） */
+export const CENTER_PLUGIN_SUBSCRIPTION_LIMIT = 64
+/** 每条网页连接每秒的插件面板调用上限（超出回 `E_RATE_LIMITED`） */
+export const CENTER_PLUGIN_CALL_PER_SECOND = 20
+/** 单次面板调用的结果序列化上限（schema 或页面型返回值） */
+export const CENTER_PLUGIN_RESULT_MAX_BYTES = 512 * 1024
+/** 插件面板目录条目上限（插件数上限；侧栏入口另有 24 条上限，见网页端） */
+export const CENTER_PLUGIN_CATALOG_LIMIT = 64
+
+/**
+ * 页面型插件面板的 postMessage 标识（docs/12 §6.5）：服务器注入的桥与 Center 网页的
+ * `PluginPageFrame` 逐字一致。放在 shared 是为了不让两侧各写一份字面量。
+ */
+export const CENTER_PLUGIN_PAGE_SOURCE = 'aurora-plugin-page'
+export const CENTER_PLUGIN_PAGE_HOST_SOURCE = 'aurora-center'
+
 /** 客户端能力声明（hello 上报；服务器据此决定哪些命令可发） */
 export interface ClientCapabilities {
   /** 允许远程开 session 对话（`center.allowRemoteSession`） */
@@ -55,6 +78,30 @@ export interface ClientHello {
   platform: string
   mode: ModeId
   capabilities: ClientCapabilities
+}
+
+/**
+ * 侧栏面板目录条目（本轮，docs/12 §6.5）。
+ *
+ * 桌面只上报 `contributes.panels`（侧栏面板），**小组件永不出现**：`contributes.widgets`
+ * 含桌面 / 提示条两种槽位，不属于 Center 的展示面。
+ */
+export interface ClientPluginPanelInfo {
+  id: string
+  title: string
+  /** 清单里的面板图标名（`PLUGIN_PANEL_ICONS`）；网页端映射不到就不渲染图标 */
+  icon?: string
+  kind: 'schema' | 'page'
+  /** 仅 `kind === 'page'`：相对插件包根的 HTML 入口 */
+  entry?: string
+}
+
+/** 已安装插件目录（仅启用插件、仅侧栏面板） */
+export interface ClientPluginInfo {
+  id: string
+  name: string
+  version: string
+  panels: ClientPluginPanelInfo[]
 }
 
 /** 客户端状态快照（连接后与每次相关变更时上报） */
@@ -84,6 +131,11 @@ export interface ClientStatus {
    * STT/TTS 门控口径），字段缺失时同样不渲染（向后兼容）。
    */
   voice?: { stt: boolean; tts: boolean }
+  /**
+   * 已安装插件目录（本轮，docs/12 §6.5）。**可选字段**：旧客户端不下发 = 网页端没有
+   * 插件入口；本机 `center.allowRemoteSession` 关闭时也不下发（复用同一条远程总闸）。
+   */
+  plugins?: ClientPluginInfo[]
 }
 
 /** Center 官方模型能力（与 `CENTER_OFFICIAL_CAPABILITIES` 同源，单独导出供 Web 协议使用）。 */
@@ -450,6 +502,25 @@ export type CenterCommand =
    * 客户端未配置 TTS 时回 `E_VOICE_NOT_CONFIGURED`。
    */
   | { kind: 'tts.synthesize'; requestId: string; text: string }
+  // ── 插件侧栏面板中继（本轮，docs/12 §6.5）：服务器只转发，不缓存内容 ──
+  /**
+   * 调用插件面板（声明式面板的 refresh / action / event，页面型面板的任意 method）。
+   * 客户端复用桌面 `plugins:panelData` 同一条链路（静态 schema + `invokePanel`），
+   * `result.data` 携带 `{ schema?, toast?, data? }`。
+   */
+  | {
+      kind: 'plugin.panelData'
+      requestId: string
+      pluginId: string
+      panelId: string
+      /** 缺省 `refresh`；长度 ≤ 64 */
+      method?: string
+      params?: Record<string, unknown>
+      values?: Record<string, string | number | boolean>
+    }
+  /** 订阅面板事件推送（`plugin.event`）；同一连接同面板只下发一次（服务器做 refcount） */
+  | { kind: 'plugin.subscribe'; requestId: string; pluginId: string; panelId: string }
+  | { kind: 'plugin.unsubscribe'; requestId: string; pluginId: string; panelId: string }
 
 /** 客户端 → 服务器 */
 export type CenterClientMessage =
@@ -482,6 +553,17 @@ export type CenterClientMessage =
       answers?: string[]
       /** 逐问作答（多问时；单问 / 未作答缺省） */
       answersByQuestion?: string[][]
+    }
+  /**
+   * 插件面板事件推送（本轮，docs/12 §6.5）：只在网页连接订阅了该面板、且它是该设备
+   * 属主时投递；payload ≤ `CENTER_PLUGIN_EVENT_MAX_BYTES`。
+   */
+  | {
+      type: 'plugin.event'
+      pluginId: string
+      panelId: string
+      event: string
+      payload?: unknown
     }
 
 /** 服务器 → 客户端 */
@@ -665,6 +747,32 @@ export type CenterWebMessage =
       mime: string
     }
   | { type: 'tts.synthesize'; requestId: string; clientId: string; text: string }
+  // ── 插件侧栏面板中继（本轮，docs/12 §6.5）：授权只认设备属主（管理员不例外）──
+  | {
+      type: 'plugin.panelData'
+      requestId: string
+      clientId: string
+      pluginId: string
+      panelId: string
+      method?: string
+      params?: Record<string, unknown>
+      values?: Record<string, string | number | boolean>
+    }
+  /** 订阅 / 退订：服务器本地立即回执，按网页连接 refcount 决定是否下发客户端 */
+  | {
+      type: 'plugin.subscribe'
+      requestId: string
+      clientId: string
+      pluginId: string
+      panelId: string
+    }
+  | {
+      type: 'plugin.unsubscribe'
+      requestId: string
+      clientId: string
+      pluginId: string
+      panelId: string
+    }
 
 /** 服务器 → 网页 */
 export type CenterWebServerMessage =
@@ -712,6 +820,18 @@ export type CenterWebServerMessage =
       /** 结算时的作答（客户端本地作答时带上；超时 / 中止为空） */
       answers?: string[]
       answersByQuestion?: string[][]
+    }
+  /**
+   * 插件面板事件（本轮，docs/12 §6.5）：只投给订阅了该面板且是该设备属主的网页连接；
+   * `clientId` 用于多设备同名面板时区分来源。
+   */
+  | {
+      type: 'plugin.event'
+      clientId: string
+      pluginId: string
+      panelId: string
+      event: string
+      payload?: unknown
     }
 
 /** 历史回放里的单条工具调用（客户端 SessionStore 的渲染层形状，`input` 已是解析后的对象） */

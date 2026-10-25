@@ -9,12 +9,14 @@
 import type { CenterWebServerMessage } from '@aurora/shared'
 import { socket, settleCommand } from '../lib/socket'
 import { applyEvent } from './events'
+import { emitPluginEvent } from './plugin-events'
 import { pushAskItem, replaceClients, settleAsk, state, statusBuffer, wsStatus } from './store'
 
 export * from './store'
 export * from './events'
 export * from './commands'
 export * from './usage'
+export * from './plugin-events'
 
 socket.onStatus = (status) => {
   wsStatus.value = status
@@ -95,6 +97,17 @@ function handleServerMessage(message: CenterWebServerMessage): void {
       })
       break
     }
+    case 'plugin.event':
+      // 插件面板推送（docs/12 §6.5）：只转给打开中的面板视图，不进全局状态。
+      // 服务器已经按订阅表 + 设备属主过滤；这里再按 clientId 过滤一次（多设备同名面板）。
+      emitPluginEvent({
+        clientId: message.clientId,
+        pluginId: message.pluginId,
+        panelId: message.panelId,
+        event: message.event,
+        ...(message.payload === undefined ? {} : { payload: message.payload }),
+      })
+      break
     default:
       // 未知消息类型一律忽略（协议只增不改）
       break

@@ -22,6 +22,38 @@ import { WebSocket } from 'ws'
 export const STUB_CLIENT_ID = 'cweb-stub-1'
 export const STUB_CLIENT_NAME = '验收桩机'
 
+/** 插件侧栏面板夹具（与示例插件 hello-aurora 的清单一致，见 seedPluginFixture） */
+export const FIXTURE_PLUGIN_ID = 'com.example.hello'
+export const FIXTURE_PLUGIN_BOARD_PANEL = 'board'
+export const FIXTURE_PLUGIN_PAGE_PANEL = 'info'
+
+/** 声明式面板 schema（与 examples/plugins/hello-aurora/ui/panel.json 同形） */
+function fixtureBoardSchema(count) {
+  return {
+    version: 1,
+    nodes: [
+      { type: 'heading', text: 'Hello Aurora' },
+      {
+        type: 'text',
+        text: '这是一个声明式面板：没有 HTML、没有脚本，只有受控组件。',
+        tone: 'muted',
+      },
+      {
+        type: 'keyValue',
+        items: [
+          { label: '计数', value: String(count) },
+          { label: '来源', value: '插件存储' },
+        ],
+      },
+      {
+        type: 'button',
+        text: '计数 +1',
+        action: { method: 'bump', toast: '已更新' },
+      },
+    ],
+  }
+}
+
 /** 默认状态快照：全部能力位为真，语音位在（场景 5 会临时摘掉它验证门控） */
 export function defaultStatus() {
   return {
@@ -42,6 +74,19 @@ export function defaultStatus() {
     },
     llm: { activeProviderId: 'p1', model: 'aurora-test-1', reasoningEffort: 'medium' },
     voice: { stt: true, tts: true },
+    // 插件侧栏面板目录（docs/12 §6.5）：与 `seedPluginFixture` 发布的示例插件一致 ——
+    // 网页端据此生成侧栏入口；服务器也用它预检 `plugin.panelData` 的目标。
+    plugins: [
+      {
+        id: FIXTURE_PLUGIN_ID,
+        name: 'Hello Aurora',
+        version: '1.0.0',
+        panels: [
+          { id: 'board', title: '忙碌计数', icon: 'ListChecks', kind: 'schema' },
+          { id: 'info', title: '插件页面', icon: 'Globe', kind: 'page', entry: 'ui/page.html' },
+        ],
+      },
+    ],
   }
 }
 
@@ -335,6 +380,8 @@ export class StubClient {
     this.inputs = []
     this.status = defaultStatus()
     this.seq = 0
+    /** 声明式面板的计数（`plugin.panelData` 的 `bump` 会 +1，断言按钮真的改到了数据） */
+    this.pluginCount = 3
     /** 会话列表条数（默认 2 条夹具会话；`setSessionCount` 可调大） */
     this.sessionCount = 2
     /** sessionId → CenterSessionHistoryMessage[]（缺省 = 空历史） */
@@ -488,6 +535,26 @@ export class StubClient {
       // 「已保存到客户端：<路径>」—— 桩机如实模拟，否则那条提示永远测不到。
       case 'file.send':
         return { path: `D:\\Downloads\\${cmd.name ?? 'file'}` }
+      /*
+       * 插件侧栏面板（docs/12 §6.5）。回执形状 = 真实客户端 `readPluginPanelData` 的输出：
+       * - 声明式面板：`{ schema, toast? }`；
+       * - 页面型面板：`{ data: invokePanel 的结果 }` —— 页面里的 `result.data` 因此能直接
+       *   取到 `{ count, greeting }`（与桌面 `pageRpc` 的返回层级一致）。
+       */
+      case 'plugin.panelData': {
+        const method = cmd.method ?? 'refresh'
+        if (cmd.panelId === FIXTURE_PLUGIN_BOARD_PANEL) {
+          if (method === 'bump') this.pluginCount += 1
+          const schema = fixtureBoardSchema(this.pluginCount)
+          return method === 'bump'
+            ? { schema, toast: `计数更新为 ${this.pluginCount}` }
+            : { schema }
+        }
+        if (cmd.panelId === FIXTURE_PLUGIN_PAGE_PANEL) {
+          return { data: { data: { count: this.pluginCount, greeting: '你好' } } }
+        }
+        return {}
+      }
       default:
         return {}
     }
@@ -518,6 +585,7 @@ export class StubClient {
 
   /** 恢复默认快照（每个场景开头调用：上一个场景的"摘掉语音位"不许渗到下一个） */
   resetStatus() {
+    this.pluginCount = 3
     this.status = defaultStatus()
     this.sendRaw({ type: 'status', status: this.status })
   }

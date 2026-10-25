@@ -31,6 +31,7 @@ import { ModelGateway } from './model-gateway.js'
 import { ModelServicesStore } from './model-services.js'
 import { ReleaseStore } from './releases.js'
 import { PluginStore } from './plugins.js'
+import { injectPluginPageBridge, pluginPageCsp, sanitizeRequestHost } from './plugin-page.js'
 import { createSecretBox } from './secrets.js'
 import { UsageStore } from './usage.js'
 import { serverVersion } from './version.js'
@@ -717,6 +718,48 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         return
       }
       await serveStaticFile(req, res, file, 'image/png', 'public, max-age=3600')
+      return
+    }
+
+    /*
+     * 页面型插件面板的资源（docs/12 §6.5）：从**市场包**里按路径取文件公开托管 ——
+     * 桌面端按 `aurora-plugin://` 读本地文件，网页端拿不到那条协议，只能由 Center 吐。
+     * 包本身是公开可下载的（`/api/plugins/:id/download`），因此这里也不鉴权；
+     * 但 HTML 必须注入 postMessage 桥 + CSP，并在 opaque-origin iframe 里跑。
+     *
+     * ⚠️ **必须放在静态托管之前**：`/p/...` 不是 `/api/`，落到下面的 SPA 回退会被
+     * `index.html` 整个吃掉（页面型面板 = 白屏）。
+     */
+    const pluginPage = /^\/p\/([^/]+)\/([^/]+)\/(.+)$/.exec(path)
+    if (pluginPage !== null && (req.method === 'GET' || req.method === 'HEAD')) {
+      const id = safeDecode(pluginPage[1] as string)
+      const version = safeDecode(pluginPage[2] as string)
+      const assetPath = safeDecode(pluginPage[3] as string)
+      const asset =
+        id === undefined || version === undefined || assetPath === undefined
+          ? undefined
+          : await plugins.readAsset(id, version, assetPath)
+      if (asset === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      const isHtml = asset.mime.startsWith('text/html')
+      const body = isHtml
+        ? Buffer.from(injectPluginPageBridge(asset.body.toString('utf8')))
+        : asset.body
+      const headers: Record<string, string | number> = {
+        'Content-Type': asset.mime,
+        'Content-Length': body.byteLength,
+        'X-Content-Type-Options': 'nosniff',
+        // HTML 每次都重新取：注入的桥可能随 Center 版本变，不能让浏览器缓存一年；
+        // 其余资源带版本路径，可安全 immutable。
+        'Cache-Control': asset.immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+      }
+      if (isHtml) {
+        headers['Content-Security-Policy'] = pluginPageCsp(sanitizeRequestHost(req.headers.host))
+      }
+      res.writeHead(200, headers)
+      res.end(req.method === 'HEAD' ? undefined : body)
       return
     }
 

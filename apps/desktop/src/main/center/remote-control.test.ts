@@ -146,6 +146,16 @@ describe('buildClientStatus · 状态快照', () => {
     settings.advanced.confirmSensitiveTools = false
     expect(buildClientStatus(settings, '0.1.6', 'win32').agent.permissionMode).toBe('auto')
   })
+
+  it('插件目录是可选字段：不传则快照里没有 plugins（旧客户端同口径），传了原样带上', () => {
+    const settings = createDefaultSettings()
+    expect(buildClientStatus(settings, '0.6.0', 'win32').plugins).toBeUndefined()
+
+    const plugins = [
+      { id: 'com.example.hello', name: 'Hello', version: '1.0.0', panels: [] },
+    ]
+    expect(buildClientStatus(settings, '0.6.0', 'win32', plugins).plugins).toEqual(plugins)
+  })
 })
 
 describe('buildClientStatus · llm 快照（docs/12 §6.3，v0.2.3；v23 起思考等级取模型级）', () => {

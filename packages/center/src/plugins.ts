@@ -64,6 +64,30 @@ const MAX_TOTAL_BYTES = 50 * 1024 * 1024
 const MAX_RATIO = 200
 const MAX_STAGED = 20
 
+/** 页面型面板资产：只发白名单内的类型（SVG 可带脚本，刻意不放行） */
+const ASSET_MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.woff2': 'font/woff2',
+}
+
+/** 解压后的版本缓存：最多 4 个版本 / 64 MB（内存有界，未命中再读 zip） */
+const ASSET_CACHE_VERSIONS = 4
+const ASSET_CACHE_BYTES = 64 * 1024 * 1024
+
+function extensionOf(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1)
+  const dot = name.lastIndexOf('.')
+  return dot <= 0 ? '' : name.slice(dot).toLowerCase()
+}
+
 function sha256(body: Buffer): string {
   return createHash('sha256').update(body).digest('hex')
 }
@@ -190,6 +214,9 @@ export class PluginStore {
   private readonly maxZipBytes: number
   private readonly logger?: Logger
   private index: PluginIndex = { version: 1, plugins: {} }
+  /** 版本解压缓存（LRU）：`<id>@<version>` → 包内文件表 */
+  private readonly assetCache = new Map<string, { files: Map<string, Uint8Array>; bytes: number }>()
+  private assetCacheBytes = 0
 
   constructor(options: PluginStoreOptions) {
     this.root = join(options.dataDir, 'plugins')
@@ -360,12 +387,92 @@ export class PluginStore {
     }
   }
 
+  /**
+   * 读页面型面板的包内文件（`/p/<id>/<version>/<path>` 的实现在这里）。
+   *
+   * 版本必须在 index 里（未发布 / 已删除的版本一律 404）；路径逐段规范化挡穿越；
+   * 只有 MIME 白名单内的扩展名会返回。解压结果按版本 LRU 缓存（≤4 版本 / 64 MB）。
+   */
+  async readAsset(
+    id: string,
+    version: string,
+    relativePath: string,
+  ): Promise<{ body: Buffer; mime: string; immutable: boolean } | undefined> {
+    const normalized = normalizePluginPath(relativePath)
+    if (normalized === null) return undefined
+    const mime = ASSET_MIME[extensionOf(normalized)]
+    if (mime === undefined) return undefined
+    const asset = this.assetOf(id, version)
+    if (asset === undefined) return undefined
+
+    const key = `${id}@${version}`
+    let entry = this.assetCache.get(key)
+    if (entry === undefined) {
+      let zip: Buffer
+      try {
+        zip = await fs.readFile(asset.path)
+      } catch {
+        return undefined
+      }
+      let unpacked: Record<string, Uint8Array>
+      try {
+        unpacked = unzipSync(new Uint8Array(zip))
+      } catch {
+        this.logger?.warn('插件包解压失败（页面型面板）', { pluginId: id, version })
+        return undefined
+      }
+      const files = new Map<string, Uint8Array>()
+      let bytes = 0
+      for (const [name, data] of Object.entries(unpacked)) {
+        if (name.endsWith('/')) continue
+        const clean = normalizePluginPath(name)
+        if (clean === null) continue
+        files.set(clean, data)
+        bytes += data.byteLength
+      }
+      entry = { files, bytes }
+      this.evictAssetCache(bytes)
+      this.assetCache.set(key, entry)
+      this.assetCacheBytes += bytes
+    } else {
+      // 命中即刷新 LRU 位置（Map 插入序 = 使用序）
+      this.assetCache.delete(key)
+      this.assetCache.set(key, entry)
+    }
+
+    const file = entry.files.get(normalized)
+    if (file === undefined) return undefined
+    return { body: Buffer.from(file), mime, immutable: extensionOf(normalized) !== '.html' }
+  }
+
+  private evictAssetCache(incomingBytes: number): void {
+    while (
+      this.assetCache.size >= ASSET_CACHE_VERSIONS ||
+      (this.assetCacheBytes + incomingBytes > ASSET_CACHE_BYTES && this.assetCache.size > 0)
+    ) {
+      const oldest = this.assetCache.keys().next()
+      if (oldest.done === true) break
+      const cached = this.assetCache.get(oldest.value)
+      this.assetCache.delete(oldest.value)
+      this.assetCacheBytes -= cached?.bytes ?? 0
+    }
+  }
+
+  private dropAssetCache(id: string, version: string): void {
+    const key = `${id}@${version}`
+    const cached = this.assetCache.get(key)
+    if (cached === undefined) return
+    this.assetCache.delete(key)
+    this.assetCacheBytes -= cached.bytes
+  }
+
   async remove(id: string, version: string): Promise<boolean> {
     const record = this.index.plugins[id]
     if (record === undefined) return false
     const index = record.versions.findIndex((item) => item.version === version)
     if (index === -1) return false
     record.versions.splice(index, 1)
+    this.dropAssetCache(id, version)
     await fs
       .rm(join(this.filesRoot, id, version), { recursive: true, force: true })
       .catch(() => undefined)
