@@ -61,6 +61,15 @@ module.exports = {
       await pushAll(ctx, count)
       return { summary: `已推送刷新（计数 ${count}）` }
     }
+    if (name === 'hello-usage') {
+      // 本机用量统计（docs/15 §4.1.2）：只读聚合，不含任何内容或凭据。
+      const stats = await ctx.usage.summary({ days: 7 })
+      return {
+        summary:
+          `最近 ${stats.days} 天：Token ${stats.tokens.totalTokens}（缓存命中 ${stats.tokens.cachedTokens}）` +
+          ` / 生图 ${stats.images.generated} 次 / 语音 ${stats.voice.tts + stats.voice.stt} 次`,
+      }
+    }
     throw new Error(`未知命令：${name}`)
   },
 

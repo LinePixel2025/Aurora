@@ -233,6 +233,8 @@ Skill 目录下的 `scripts/` **永远不会被自动执行**（技能只提供�
 - `<userData>/plugins/registry.json`：安装 / 启用 / 信任状态；
 - `<userData>/plugin-data/<id>/config.json`：插件配置（**不支持密文字段**）；
 - `<userData>/plugin-data/<id>/storage.json`：插件键值存储（5 MB 配额）；
+- `<userData>/usage-stats.json`：本机用量账本（按日记录 Token / 缓存命中 / 生图次数 / 语音次数，
+  保留 90 天；**不含**提示词、回复、图片、音频、文件名或凭据）；
 - `<userData>/logs/plugins/<id>.log`：插件日志（统一脱敏）。
 
 **边界与如实披露**：
@@ -241,5 +243,7 @@ Skill 目录下的 `scripts/` **永远不会被自动执行**（技能只提供�
   截屏、联网外发数据；宿主只保证崩溃隔离、API 白名单、工具确认与安装 / 更新路径安全。
 - **安装插件 = 信任其代码**；市场 **不签名**，SHA-256 只保证完整性，不保证发布者身份。
 - 插件**拿不到** Aurora 的 API Key / Center 令牌 / MCP env；Aurora 也不会把凭据写进插件配置。
+- 插件声明 `usage` 权限后可用 `ctx.usage.summary()` 读取上述账本的**只读聚合**
+  （默认最近 30 天、最多 90 天）；拿到的是计数，不是对话内容。
 - 卸载默认保留 `plugin-data/<id>`（便于重装恢复），可在卸载时勾选「同时删除插件数据与配置」。
 - Center 插件市场只保存插件包、图标与下载计数，不接触用户对话 / 文件内容。

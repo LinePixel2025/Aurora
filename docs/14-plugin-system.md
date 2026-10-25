@@ -93,8 +93,8 @@ type PluginRpcMessage =
 **宿主 → 插件**：`plugin.init`、`plugin.activate`、`plugin.deactivate`、`plugin.ping`、`tool.invoke`、
 `command.invoke`、`automation.action`、`panel.invoke`、`widget.invoke`、`event.deliver`、`config.changed`、`system.event`。
 
-**插件 → 宿主（按权限白名单）**：`storage.get/set/delete/list`、`net.fetch`、`notify`、`log`、
-`emitEvent`、`ui.openPanel`、`ui.toast`、`ui.panelEvent`、`config.get/set`。
+**插件 → 宿主（按权限白名单）**：`storage.get/set/delete/list`、`net.fetch`、`notify`、`banner`、`log`、
+`emitEvent`、`ui.openPanel`、`ui.toast`、`ui.panelEvent`、`config.get/set`、`usage.summary`。
 
 ### 2.4 工具返回
 
@@ -130,7 +130,7 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
   "main": "main.js",
   "activation": "startup",
   "permissions": ["tools", "skills", "commands", "automation", "automation.events",
-                  "storage", "config", "ui.panels", "themes", "net", "notifications", "events"],
+                  "storage", "config", "usage", "ui.panels", "themes", "net", "notifications", "events"],
   "contributes": {
     "tools": [{
       "name": "add_todo",
@@ -207,6 +207,7 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 | `automation.events` | 注册并 `ctx.emitEvent` |
 | `storage` | 插件私有键值存储（5 MB 总量、单值 256 KB） |
 | `config` | `ctx.config` 读取与 `config.set` 写入（非密文） |
+| `usage` | 本机用量统计（`ctx.usage.summary`：Token / 缓存命中 / 生图 / 语音次数，只读聚合） |
 | `net` | `ctx.net.fetch`（只 http/https，响应 ≤ 5 MB） |
 | `net.private` | 允许 loopback / 私网（必须同时声明 `net`） |
 | `notifications` | 系统通知 |
@@ -217,6 +218,41 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 | `events` | 订阅清单 `events` 中声明的宿主事件 |
 
 未声明的宿主 API 一律回 `E_PLUGIN_PERMISSION`。
+
+### 4.1 用量统计（`ctx.usage`）
+
+需要 `usage` 权限。`ctx.usage.summary()` 返回**本机**最近一段时间的只读聚合：
+
+```ts
+const stats = await ctx.usage.summary({ days: 30 }) // days 缺省 30，夹取到 1–90
+// stats.tokens = { promptTokens, completionTokens, totalTokens, cachedTokens, rounds,
+//                   cacheHitRate, background }
+// stats.images = { generated }
+// stats.voice  = { tts, ttsChars, stt, sttChars }
+// stats.daily  = [{ date, tokens, images, voice }, ...]（含没有数据的日期）
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `tokens.totalTokens` | 期间所有经宿主 provider 的 LLM 轮次真实 Token 总量（主对话、子代理、摘要与后台自感知） |
+| `tokens.cachedTokens` / `cacheHitRate` | 缓存命中量与命中率（`cachedTokens / promptTokens`，无数据为 0） |
+| `tokens.rounds` | 已累计的 LLM 轮次（provider 未回传 usage 的轮次不计） |
+| `tokens.background` | 其中后台自感知分析消耗的部分（同样含四个 Token 字段与轮次） |
+| `images.generated` | 成功完成的生图次数（失败不计数） |
+| `voice.tts` / `voice.ttsChars` | TTS 合成成功次数 / 实际送出的字符数 |
+| `voice.stt` / `voice.sttChars` | STT 识别成功次数 / 识别结果字符数 |
+| `daily[].date` | 本地日期 `YYYY-MM-DD`（按天分桶，含空白日） |
+
+口径与边界：
+
+- **只统计本机、从引入该接口的版本起累积**：历史会话只有累计值、没有逐日时间戳，因此不回溯；
+  升级前发生的用量不会出现在这里。
+- **只存计数**：不包含提示词、回复、图片、音频、文件名或任何凭据；后台自感知的消耗单独给出，
+  便于插件区分「用户主动对话」与「后台分析」。
+- 按**本地日期**分桶；账本保留 90 天（超出窗口的旧数据自动清理），查询窗口上限同为 90 天。
+- 数据来自 Agent 宿主 provider 的真实 `usage` 收尾（含子代理 / 摘要等内部轮次）与服务成功返回：
+  provider 没回传 usage 的轮次不会伪造 0；生图 / TTS / STT 失败也不计入。
+- 该权限在安装确认里逐条展示；插件不需要、也拿不到 Center 账号或模型凭据。
 
 ---
 
@@ -432,6 +468,7 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 <userData>/plugin-data/<id>/config.json       插件配置（非密文）
 <userData>/plugin-data/<id>/storage.json      插件键值存储（5 MB 配额）
 <userData>/plugin-widget-layout.json         桌面小组件位置 / 尺寸 / 显隐 / 层级覆盖（独立于 settings）
+<userData>/usage-stats.json                  本机用量账本（按日计数，保留 90 天；插件只读汇总）
 <userData>/logs/plugins/<id>.log
 ```
 
@@ -460,7 +497,8 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 ## 12. 验证与已知限制
 
 - 单测：清单 / 主题 / 面板 schema / 小组件清单与布局夹取 / 迁移 v36 / RPC 协议（超时、取消、帧上限、在途上限）/
-  管理器（权限、超时、取消、崩溃退避、面板事件路由与限速）/ 自动化事件与动作 / 市场客户端与 Center 市场路由；
+  管理器（权限、超时、取消、崩溃退避、面板事件路由与限速）/ 自动化事件与动作 / 市场客户端与 Center 市场路由 /
+  **用量账本（按日分桶、缓存命中率、90 天保留、损坏归化）、provider 层 usage 回报与 `usage.summary` 权限透传**；
 - 端到端：`AURORA_SMOKE=1 pnpm dev` 覆盖安装 → 工具 / Skill / 命令 → 插件事件自动化 →
   面板 schema → **小组件窗口 / 面板事件推送** → 主题令牌 → 停用 / 启用 / 卸载；
 - 截图：`chat-plugin-panel.png` / `chat-plugin-page.png` / `settings-plugins-installed.png` /

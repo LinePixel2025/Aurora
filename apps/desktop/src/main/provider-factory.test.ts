@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { createDefaultSettings, createMemoryLogger } from '@aurora/shared'
-import type { LlmProviderConfig, Settings } from '@aurora/shared'
+import type { LlmProviderConfig, Settings, TokenUsage } from '@aurora/shared'
 import { createProviderFactory } from './agent-host.js'
 import type { SettingsStoreLike } from './contracts.js'
 
@@ -344,5 +344,58 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
     const config = factory.create({ allowFallback: true, sessionId: 's-1' })
     expect(config?.provider.id).toBe('p-global')
     expect(config?.model).toBe('m-first')
+  })
+
+  it('onUsage：流收尾回报一次真实 usage（含缓存命中），并带上会话 id', async () => {
+    const reported: Array<{ usage: TokenUsage; sessionId?: string }> = []
+    const body = [
+      'data: {"choices":[{"delta":{"content":"hi"}}]}',
+      'data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":5}}}',
+      'data: [DONE]',
+      '',
+    ].join('\n\n')
+    const fakeFetch = (async () =>
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })) as unknown as typeof fetch
+    const factory = createProviderFactory(
+      storeOf(settingsWith()),
+      createMemoryLogger(),
+      () => fakeFetch,
+      {
+        onUsage: (usage, meta) => {
+          reported.push({
+            usage,
+            ...(meta.sessionId === undefined ? {} : { sessionId: meta.sessionId }),
+          })
+        },
+      },
+    )
+
+    const config = factory.create({ sessionId: 'awareness-1' })
+    expect(config).toBeDefined()
+    const events = []
+    for await (const event of config!.provider.chat({
+      model: config!.model,
+      messages: [{ role: 'user', content: 'hi' }],
+    })) {
+      events.push(event)
+    }
+
+    expect(events.some((event) => event.type === 'done' && event.usage?.totalTokens === 15)).toBe(
+      true,
+    )
+    expect(reported).toEqual([
+      {
+        usage: {
+          promptTokens: 12,
+          completionTokens: 3,
+          totalTokens: 15,
+          cachedTokens: 5,
+        },
+        sessionId: 'awareness-1',
+      },
+    ])
   })
 })

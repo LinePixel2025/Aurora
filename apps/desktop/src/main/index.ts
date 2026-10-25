@@ -234,6 +234,7 @@ import {
 import { registerBrowserTools } from './tools/index.js'
 // 插件系统（docs/14）：贡献在清单里声明，运行在独立 utilityProcess（非 OS 沙箱）
 import { PluginManager } from './plugins/manager.js'
+import { UsageStatsStore } from './usage-stats.js'
 import { PluginMarketplaceClient } from './plugins/marketplace.js'
 import { createUtilityPluginProcessFactory } from './plugins/process.js'
 import { WidgetManager } from './plugins/widgets.js'
@@ -453,6 +454,8 @@ let hotkeys: HotkeyManager | undefined
 let skillsService: SkillsService | undefined
 /** 插件管理器（docs/14）：安装态 / 进程 / 宿主 API；工具表由 `pluginTools` 同步 */
 let pluginManager: PluginManager | undefined
+/** 本机用量账本（插件 `ctx.usage`，docs/14 §4.1）：按日计数，独立于 settings */
+let usageStats: UsageStatsStore | undefined
 let pluginTools: { sync(): string[] } | undefined
 /** 桌面小组件窗口（docs/14 §5.3）；插件系统未装配时为空 */
 let widgetManager: WidgetManager | undefined
@@ -1146,6 +1149,14 @@ async function bootstrap(): Promise<void> {
     builtinSkills: resolveBuiltinSkillsDir(),
   }
 
+  // 7.0 本机用量账本（docs/14 §4.1）：插件 `ctx.usage` 的唯一数据源。
+  //     只按本地日期记计数（Token / 生图 / 语音），不进 settings、不升 CONFIG_VERSION。
+  usageStats = new UsageStatsStore({
+    file: join(userData, 'usage-stats.json'),
+    logger: logger.child('usage-stats'),
+  })
+  await usageStats.init()
+
   // 7.1 Agent 内核装配（docs/06）：会话 → 工具表 → Skill → MCP → 内核 host
   sessions = new SessionStore({
     dir: join(userData, 'sessions'),
@@ -1183,6 +1194,8 @@ async function bootstrap(): Promise<void> {
     // 插件 `ctx.banner`（docs/07 §2.2.3）：与 Agent 工具走**同一个** BannerService，
     // 排队 / 去重 / 降级因此不会出现两套行为。返回 false = 没显示（不是异常）。
     banner: (input) => bannerService?.show(input, { source: 'plugin' }).ok ?? false,
+    // 插件 `ctx.usage.summary`（docs/14 §4.1）：只读汇总本机账本，不含任何内容 / 凭据。
+    usageSummary: (query) => usageStats!.summary(query),
     resolveFetch: () => netFetch,
     // 插件主动推送（`ctx.ui.panelEvent`）：桌面小组件走自己的窗口，其余走对应渲染窗口。
     // 同一事件只投给发起插件自己的目标（manager 已校验归属）。
@@ -1386,17 +1399,25 @@ async function bootstrap(): Promise<void> {
           settings!.getSecret(`stt.providers.${providerId}.apiKey`) !== '',
       )
       if (route.mode === 'error') throw new Error(route.message)
+      let result: Awaited<ReturnType<typeof centerSttService.transcribe>>
       if (route.mode === 'local') {
-        return localSttService.transcribe({ ...input, providerId: route.providerId })
+        result = await localSttService.transcribe({ ...input, providerId: route.providerId })
+      } else {
+        try {
+          result = await centerSttService.transcribe(input)
+        } catch (error) {
+          emitOfficialFallback('stt', '语音识别')
+          logger?.warn('Center 官方 STT 失败，回落本机模型', { error: String(error) })
+          if (route.fallbackProviderId === undefined) throw error
+          result = await localSttService.transcribe({
+            ...input,
+            providerId: route.fallbackProviderId,
+          })
+        }
       }
-      try {
-        return await centerSttService.transcribe(input)
-      } catch (error) {
-        emitOfficialFallback('stt', '语音识别')
-        logger?.warn('Center 官方 STT 失败，回落本机模型', { error: String(error) })
-        if (route.fallbackProviderId === undefined) throw error
-        return localSttService.transcribe({ ...input, providerId: route.fallbackProviderId })
-      }
+      // 只在**成功**返回后计数（失败 / 超时不进账本，docs/14 §4.1）
+      usageStats?.recordStt(result.text.length)
+      return result
     },
   }
   const centerImageGenService = createImageGenService({
@@ -1425,20 +1446,25 @@ async function bootstrap(): Promise<void> {
           settings!.getSecret(`imagegen.providers.${providerId}.apiKey`) !== '',
       )
       if (route.mode === 'error') throw new Error(route.message)
+      let result: Awaited<ReturnType<typeof centerImageGenService.generate>>
       if (route.mode === 'local') {
-        return localImageGenService.generate({ ...input, providerId: route.providerId })
+        result = await localImageGenService.generate({ ...input, providerId: route.providerId })
+      } else {
+        try {
+          result = await centerImageGenService.generate(input)
+        } catch (error) {
+          emitOfficialFallback('imagegen', '图像生成')
+          logger?.warn('Center 官方生图失败，回落本机模型', { error: String(error) })
+          if (route.fallbackProviderId === undefined) throw error
+          result = await localImageGenService.generate({
+            ...input,
+            providerId: route.fallbackProviderId,
+          })
+        }
       }
-      try {
-        return await centerImageGenService.generate(input)
-      } catch (error) {
-        emitOfficialFallback('imagegen', '图像生成')
-        logger?.warn('Center 官方生图失败，回落本机模型', { error: String(error) })
-        if (route.fallbackProviderId === undefined) throw error
-        return localImageGenService.generate({
-          ...input,
-          providerId: route.fallbackProviderId,
-        })
-      }
+      // 只在成功落盘后计数（docs/14 §4.1：失败 / 超时不算生图次数）
+      usageStats?.recordImage()
+      return result
     },
     read: (input: Parameters<typeof centerImageGenService.read>[0]) =>
       centerImageGenService.read(input),
@@ -1724,6 +1750,14 @@ async function bootstrap(): Promise<void> {
   // 会话级模型覆盖（docs/06 §3）：同步读会话 meta（`SessionStore.modelOverrideOf`）——
   // 覆盖失效 / 未装载一律回落全局档，回落语义与日志都在 `createProviderFactory` 里。
   const providerFactory = createProviderFactory(settings, logger.child('llm'), () => netFetch, {
+    // 本机用量账本（docs/14 §4.1）：在 provider 层收真实 usage，连子代理 / 摘要等
+    // 不经 AgentHost 事件的内部轮次也能算进去；后台自感知会话单独归入 background。
+    onUsage: (usage, meta) => {
+      usageStats?.recordTokens(usage, {
+        background:
+          meta.sessionId !== undefined && meta.sessionId.startsWith(FILE_AWARENESS_SESSION_PREFIX),
+      })
+    },
     sessionModelOf: (sessionId) => {
       if (isFileAwarenessSession(sessionId)) return fileAwarenessModelOverride(settings!.get())
       return sessions?.modelOverrideOf(sessionId)
@@ -2163,33 +2197,42 @@ async function bootstrap(): Promise<void> {
   })
   const tts = {
     synthesize: async (request: Parameters<typeof centerTts.synthesize>[0]) => {
+      let result: Awaited<ReturnType<typeof centerTts.synthesize>>
       if (request.providerId !== undefined) {
-        return localTts.synthesize(request)
+        result = await localTts.synthesize(request)
+      } else {
+        const current = settings!.get()
+        const route = resolveCapabilityRoute(
+          'TTS',
+          current.tts,
+          current.center.officialModels.tts.enabled,
+          CENTER_OFFICIAL_PROVIDER_IDS.tts,
+          (providerId, provider) =>
+            provider.baseUrl.trim() !== '' &&
+            provider.model.trim() !== '' &&
+            provider.voice.trim() !== '' &&
+            settings!.getSecret(`tts.providers.${providerId}.apiKey`) !== '',
+        )
+        if (route.mode === 'error') throw new Error(route.message)
+        if (route.mode === 'local') {
+          result = await localTts.synthesize({ ...request, providerId: route.providerId })
+        } else {
+          try {
+            result = await centerTts.synthesize(request)
+          } catch (error) {
+            emitOfficialFallback('tts', '语音合成')
+            logger?.warn('Center 官方 TTS 失败，回落本机模型', { error: String(error) })
+            if (route.fallbackProviderId === undefined) throw error
+            result = await localTts.synthesize({
+              ...request,
+              providerId: route.fallbackProviderId,
+            })
+          }
+        }
       }
-      const current = settings!.get()
-      const route = resolveCapabilityRoute(
-        'TTS',
-        current.tts,
-        current.center.officialModels.tts.enabled,
-        CENTER_OFFICIAL_PROVIDER_IDS.tts,
-        (providerId, provider) =>
-          provider.baseUrl.trim() !== '' &&
-          provider.model.trim() !== '' &&
-          provider.voice.trim() !== '' &&
-          settings!.getSecret(`tts.providers.${providerId}.apiKey`) !== '',
-      )
-      if (route.mode === 'error') throw new Error(route.message)
-      if (route.mode === 'local') {
-        return localTts.synthesize({ ...request, providerId: route.providerId })
-      }
-      try {
-        return await centerTts.synthesize(request)
-      } catch (error) {
-        emitOfficialFallback('tts', '语音合成')
-        logger?.warn('Center 官方 TTS 失败，回落本机模型', { error: String(error) })
-        if (route.fallbackProviderId === undefined) throw error
-        return localTts.synthesize({ ...request, providerId: route.fallbackProviderId })
-      }
+      // 只在成功合成后计数（docs/14 §4.1：失败 / 超时不算语音次数）
+      usageStats?.recordTts(result.chars)
+      return result
     },
     test: (request: Parameters<typeof centerTts.test>[0]) => centerTts.test(request),
     listModels: (request: Parameters<typeof centerTts.listModels>[0]) =>
@@ -6285,6 +6328,9 @@ async function shutdown(): Promise<void> {
   })
   await sessions?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘会话失败', { error: String(error) })
+  })
+  await usageStats?.flush().catch((error: unknown) => {
+    logger?.warn('退出前落盘用量账本失败', { error: String(error) })
   })
   await todoPort?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘任务清单失败', { error: String(error) })

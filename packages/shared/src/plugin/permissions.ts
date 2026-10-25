@@ -14,6 +14,7 @@ export const PLUGIN_PERMISSIONS = [
   'automation.events',
   'storage',
   'config',
+  'usage',
   'net',
   'net.private',
   'notifications',
@@ -35,6 +36,7 @@ export const PLUGIN_PERMISSION_LABELS: Record<PluginPermission, string> = {
   'automation.events': '定义并触发自动化事件',
   storage: '读写自己的键值存储（最多 5 MB）',
   config: '读写自己的配置项',
+  usage: '读取本机用量统计（Token / 生图 / 语音次数）',
   net: '通过宿主代理发起 HTTP 请求',
   'net.private': '访问本机与内网地址',
   notifications: '发送系统通知与流光提醒',
@@ -52,7 +54,7 @@ export const PLUGIN_PERMISSION_GROUPS: ReadonlyArray<{
 }> = [
   { title: 'Agent 能力', permissions: ['tools', 'skills', 'commands'] },
   { title: '自动化', permissions: ['automation', 'automation.events'] },
-  { title: '数据', permissions: ['storage', 'config'] },
+  { title: '数据', permissions: ['storage', 'config', 'usage'] },
   { title: '网络与系统', permissions: ['net', 'net.private', 'notifications', 'logging'] },
   { title: '界面', permissions: ['ui.panels', 'ui.widgets', 'themes', 'events'] },
 ]

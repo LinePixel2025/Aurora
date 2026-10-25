@@ -1,7 +1,7 @@
 # Hello Aurora
 
-Aurora 插件系统的示例：一个 `echo` 工具、一个 Skill、两条斜杠命令、两个配置项，
-以及一条「自动化动作 + 事件」链路。
+Aurora 插件系统的示例：一个 `echo` 工具、一个 Skill、四条斜杠命令、两个配置项、
+本机用量统计（`ctx.usage`），以及一条「自动化动作 + 事件」链路。
 
 ## 安装
 
@@ -24,6 +24,7 @@ types/aurora-plugin.d.ts      契约类型（编辑器补全用）
 - 工具 `plugin.com.example.hello.echo`：原样回显 `text`；
 - 命令 `/hello [补充]`：prompt 命令，把打招呼提示词追加给 Agent；
 - 命令 `/hello-count`：action 命令，计数 +1 并触发 `count-changed` 插件事件；
+- 命令 `/hello-usage`：action 命令，读取本机最近 7 天的 Token / 缓存命中 / 生图 / 语音次数；
 - 自动化动作 `add-count`：计数 +1、触发 `count-changed`；打开「计数时发系统通知」后同时弹通知；
 - 宿主事件：订阅了 `settings.changed`，只在插件日志里记录（不打扰用户）。
 

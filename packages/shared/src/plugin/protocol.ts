@@ -7,6 +7,7 @@
  * 纯类型 + 常量，无 Node 依赖：主进程（宿主）、`plugin-host`（子进程 bootstrap）
  * 与文档模板共用同一份口径。
  */
+import type { PluginUsageQuery, PluginUsageSummary } from './usage.js'
 
 export const PLUGIN_RPC_VERSION = 1 as const
 
@@ -118,6 +119,8 @@ export const PLUGIN_CLIENT_CALLS = {
   panelEvent: 'ui.panelEvent',
   getConfig: 'config.get',
   setConfig: 'config.set',
+  /** 本机用量统计（`usage` 权限，docs/14 §4.1）：只读聚合 */
+  usageSummary: 'usage.summary',
 } as const
 
 /** 宿主可投递给插件的事件名（清单 `events` 只能从这里选）。 */
@@ -210,6 +213,15 @@ export interface PluginContext {
     set(key: string, value: unknown): Promise<void>
     delete(key: string): Promise<void>
     list(): Promise<string[]>
+  }
+  /**
+   * 本机用量统计（2026-10，docs/14 §4.1）：需要 `usage` 权限。
+   *
+   * 只返回计数（Token / 缓存命中 / 生图次数 / 语音次数），不含提示词、图片、音频与凭据；
+   * 数据从支持该接口的版本起累积，不回溯历史会话。
+   */
+  usage: {
+    summary(query?: PluginUsageQuery): Promise<PluginUsageSummary>
   }
   net: {
     fetch(input: {

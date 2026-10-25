@@ -97,6 +97,10 @@ function makeContext(signal: AbortSignal): PluginContext {
         clientCall(PLUGIN_CLIENT_CALLS.storageDelete, { key }, 15_000, signal),
       list: () => clientCall<string[]>(PLUGIN_CLIENT_CALLS.storageList, {}, 15_000, signal),
     },
+    usage: {
+      summary: (query?: Parameters<PluginContext['usage']['summary']>[0]) =>
+        clientCall(PLUGIN_CLIENT_CALLS.usageSummary, query ?? {}, 10_000, signal),
+    },
     net: {
       fetch: (input: Parameters<PluginContext['net']['fetch']>[0]) =>
         clientCall(

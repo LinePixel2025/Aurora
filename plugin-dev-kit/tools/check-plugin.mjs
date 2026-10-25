@@ -20,19 +20,68 @@ const EXIT_INVALID = 1
 const EXIT_USAGE = 2
 
 const PERMISSIONS = new Set([
-  'tools', 'skills', 'commands', 'automation', 'automation.events', 'storage', 'config',
-  'net', 'net.private', 'notifications', 'logging', 'ui.panels', 'ui.widgets', 'themes', 'events',
+  'tools',
+  'skills',
+  'commands',
+  'automation',
+  'automation.events',
+  'storage',
+  'config',
+  'usage',
+  'net',
+  'net.private',
+  'notifications',
+  'logging',
+  'ui.panels',
+  'ui.widgets',
+  'themes',
+  'events',
 ])
 
 const PANEL_ICONS = new Set([
-  'Blocks', 'Puzzle', 'ListChecks', 'Gauge', 'CalendarClock', 'Bot', 'Workflow', 'FolderOpen',
-  'Globe', 'Terminal', 'FileText', 'Sparkles', 'Bell', 'BellRing', 'Search', 'Clock',
-  'CirclePlay', 'Play', 'History', 'MessageSquare',
+  'Blocks',
+  'Puzzle',
+  'ListChecks',
+  'Gauge',
+  'CalendarClock',
+  'Bot',
+  'Workflow',
+  'FolderOpen',
+  'Globe',
+  'Terminal',
+  'FileText',
+  'Sparkles',
+  'Bell',
+  'BellRing',
+  'Search',
+  'Clock',
+  'CirclePlay',
+  'Play',
+  'History',
+  'MessageSquare',
 ])
 
 const UI_NODE_TYPES = new Set([
-  'stack', 'row', 'grid', 'card', 'divider', 'heading', 'text', 'badge', 'progress', 'image',
-  'list', 'table', 'keyValue', 'button', 'input', 'textarea', 'select', 'toggle', 'number', 'slider',
+  'stack',
+  'row',
+  'grid',
+  'card',
+  'divider',
+  'heading',
+  'text',
+  'badge',
+  'progress',
+  'image',
+  'list',
+  'table',
+  'keyValue',
+  'button',
+  'input',
+  'textarea',
+  'select',
+  'toggle',
+  'number',
+  'slider',
 ])
 
 // 桌面小组件窗口层级 / 原生材质：与宿主 zod schema 手动同口径（本工具不依赖 Aurora 工作区）。
@@ -148,7 +197,10 @@ function validateUiSchema(raw, label) {
       error(`${label} 的 table.columns 不能为空`)
     }
     if (node.action !== undefined) {
-      if (typeof node.action?.method !== 'string' || !/^[a-z][a-z0-9_.-]{0,63}$/.test(node.action.method)) {
+      if (
+        typeof node.action?.method !== 'string' ||
+        !/^[a-z][a-z0-9_.-]{0,63}$/.test(node.action.method)
+      ) {
         error(`${label} 的 action.method 非法`)
       }
     }
@@ -252,8 +304,16 @@ async function main() {
   requirePermission('tools', tools.length > 0, '声明工具')
   requirePermission('skills', skills.length > 0, '声明 Skill')
   requirePermission('commands', commands.length > 0, '声明命令')
-  requirePermission('automation', (contributes.automation?.actions?.length ?? 0) > 0, '声明自动化动作')
-  requirePermission('automation.events', (contributes.automation?.events?.length ?? 0) > 0, '声明自动化事件')
+  requirePermission(
+    'automation',
+    (contributes.automation?.actions?.length ?? 0) > 0,
+    '声明自动化动作',
+  )
+  requirePermission(
+    'automation.events',
+    (contributes.automation?.events?.length ?? 0) > 0,
+    '声明自动化事件',
+  )
   requirePermission('ui.panels', panels.length > 0, '声明面板')
   requirePermission('ui.widgets', widgets.length > 0, '声明小组件')
   requirePermission('themes', themes.length > 0, '声明主题')
@@ -264,7 +324,8 @@ async function main() {
     error('缺少 main 入口')
   } else {
     const mainPath = resolveInside(root, manifest.main, 'main 入口')
-    if (mainPath !== null && !(await exists(mainPath.target))) error(`main 入口不存在：${manifest.main}`)
+    if (mainPath !== null && !(await exists(mainPath.target)))
+      error(`main 入口不存在：${manifest.main}`)
   }
   if (skills.length > LAYOUT_LIMITS.maxSkills) error(`Skill 不能超过 ${LAYOUT_LIMITS.maxSkills} 个`)
   for (const skill of skills) {
@@ -290,13 +351,18 @@ async function main() {
     if (typeof tool.description !== 'string' || tool.description.trim() === '') {
       error(`工具 ${tool.name} 缺少 description`)
     }
-    if (typeof tool.parameters !== 'object' || tool.parameters === null || tool.parameters.type !== 'object') {
+    if (
+      typeof tool.parameters !== 'object' ||
+      tool.parameters === null ||
+      tool.parameters.type !== 'object'
+    ) {
       error(`工具 ${tool.name} 的 parameters 必须是 type:"object" 的 JSON Schema`)
     }
   }
 
   // ── 命令 ──
-  if (commands.length > LAYOUT_LIMITS.maxCommands) error(`命令不能超过 ${LAYOUT_LIMITS.maxCommands} 个`)
+  if (commands.length > LAYOUT_LIMITS.maxCommands)
+    error(`命令不能超过 ${LAYOUT_LIMITS.maxCommands} 个`)
   const commandNames = new Set()
   for (const command of commands) {
     if (typeof command.name !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(command.name)) {
@@ -388,7 +454,14 @@ async function main() {
     }
     if (widget.defaultSize !== undefined) {
       const { width, height } = widget.defaultSize
-      if (!Number.isInteger(width) || !Number.isInteger(height) || width < 120 || width > 1200 || height < 80 || height > 900) {
+      if (
+        !Number.isInteger(width) ||
+        !Number.isInteger(height) ||
+        width < 120 ||
+        width > 1200 ||
+        height < 80 ||
+        height > 900
+      ) {
         error(`小组件 ${widget.id} 的 defaultSize 必须在 120–1200 × 80–900 之间`)
       }
     }

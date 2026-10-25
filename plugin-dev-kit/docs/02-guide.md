@@ -104,6 +104,7 @@ aurora-center plugins publish --server http://127.0.0.1:8787 --user admin --dir 
 | `automation.events` | 注册事件 + `ctx.emitEvent` |
 | `storage` | `ctx.storage`（5 MB / 单值 256 KB） |
 | `config` | 读取 `ctx.config`（写入由用户在设置页完成） |
+| `usage` | `ctx.usage.summary`（本机 Token / 缓存命中 / 生图 / 语音用量，只读聚合） |
 | `net` | `ctx.net.fetch`（http/https，≤ 5 MB 响应） |
 | `net.private` | 访问 loopback / 私网（必须同时有 `net`） |
 | `notifications` | `ctx.notify` / `ctx.banner`（系统通知 / 流光提醒） |
@@ -147,6 +148,10 @@ interface PluginContext {
     delete(key: string): Promise<void>
     list(): Promise<string[]>
   }
+  usage: {
+    /** 本机最近 N 天的 Token / 生图 / 语音用量（N 缺省 30，夹取到 1–90） */
+    summary(query?: { days?: number }): Promise<PluginUsageSummary>
+  }
   net: {
     fetch(input: {
       url: string; method?: string; headers?: Record<string, string>
@@ -189,6 +194,58 @@ await ctx.banner({ title: '导出结束', body: '文件已保存到桌面', spea
   传 `true` 也不会响；朗读还需要用户配好 TTS，未配置时静默跳过。
 - 提示音 / 音量 / 卡片宽度 / 停留时长都在「设置 → 提醒」里由用户配置，插件不参与。
 - 需要「点一下就打开文件」用 `ctx.notify`；只需要醒目告知用 `ctx.banner`。
+
+#### 4.1.2 `ctx.usage`：把用量展示在面板里（2026-10 起）
+
+需要 `usage` 权限。返回本机最近 N 天（缺省 30，夹取 1–90）的只读聚合：
+
+```js
+async invokePanel(panelId, method, params, ctx) {
+  const stats = await ctx.usage.summary({ days: 30 })
+  const rows = [
+    { label: 'Token 总量', value: stats.tokens.totalTokens.toLocaleString() },
+    { label: '缓存命中', value: stats.tokens.cachedTokens.toLocaleString() },
+    { label: '命中率', value: `${Math.round(stats.tokens.cacheHitRate * 100)}%` },
+    { label: '生图', value: `${stats.images.generated} 次` },
+    { label: '语音合成 / 识别', value: `${stats.voice.tts} / ${stats.voice.stt} 次` },
+  ]
+  return { schema: { version: 1, nodes: [{ type: 'keyValue', items: rows }] } }
+}
+```
+
+```ts
+interface PluginUsageSummary {
+  days: number
+  from: string // YYYY-MM-DD（含）
+  to: string   // YYYY-MM-DD（含）
+  tokens: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+    cachedTokens: number
+    rounds: number
+    cacheHitRate: number                 // cachedTokens / promptTokens，0–1
+    background: {                        // 其中后台自感知分析消耗
+      promptTokens: number; completionTokens: number; totalTokens: number
+      cachedTokens: number; rounds: number
+    }
+  }
+  images: { generated: number }          // 成功生图次数
+  voice: { tts: number; ttsChars: number; stt: number; sttChars: number }
+  daily: Array<{
+    date: string                         // 本地日期（含空白日）
+    tokens: { promptTokens: number; completionTokens: number; totalTokens: number
+              cachedTokens: number; rounds: number; cacheHitRate: number }
+    images: number
+    voice: { tts: number; stt: number }
+  }>
+}
+```
+
+- **只统计本机、从支持该接口的版本起累积**：升级前的历史用量没有逐日记录，不回溯；
+- 只返回计数，不含提示词 / 回复 / 图片 / 音频 / 文件名 / 凭据；
+- 按本地日期分桶，账本保留 90 天；`daily` 里没有数据的日期也会出现（值为 0），适合直接画折线；
+- 生图 / 语音只计**成功**调用；provider 没回传 Token usage 的轮次不计入，也不会伪造 0。
 
 
 ### 4.2 返回值与超时

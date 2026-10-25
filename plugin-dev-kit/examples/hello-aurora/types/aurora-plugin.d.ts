@@ -29,6 +29,32 @@ export interface PluginNet {
   }): Promise<{ status: number; headers: Record<string, string>; body: string }>
 }
 
+export interface PluginUsageTokenTotals {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cachedTokens: number
+  rounds: number
+}
+
+export interface PluginUsageSummary {
+  days: number
+  from: string
+  to: string
+  tokens: PluginUsageTokenTotals & {
+    cacheHitRate: number
+    background: PluginUsageTokenTotals
+  }
+  images: { generated: number }
+  voice: { tts: number; ttsChars: number; stt: number; sttChars: number }
+  daily: Array<{
+    date: string
+    tokens: PluginUsageTokenTotals & { cacheHitRate: number }
+    images: number
+    voice: { tts: number; stt: number }
+  }>
+}
+
 export interface PluginUi {
   openPanel(panelId: string): Promise<void>
   toast(message: string, kind?: 'info' | 'error'): Promise<void>
@@ -44,6 +70,10 @@ export interface PluginContext {
   plugin: PluginInfo
   config: Readonly<Record<string, unknown>>
   storage: PluginStorage
+  usage: {
+    /** 本机最近 N 天的 Token / 生图 / 语音用量（N 缺省 30，夹取到 1–90） */
+    summary(query?: { days?: number }): Promise<PluginUsageSummary>
+  }
   net: PluginNet
   notify(input: { title: string; body: string }): Promise<boolean>
   /** 流光提醒（屏幕顶端流光 + 置顶卡片）：需 `notifications` 权限 */

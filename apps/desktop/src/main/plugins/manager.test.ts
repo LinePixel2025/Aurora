@@ -7,6 +7,7 @@ import {
   PLUGIN_RPC_VERSION,
   type Logger,
   type PluginRpcMessage,
+  type PluginUsageSummary,
   type Settings,
 } from '@aurora/shared'
 import { PluginManager } from './manager.js'
@@ -148,6 +149,32 @@ function helloManifest(overrides: Record<string, unknown> = {}): Record<string, 
   }
 }
 
+function fixedUsageSummary(): PluginUsageSummary {
+  return {
+    days: 30,
+    from: '2026-09-26',
+    to: '2026-10-25',
+    tokens: {
+      promptTokens: 1200,
+      completionTokens: 300,
+      totalTokens: 1500,
+      cachedTokens: 600,
+      rounds: 4,
+      cacheHitRate: 0.5,
+      background: {
+        promptTokens: 200,
+        completionTokens: 50,
+        totalTokens: 250,
+        cachedTokens: 100,
+        rounds: 1,
+      },
+    },
+    images: { generated: 3 },
+    voice: { tts: 2, ttsChars: 20, stt: 1, sttChars: 8 },
+    daily: [],
+  }
+}
+
 interface HarnessOptions {
   mode: 'dev' | 'installed'
   manifest?: Record<string, unknown>
@@ -163,6 +190,8 @@ interface Harness {
   automationEvents: Array<{ pluginId: string; event: string; data: unknown }>
   /** 插件 `ctx.banner` 收到的请求（docs/07 §2.2.3） */
   banners: Array<{ title: string; body: string; speak?: boolean; sound?: boolean }>
+  /** 插件 `ctx.usage.summary` 的入参（docs/14 §4.1） */
+  usageQueries: Array<{ days?: number } | undefined>
   panelEvents: Array<{
     pluginId: string
     panelId?: string
@@ -242,6 +271,7 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
   const automationEvents: Harness['automationEvents'] = []
   const panelEvents: Harness['panelEvents'] = []
   const banners: Harness['banners'] = []
+  const usageQueries: Harness['usageQueries'] = []
   const manager = new PluginManager({
     userData,
     hostVersion: '0.6.0',
@@ -269,6 +299,10 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
       banners.push(input)
       return true
     },
+    usageSummary: (query) => {
+      usageQueries.push(query)
+      return fixedUsageSummary()
+    },
   })
   await manager.init()
 
@@ -281,6 +315,7 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
     automationEvents,
     panelEvents,
     banners,
+    usageQueries,
   }
   harnesses.push(harness)
   return harness
@@ -414,6 +449,7 @@ describe('PluginManager · 宿主 API 权限白名单', () => {
       'net.fetch',
       'notify',
       'banner',
+      'usage.summary',
       'ui.openPanel',
       'unknown.method',
     ]) {
@@ -451,6 +487,30 @@ describe('PluginManager · 宿主 API 权限白名单', () => {
     expect(h.banners[1]?.body).toHaveLength(800)
     expect(h.banners[1]?.speak).toBe(true)
     expect(h.banners[1]?.sound).toBe(false)
+  })
+
+  it('ctx.usage.summary：usage 权限下透传 days，非法 days 拒绝（窗口夹取由账本负责）', async () => {
+    const h = await createHarness({
+      mode: 'dev',
+      manifest: helloManifest({ permissions: ['tools', 'usage', 'automation.events'] }),
+    })
+    await h.manager.invokeTool(PLUGIN_ID, 'echo', { text: 'x' })
+    const handle = h.created[0]!
+
+    const response = await hostCall(handle, 'usage.summary', { days: 7 })
+    expect(response).toMatchObject({
+      ok: true,
+      result: { images: { generated: 3 }, voice: { tts: 2, stt: 1 } },
+    })
+    expect(h.usageQueries).toEqual([{ days: 7 }])
+
+    const missing = await hostCall(handle, 'usage.summary', {})
+    expect(missing.ok).toBe(true)
+    expect(h.usageQueries).toEqual([{ days: 7 }, undefined])
+
+    const invalid = await hostCall(handle, 'usage.summary', { days: '7' })
+    expect(invalid.ok).toBe(false)
+    if (!invalid.ok) expect(invalid.error.code).toBe('E_PLUGIN_INVALID_ARGS')
   })
 
   it('storage 键非法 / 值超限被拒；emitEvent 只允许清单声明的事件', async () => {

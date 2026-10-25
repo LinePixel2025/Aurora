@@ -45,6 +45,8 @@ import {
   type PluginAutomationEventInfo,
   type PluginInstallPreview,
   type PluginRunCommandResult,
+  type PluginUsageQuery,
+  type PluginUsageSummary,
   type Settings,
 } from '@aurora/shared'
 import { PluginRpcFailure } from './protocol.js'
@@ -90,6 +92,11 @@ export interface PluginManagerOptions {
    * 返回 false = 没显示（去重 / 队列满 / 窗口不可用），不是异常。
    */
   banner?: (input: { title: string; body: string; speak?: boolean; sound?: boolean }) => boolean
+  /**
+   * 本机用量统计（`usage` 权限，docs/14 §4.1）：由装配层注入账本实现，
+   * 管理器只做权限校验与参数透传，不碰计数口径。
+   */
+  usageSummary: (query?: PluginUsageQuery) => PluginUsageSummary
   /** 出网 fetch（走主进程的代理链） */
   resolveFetch?: () => typeof fetch | undefined
 }
@@ -1335,6 +1342,16 @@ export class PluginManager {
       entry.config = { ...entry.config, ...sanitized }
       await this.writeData(entry.manifest.id, 'config.json', entry.config)
       return { ...entry.config }
+    }
+
+    // 本机用量统计（docs/14 §4.1）：只读聚合；窗口天数由账本层夹取到 1–90。
+    if (method === PLUGIN_CLIENT_CALLS.usageSummary) {
+      this.requirePermission(entry, 'usage')
+      const days = raw['days']
+      if (days !== undefined && (typeof days !== 'number' || !Number.isFinite(days))) {
+        throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', 'days 必须是 1–90 的整数')
+      }
+      return this.options.usageSummary(days === undefined ? undefined : { days })
     }
 
     if (method === PLUGIN_CLIENT_CALLS.notify) {

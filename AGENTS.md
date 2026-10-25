@@ -67,10 +67,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、262 条断言应当全绿（2026-10-24 实测 `SUMMARY 262/262 passed`；
+  **全量约 40 秒、263 条断言应当全绿（2026-10-25 实测 `SUMMARY 263/263 passed`；
   v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
   v36 插件系统 +24、小组件与推送 +4、v37 小组件层级 / 材质 +4、插件配置窗口 +1、
-  流光提醒 +4、默认提醒方式 +5、提醒细节 +6 条断言）**——
+  流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1 条断言）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **提交前仍必须跑全量**。
@@ -197,6 +197,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **插件贡献必须写在 `manifest.json`**（工具 / Skill / 命令 / 自动化 / 面板 / 主题 / 配置），
   运行期不得动态注册；工具最终名必须 `plugin.<id>.<name>`（≤ 64），默认 `confirm`，
   只有用户「信任此插件」后清单里的 `safe` 才生效；只读档只注册 `readonly:true` 的插件工具。
+- **插件新增宿主 API / 权限要同步整组接线**：`shared/src/plugin/permissions.ts` 与
+  `protocol.ts`、`main/plugin-host.ts` + `main/plugins/manager.ts`、`plugin-dev-kit/tools/check-plugin.mjs`
+  （它自带权限表、不依赖工作区）以及三份 `types/aurora-plugin.d.ts` 副本。
+  `ctx.usage` 只回本机计数（Token / 缓存命中 / 生图 / 语音），不回溯历史、不落内容。
 - **`plugins` 设置组 AI 只读**：留在 `SETTINGS_READONLY_PREFIXES`，**不要**加进
   `tools/settings-port.ts` 的 `TOP_LEVEL_GROUPS`；插件配置不支持密文字段。
 - **插件页面只能走 `aurora-plugin://` + `src/preload/plugin-page.ts`**：协议处理器必须

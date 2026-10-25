@@ -607,6 +607,23 @@ export function smokeScript(
         JSON.stringify(panelData).slice(0, 300),
       )
 
+      // 本机用量统计（docs/14 §4.1）：插件经「usage」权限读取 ctx.usage.summary。
+      // 走 action 命令而不是面板：声明式面板的 panelData 只回 schema / toast，不回 data。
+      const usageCommand = await window.aurora.plugins.runCommand({
+        pluginId: PLUGIN_ID,
+        name: 'hello-usage',
+      })
+      const usageSummary =
+        usageCommand?.ok === true ? String(usageCommand.value?.summary ?? '') : ''
+      record(
+        '插件可读取本机用量统计（Token / 生图 / 语音）',
+        usageCommand?.ok === true &&
+          /最近 7 天：Token \d+（缓存命中 \d+）/.test(usageSummary) &&
+          /生图 \d+ 次/.test(usageSummary) &&
+          /语音 \d+ 次/.test(usageSummary),
+        JSON.stringify(usageCommand).slice(0, 300),
+      )
+
       // 插件主题：改设置后渲染层应把白名单令牌写到 documentElement 上（P3，docs/14 §3.4）
       const themeApplied = await (async () => {
         const settings = await window.aurora.settings.get()
