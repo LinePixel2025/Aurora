@@ -35,10 +35,14 @@ export async function readPluginPanelData(
   if (panel.kind === 'page') {
     // 桌面 IPC 的既有口径不变：页面型面板只走 `plugins:pageRpc`；Center 中继才放行
     if (options?.allowPage !== true) throw new Error('页面型面板请通过插件页面打开')
-    const result = await plugins.invokePanel(pluginId, panelId, input.method ?? 'refresh', {
-      params: input.params,
-      values: input.values ?? {},
-    })
+    // 页面自己的约定是 request(method, params)：params 直传，与桌面 `plugins:pageRpc`
+    // 一致；`{ params, values }` 是声明式面板的包装，页面型拿到会把字段全丢掉。
+    const result = await plugins.invokePanel(
+      pluginId,
+      panelId,
+      input.method ?? 'refresh',
+      input.params ?? {},
+    )
     return { data: result }
   }
 

@@ -84,6 +84,33 @@ describe('readPluginPanelData · 桌面 IPC 与 Center 中继共用（docs/12 §
     ).resolves.toEqual({ data: { data: { count: 2 }, toast: 'ok' } })
   })
 
+  it('页面型面板：params 直传（与桌面 pageRpc 同口径），不包 { params, values }', async () => {
+    const invoke = vi.fn(async () => ({ data: { count: 2 } }))
+    const manager = managerOf({ kind: 'page', invoke })
+    await readPluginPanelData(
+      manager,
+      {
+        pluginId: 'com.example.hello',
+        panelId: 'board',
+        method: 'add-task',
+        params: { text: '收数学作业', weekOffset: 2 },
+        values: { ignored: true },
+      },
+      { allowPage: true },
+    )
+    expect(invoke).toHaveBeenCalledWith('com.example.hello', 'board', 'add-task', {
+      text: '收数学作业',
+      weekOffset: 2,
+    })
+
+    await readPluginPanelData(
+      manager,
+      { pluginId: 'com.example.hello', panelId: 'board' },
+      { allowPage: true },
+    )
+    expect(invoke).toHaveBeenLastCalledWith('com.example.hello', 'board', 'refresh', {})
+  })
+
   it('缺少 id / 面板不存在时抛错', async () => {
     const manager = managerOf({ kind: 'schema' })
     await expect(readPluginPanelData(manager, { pluginId: '', panelId: 'board' })).rejects.toThrow(
