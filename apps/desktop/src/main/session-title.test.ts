@@ -89,9 +89,7 @@ describe('session-title 纯函数', () => {
 
   it('标题清洗只保留单行任务名，超长输出直接失败', () => {
     expect(normalizeGeneratedTitle('标题：整理高数错题。')).toBe('整理高数错题')
-    expect(normalizeGeneratedTitle('AURORA_SESSION_TITLE\n「修复登录接口」')).toBe(
-      '修复登录接口',
-    )
+    expect(normalizeGeneratedTitle('AURORA_SESSION_TITLE\n「修复登录接口」')).toBe('修复登录接口')
     expect(normalizeGeneratedTitle('这是一段很长的标题'.repeat(5))).toBeUndefined()
     expect(normalizeGeneratedTitle('\n\n')).toBeUndefined()
   })
@@ -133,7 +131,10 @@ describe('SessionTitleService', () => {
     })
     const service = new SessionTitleService({
       sessions: store,
-      provider: textProvider(['这是一个明显超过二十四个字符的无效标题输出内容'.repeat(2), '修复登录鉴权']),
+      provider: textProvider([
+        '这是一个明显超过二十四个字符的无效标题输出内容'.repeat(2),
+        '修复登录鉴权',
+      ]),
       logger: createMemoryLogger(),
     })
 

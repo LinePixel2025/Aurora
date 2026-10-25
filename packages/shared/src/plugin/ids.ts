@@ -104,7 +104,9 @@ export function validatePluginId(id: string): string | null {
   if (!PLUGIN_ID_PATTERN.test(id)) {
     return '插件 id 必须是反向域名（小写字母 / 数字 / 连字符，至少两段，如 com.example.todo）'
   }
-  const reserved = id.split('.').find((segment) => PLUGIN_RESERVED_SEGMENTS.includes(segment as never))
+  const reserved = id
+    .split('.')
+    .find((segment) => PLUGIN_RESERVED_SEGMENTS.includes(segment as never))
   if (reserved) return `插件 id 不能使用保留段「${reserved}」`
   return null
 }

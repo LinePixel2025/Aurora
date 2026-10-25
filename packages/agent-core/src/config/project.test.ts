@@ -38,9 +38,13 @@ describe('resolveProjectRootById（会话级项目，docs/06 §5.1）', () => {
     // `resolve('D:\\proj')` 在 Windows 上就是 `D:\proj`，在其它平台是等价绝对路径；
     // 期望值与实现同源，避免写死反斜杠字面量。
     const absoluteRoot = resolve('D:\\proj')
-    const root = resolveProjectRootById(settingsWith({ list: [project('p1', absoluteRoot)] }), 'p1', {
-      cwd: CWD,
-    })
+    const root = resolveProjectRootById(
+      settingsWith({ list: [project('p1', absoluteRoot)] }),
+      'p1',
+      {
+        cwd: CWD,
+      },
+    )
 
     expect(root).toBe(absoluteRoot)
   })

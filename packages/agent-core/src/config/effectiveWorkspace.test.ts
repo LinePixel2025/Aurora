@@ -16,10 +16,7 @@ const WORKSPACE_DIR = resolve('top', 'workspace-dir')
 const HOME_DIR = resolve('top', 'home-dir')
 
 /** 真实 Settings 桩：只改 projects 与 agent.tools.workspaceDir。 */
-function settingsWith(options: {
-  list?: ProjectConfig[]
-  workspaceDir?: string
-}): Settings {
+function settingsWith(options: { list?: ProjectConfig[]; workspaceDir?: string }): Settings {
   const settings = createDefaultSettings()
   settings.projects = {
     ...settings.projects,
@@ -48,9 +45,7 @@ describe('effectiveWorkspaceDir', () => {
   it('未绑定时模式工作目录（Work）赢过 workspaceDir', () => {
     const settings = settingsWith({ workspaceDir: WORKSPACE_DIR })
 
-    expect(effectiveWorkspaceDir(settings, HOME_DIR, undefined, WORKSPACE_DIR)).toBe(
-      WORKSPACE_DIR,
-    )
+    expect(effectiveWorkspaceDir(settings, HOME_DIR, undefined, WORKSPACE_DIR)).toBe(WORKSPACE_DIR)
   })
 
   it('未绑定且模式目录缺席时 workspaceDir 赢过 homeDir', () => {

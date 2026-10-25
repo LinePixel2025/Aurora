@@ -1265,5 +1265,4 @@ async function removeDef(def: AutomationDefinition): Promise<void> {
   background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
   color: var(--text-primary);
 }
-
 </style>

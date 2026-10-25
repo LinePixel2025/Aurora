@@ -98,7 +98,8 @@ export function createAppearanceTool(options: AppearanceToolOptions): ToolDefini
         },
         awarenessGlow: {
           type: 'boolean',
-          description: '文件自感知的四周流光特效：true 开启（默认），false 关闭（分析期间完全不出流光）',
+          description:
+            '文件自感知的四周流光特效：true 开启（默认），false 关闭（分析期间完全不出流光）',
         },
       },
       additionalProperties: false,

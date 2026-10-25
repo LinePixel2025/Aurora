@@ -42,11 +42,7 @@ class UtilityPluginProcess implements PluginProcessHandle {
   private child: UtilityProcess | undefined
   private exited = false
 
-  constructor(
-    hostPath: string,
-    request: PluginSpawnRequest,
-    callbacks: PluginProcessCallbacks,
-  ) {
+  constructor(hostPath: string, request: PluginSpawnRequest, callbacks: PluginProcessCallbacks) {
     this.hostPath = hostPath
     this.request = request
     this.callbacks = callbacks

@@ -187,7 +187,10 @@ export function validatePanelSchema(raw: unknown): PluginPanelValidation {
       if (node['text'] !== undefined && typeof node['text'] !== 'string') {
         errors.push(`${type}.text 必须是字符串`)
       }
-      if (typeof node['text'] === 'string' && node['text'].length > PLUGIN_UI_LIMITS.maxTextLength) {
+      if (
+        typeof node['text'] === 'string' &&
+        node['text'].length > PLUGIN_UI_LIMITS.maxTextLength
+      ) {
         errors.push(`${type}.text 不能超过 ${PLUGIN_UI_LIMITS.maxTextLength} 字`)
       }
     }

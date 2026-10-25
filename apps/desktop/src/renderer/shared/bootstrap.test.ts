@@ -23,7 +23,12 @@ import { describe, expect, it } from 'vitest'
 const BOOTSTRAP_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bootstrap.ts')
 
 /** 在 `bootstrapApp` 体内找第一次 `X.Y()` 调用的起始偏移；找不到返回 -1 */
-function firstCallOffset(file: ts.SourceFile, source: string, objectName: string, propName: string): number {
+function firstCallOffset(
+  file: ts.SourceFile,
+  source: string,
+  objectName: string,
+  propName: string,
+): number {
   let found = -1
   const walk = (node: ts.Node): void => {
     if (found !== -1) return
@@ -46,7 +51,13 @@ function firstCallOffset(file: ts.SourceFile, source: string, objectName: string
 describe('bootstrapApp 的接线顺序', () => {
   it('订阅（bind）必须早于加载（load）—— 否则启动期的 mode:changed / settings:changed 会永久丢失', () => {
     const source = readFileSync(BOOTSTRAP_PATH, 'utf8')
-    const file = ts.createSourceFile(BOOTSTRAP_PATH, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS)
+    const file = ts.createSourceFile(
+      BOOTSTRAP_PATH,
+      source,
+      ts.ScriptTarget.ESNext,
+      true,
+      ts.ScriptKind.TS,
+    )
 
     const bindOffset = firstCallOffset(file, source, 'settings', 'bind')
     const loadOffset = firstCallOffset(file, source, 'settings', 'load')
@@ -63,7 +74,13 @@ describe('bootstrapApp 的接线顺序', () => {
 
   it('modes 与 windows 也遵守同一条顺序（不要只改一处）', () => {
     const source = readFileSync(BOOTSTRAP_PATH, 'utf8')
-    const file = ts.createSourceFile(BOOTSTRAP_PATH, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS)
+    const file = ts.createSourceFile(
+      BOOTSTRAP_PATH,
+      source,
+      ts.ScriptTarget.ESNext,
+      true,
+      ts.ScriptKind.TS,
+    )
 
     const modesBind = firstCallOffset(file, source, 'modes', 'bind')
     const modesLoad = firstCallOffset(file, source, 'modes', 'load')

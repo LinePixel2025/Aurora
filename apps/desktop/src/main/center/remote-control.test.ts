@@ -151,9 +151,7 @@ describe('buildClientStatus · 状态快照', () => {
     const settings = createDefaultSettings()
     expect(buildClientStatus(settings, '0.6.0', 'win32').plugins).toBeUndefined()
 
-    const plugins = [
-      { id: 'com.example.hello', name: 'Hello', version: '1.0.0', panels: [] },
-    ]
+    const plugins = [{ id: 'com.example.hello', name: 'Hello', version: '1.0.0', panels: [] }]
     expect(buildClientStatus(settings, '0.6.0', 'win32', plugins).plugins).toEqual(plugins)
   })
 })

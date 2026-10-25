@@ -796,9 +796,10 @@ export class Hub {
   }
 
   /** 入站 id 形状守卫：两个 id 都是非空短字符串（畸形帧整体拒绝） */
-  private pluginIdsOf(
-    message: { pluginId: unknown; panelId: unknown },
-  ): { pluginId: string; panelId: string } | undefined {
+  private pluginIdsOf(message: {
+    pluginId: unknown
+    panelId: unknown
+  }): { pluginId: string; panelId: string } | undefined {
     const { pluginId, panelId } = message
     if (typeof pluginId !== 'string' || pluginId === '' || pluginId.length > 128) return undefined
     if (typeof panelId !== 'string' || panelId === '' || panelId.length > 128) return undefined

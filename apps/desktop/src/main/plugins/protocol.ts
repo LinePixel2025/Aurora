@@ -89,11 +89,7 @@ export class PluginRpcPeer {
     this.options.onEvent = handler
   }
 
-  request(
-    method: string,
-    params: unknown,
-    options: PluginRpcRequestOptions,
-  ): Promise<unknown> {
+  request(method: string, params: unknown, options: PluginRpcRequestOptions): Promise<unknown> {
     if (this.disposed) {
       return Promise.reject(new PluginRpcFailure('E_PLUGIN_CRASHED', '插件进程已退出'))
     }
@@ -115,16 +111,17 @@ export class PluginRpcPeer {
       params,
     }
     if (byteLength(message) > PLUGIN_RPC_MAX_FRAME_BYTES) {
-      return Promise.reject(
-        new PluginRpcFailure('E_PLUGIN_FRAME_TOO_LARGE', '请求超过 1 MiB 上限'),
-      )
+      return Promise.reject(new PluginRpcFailure('E_PLUGIN_FRAME_TOO_LARGE', '请求超过 1 MiB 上限'))
     }
 
     return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new PluginRpcFailure('E_PLUGIN_TIMEOUT', `插件调用超时（${method}）`))
-      }, Math.max(1, options.timeoutMs))
+      const timer = setTimeout(
+        () => {
+          this.pending.delete(id)
+          reject(new PluginRpcFailure('E_PLUGIN_TIMEOUT', `插件调用超时（${method}）`))
+        },
+        Math.max(1, options.timeoutMs),
+      )
       timer.unref?.()
 
       const abort = (): void => {
@@ -160,9 +157,7 @@ export class PluginRpcPeer {
       } catch (error) {
         const pending = this.pending.get(id)
         this.pending.delete(id)
-        pending?.reject(
-          new PluginRpcFailure('E_PLUGIN_CRASHED', '插件进程不可用', String(error)),
-        )
+        pending?.reject(new PluginRpcFailure('E_PLUGIN_CRASHED', '插件进程不可用', String(error)))
       }
     })
   }

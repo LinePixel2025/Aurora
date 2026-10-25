@@ -61,7 +61,11 @@ function actionOf(key: string): string {
         </button>
       </nav>
 
-      <nav v-if="props.pluginItems.length > 0" class="sidebar-nav sidebar-plugins" aria-label="插件面板">
+      <nav
+        v-if="props.pluginItems.length > 0"
+        class="sidebar-nav sidebar-plugins"
+        aria-label="插件面板"
+      >
         <div class="sidebar-section-label">插件</div>
         <button
           v-for="item in props.pluginItems"

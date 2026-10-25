@@ -142,7 +142,8 @@ async function load(): Promise<void> {
   }
   items.splice(0, items.length, ...next)
   for (const item of items) {
-    if (item.schema === null && item.error === null && item.pluginReady) void invoke(item, 'refresh')
+    if (item.schema === null && item.error === null && item.pluginReady)
+      void invoke(item, 'refresh')
   }
 }
 
@@ -154,7 +155,8 @@ onMounted(() => {
   void load()
   offWidgetEvent = window.aurora.plugins.onWidgetEvent((event: PluginPushEvent) => {
     for (const item of items) {
-      if (matches(event, item)) void invoke(item, 'event', { event: event.event, payload: event.payload })
+      if (matches(event, item))
+        void invoke(item, 'event', { event: event.event, payload: event.payload })
     }
   })
   offChanged = window.aurora.plugins.onChanged(() => {

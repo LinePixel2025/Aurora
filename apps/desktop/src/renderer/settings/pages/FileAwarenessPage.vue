@@ -112,7 +112,12 @@ async function ensureExplicitBackgroundModel(): Promise<void> {
   let provider = settings.llm.providers[providerId]
   const activeCenterDisabled =
     isCenterOfficialProviderId(providerId) && !settings.center.officialModels.llm.enabled
-  if (providerId === '' || provider === undefined || activeCenterDisabled || provider.model.trim() === '') {
+  if (
+    providerId === '' ||
+    provider === undefined ||
+    activeCenterDisabled ||
+    provider.model.trim() === ''
+  ) {
     providerId =
       Object.keys(settings.llm.providers).find((id) => {
         if (isCenterOfficialProviderId(id)) return false

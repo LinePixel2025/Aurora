@@ -184,7 +184,9 @@ describe('ask_user · 本轮扩展（allowCustom / timeoutMs / 一次多问）',
   })
 
   it('一次多问：questions 全量透传，顶层取第一问（老消费方降级显示第一问）', async () => {
-    const { tool, calls } = makeHarness({ answer: { answers: ['A'], answersByQuestion: [['A'], []] } })
+    const { tool, calls } = makeHarness({
+      answer: { answers: ['A'], answersByQuestion: [['A'], []] },
+    })
     const result = await tool.execute(
       {
         question: '第一问？',

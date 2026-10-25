@@ -37,3 +37,6 @@ apps/desktop/resources/officecli/
 
 # 本地端到端验证产物（CDP 驱动真实客户端的截图与脚本）
 .e2e-tmp/
+
+# 本机 Office 工具测试用的示例文档（不进版本库，也不参与构建）
+apps/desktop/*.pptx

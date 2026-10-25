@@ -9,14 +9,7 @@
   "license": "MIT",
   "main": "main.js",
   "activation": "startup",
-  "permissions": [
-    "tools",
-    "storage",
-    "config",
-    "logging",
-    "ui.panels",
-    "ui.widgets"
-  ],
+  "permissions": ["tools", "storage", "config", "logging", "ui.panels", "ui.widgets"],
   "contributes": {
     "tools": [
       {
@@ -31,9 +24,7 @@
         "readonly": true
       }
     ],
-    "panels": [
-      { "id": "home", "title": "示例面板", "icon": "Puzzle", "schema": "ui/panel.json" }
-    ],
+    "panels": [{ "id": "home", "title": "示例面板", "icon": "Puzzle", "schema": "ui/panel.json" }],
     "widgets": [
       {
         "id": "card",

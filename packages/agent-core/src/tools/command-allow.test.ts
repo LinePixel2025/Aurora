@@ -235,7 +235,9 @@ describe('matchAllowPatterns：语句构造 / 补充分隔符整体不适用免�
   it('`git *` 不放行管道拼接（`|` 现在是分段符）', () => {
     const patterns = ['git *']
     expect(matchAllowPatterns('git log | more', patterns)).toBeUndefined()
-    expect(matchAllowPatterns('git status | Remove-Item -Recurse -Force C:\\x', patterns)).toBeUndefined()
+    expect(
+      matchAllowPatterns('git status | Remove-Item -Recurse -Force C:\\x', patterns),
+    ).toBeUndefined()
   })
 
   it('`git *` 不放行子表达式 / 反引号 / 数组 / 哈希表 / 调用运算符（整体判不命中）', () => {

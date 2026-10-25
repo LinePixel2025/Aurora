@@ -179,8 +179,7 @@ export class SessionTitleService {
     firstUserText: string | undefined,
     attachments: readonly string[],
   ): Promise<string> {
-    const provided =
-      firstUserText === undefined ? '' : buildTitleSource(firstUserText, attachments)
+    const provided = firstUserText === undefined ? '' : buildTitleSource(firstUserText, attachments)
     if (provided !== '') return provided
     const messages = await this.sessions.get(sessionId)
     const firstUser = messages.find((message) => message.role === 'user')

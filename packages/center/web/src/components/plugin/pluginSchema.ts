@@ -15,11 +15,7 @@ export { validatePanelSchema }
 export type { PluginPanelSchema, PluginUiNode }
 
 /** Center 的插件静态资源地址（服务器从市场 zip 读取，公开可访问） */
-export function pluginAssetUrl(
-  pluginId: string,
-  version: string,
-  relativePath: string,
-): string {
+export function pluginAssetUrl(pluginId: string, version: string, relativePath: string): string {
   const clean = relativePath.replace(/^\/+/, '')
   return `/p/${encodeURIComponent(pluginId)}/${encodeURIComponent(version)}/${clean
     .split('/')

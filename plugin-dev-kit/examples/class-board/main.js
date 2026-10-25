@@ -45,7 +45,9 @@ module.exports = {
       const lines = [
         `班级：${teamName(ctx.config)}`,
         `事务：${tasks.length} 条（未完成 ${tasks.filter((task) => !task.done).length} 条）`,
-        ...tasks.map((task) => `- [${task.done ? 'x' : ' '}] ${task.text}${task.due ? `（${task.due}）` : ''}`),
+        ...tasks.map(
+          (task) => `- [${task.done ? 'x' : ' '}] ${task.text}${task.due ? `（${task.due}）` : ''}`,
+        ),
         `值日：${duties.map((duty) => `${duty.day} ${duty.name}`).join(' / ')}`,
       ]
       return { content: lines.join('\n'), summary: `${tasks.length} 条事务` }
@@ -61,7 +63,7 @@ module.exports = {
 
   async invokePanel(panelId, method, params, ctx) {
     if (panelId !== 'board') throw new Error(`未知面板：${panelId}`)
-    const values = params !== null && typeof params === 'object' ? params.values ?? {} : {}
+    const values = params !== null && typeof params === 'object' ? (params.values ?? {}) : {}
     if (method === 'add') {
       const text = String(values.text ?? '').trim()
       if (text === '') return { schema: await boardSchema(ctx), toast: '请先填写事务内容' }
@@ -71,7 +73,10 @@ module.exports = {
     }
     if (method === 'clear-done') {
       const tasks = await readTasks(ctx)
-      await writeTasks(ctx, tasks.filter((task) => !task.done))
+      await writeTasks(
+        ctx,
+        tasks.filter((task) => !task.done),
+      )
       await pushAll(ctx)
       return { schema: await boardSchema(ctx), toast: '已清理完成项' }
     }
@@ -230,7 +235,11 @@ async function taskSchema(ctx) {
       {
         type: 'row',
         children: [
-          { type: 'badge', text: `待办 ${pending.length}`, tone: pending.length > 0 ? 'warn' : 'ok' },
+          {
+            type: 'badge',
+            text: `待办 ${pending.length}`,
+            tone: pending.length > 0 ? 'warn' : 'ok',
+          },
           { type: 'badge', text: `完成 ${tasks.length - pending.length}`, tone: 'muted' },
         ],
       },

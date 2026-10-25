@@ -8,15 +8,7 @@
   "license": "MIT",
   "main": "main.js",
   "activation": "startup",
-  "permissions": [
-    "tools",
-    "commands",
-    "storage",
-    "config",
-    "logging",
-    "ui.panels",
-    "ui.widgets"
-  ],
+  "permissions": ["tools", "commands", "storage", "config", "logging", "ui.panels", "ui.widgets"],
   "contributes": {
     "tools": [
       {

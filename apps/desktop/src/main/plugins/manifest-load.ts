@@ -140,5 +140,10 @@ export async function readPluginManifest(
   }
 
   if (errors.length > 0) return { ok: false, errors, warnings }
-  return { ok: true, plugin: { manifest, root, manifestPath, isDev: options.isDev }, errors, warnings }
+  return {
+    ok: true,
+    plugin: { manifest, root, manifestPath, isDev: options.isDev },
+    errors,
+    warnings,
+  }
 }

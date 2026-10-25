@@ -44,12 +44,7 @@ export interface DeliverResult {
 export class CenterDeliverError extends Error {
   constructor(
     message: string,
-    public readonly code:
-      | 'E_NOT_CONFIGURED'
-      | 'E_IO'
-      | 'E_HTTP'
-      | 'E_TOO_LARGE'
-      | 'E_INCOMPLETE',
+    public readonly code: 'E_NOT_CONFIGURED' | 'E_IO' | 'E_HTTP' | 'E_TOO_LARGE' | 'E_INCOMPLETE',
   ) {
     super(message)
   }
