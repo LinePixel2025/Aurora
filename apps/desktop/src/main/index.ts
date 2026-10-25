@@ -182,6 +182,8 @@ import {
   AWARENESS_GLOW_SETTLE_ACT,
   BANNER_CARD_CAPTURE_CHECK,
   BANNER_GLOW_CAPTURE_CHECK,
+  SETTINGS_NOTIFICATIONS_SCHEDULE_ACT,
+  SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK,
   SETTINGS_NOTIFICATIONS_STYLE_ACT,
   SETTINGS_NOTIFICATIONS_STYLE_CHECK,
   captureWindows,
@@ -3427,6 +3429,39 @@ async function runCapture(dir: string): Promise<void> {
         },
         act: SETTINGS_NOTIFICATIONS_STYLE_ACT,
         check: SETTINGS_NOTIFICATIONS_STYLE_CHECK,
+      },
+      // 提醒页的「定时提醒 + 勿扰时段」区组（2026-10-25 聚合，docs/08 §6/§6.1）。
+      // 课前提醒三件套的门控是「ClassRoom 模式 + 课表有节次」，所以 prepare 先造现场：
+      // 切模式 + 保证至少一节课（capture 的 userData 是隔离的，不用还原）。
+      {
+        name: 'settings',
+        file: 'settings-notifications-schedule.png',
+        query: { page: 'notifications' },
+        prepare: async () => {
+          const snapshot = settings?.get()
+          if (snapshot === undefined) return
+          const classroom = snapshot.modes.classroom
+          const lessons =
+            classroom.schedule.lessons.length > 0
+              ? classroom.schedule.lessons
+              : [
+                  {
+                    weekday: new Date().getDay(),
+                    startTime: '08:00',
+                    endTime: '08:45',
+                    subject: '数学',
+                  },
+                ]
+          settings?.update({
+            modes: {
+              ...snapshot.modes,
+              current: 'classroom',
+              classroom: { ...classroom, schedule: { ...classroom.schedule, lessons } },
+            },
+          })
+        },
+        act: SETTINGS_NOTIFICATIONS_SCHEDULE_ACT,
+        check: SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK,
       },
       // 流光提醒（docs/07 §2.2.3，2026-10-24）：两个内部窗口各截一张 —— 它们职责不同
       // （卡片可点 / 光带穿透），合不到一张图里；`preview=1` 让页面渲染固定的示例内容，

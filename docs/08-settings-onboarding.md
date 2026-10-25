@@ -1013,12 +1013,22 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   - **连接**：`center` Aurora Center；
   - **扩展**：`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
   - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
-  - **`notifications` 提醒（v37 新增，v38 扩展）**：上半是「默认提醒方式」四选一，
-    下半是流光提醒的细节（提示音 / 音量 / 朗读 / 弹窗大小 / 停留时长，非流光通道时置灰），
-    末尾「发送测试提醒」按钮（细节见 07 §2.2.3 / §4）；锚点 `notifications.channel.<key>` /
+  - **`notifications` 提醒（v37 新增，v38 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
+    自上而下五个区组 —— ①「默认提醒方式」四选一；②「流光提醒」细节
+    （提示音 / 音量 / 朗读 / 弹窗大小 / 停留时长，非流光通道时置灰）；
+    ③**「定时提醒」**：自动化总开关（`automations.enabled`，常显）+ 课前提醒三件套
+    （`modes.classroom.preClassReminder` / `preClassLeadMinutes` / `preClassOpenFolder`，
+    与「模式」页 / 主界面自动化页**同一字段**，写盘回传完整 `modes` 子树；
+    门控同 §6.1 —— 非 ClassRoom 模式或课表无节次时控件不进 DOM，换成
+    `data-empty="modes.classroom.preClassReminder"` 说明）；
+    ④**「勿扰时段」**（`advanced.quietHours.start` / `.end`，与「通用」页同一字段与保存语义，
+    留空 = 不启用，只填开始按默认「07:00」补全）；⑤「发送测试提醒」按钮
+    （细节见 07 §2.2.3 / §4）。锚点 `notifications.channel.<key>` /
     `notifications.sound` / `.volume` / `.speak` / `.size.<key>` / `.duration.<ms>` /
-    `notifications.test`，截图场景 `settings-notifications.png`（通道）与
-    `settings-notifications-style.png`（细节区，拍前把通道切到流光以显示可用态）。
+    `notifications.test`，截图场景 `settings-notifications.png`（通道）、
+    `settings-notifications-style.png`（细节区，拍前把通道切到流光以显示可用态）与
+    `settings-notifications-schedule.png`（定时提醒 + 勿扰区组，课前提醒按
+    「三控件或 data-empty 二选一」断言）。
   - 旧页深链兼容映射：`?page=tts` → `voice`、`?page=skills|mcp` → `agent`；
     `general` / `modes` / `llm` / `advanced` 页 id 不变，旧深链继续可用。
 - **Skill 管理**（目标 6 页 IA 下为「Agent 设置」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
@@ -1146,7 +1156,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 | `modes.work.workspaceDir`                                                                     | `modes.current === 'work'`（v8 起 Work 区组有字段，与 ClassRoom 区组同口径；`data-empty="modes.work"` 空状态随之取消）                                             |
 | `modes.code.*`                                                                                | 无字段：Code 选中时只显示「暂无可配置项」空状态（`data-empty="modes.code"`）                                                                                       |
 | `modes.classroom.schedule.classisland.*`                                                      | `schedule.provider === 'classisland'`                                                                                                                              |
-| `modes.classroom.preClassReminder`                                                            | `schedule.lessons.length > 0`                                                                                                                                      |
+| `modes.classroom.preClassReminder`                                                            | `schedule.lessons.length > 0`（2026-10-25 起「提醒」页也聚合三件套：同字段同门控，非 ClassRoom 模式或无节次时同样落 `data-empty`）                                    |
 | `modes.classroom.preClassLeadMinutes`                                                         | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v10 新增）                                                                                        |
 | `modes.classroom.preClassOpenFolder`                                                          | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v8 新增）                                                                                         |
 | `modes.classroom.classification.confidenceThreshold`                                          | `subjects.length > 0`                                                                                                                                              |
@@ -1172,7 +1182,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 | `agent.snapshots.*`                                                                           | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"`                                                 |
 | `agent.loop.*`                                                                                | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么跑"，不是"注册哪些工具"；v15 新增、v34 收窄为「同轮并行上限」一项）                                |
 | `agent.browser.*`                                                                             | 常显（总开关关着时六项仍渲染，可先配置后开启；**不新增 `data-empty`** —— 本区组没有空态。v35 新增；只读档由注册层决定，与显示无关）                                 |
-| `automations.enabled`                                                                         | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控**                                                                             |
+| `automations.enabled`                                                                         | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控**；2026-10-25 起「提醒」页「定时提醒」区组也聚合一份（同字段，「恰好 1 个」断言按页各自成立） |
 | `general.requireAdmin`                                                                        | 常显（「常规」页「启动」区组；v20 新增）。被删掉 / 改名时 capture 的 general 页探针立刻报 FAIL                                                                     |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——

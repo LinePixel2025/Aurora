@@ -6038,6 +6038,65 @@ export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
   }
 })()`
 
+/**
+ * 「提醒」页的**定时提醒 + 勿扰时段区组**（2026-10-25 聚合，docs/08 §6/§6.1）：
+ * 把「定时提醒」卡片滚进视口再拍（勿扰区组紧随其后，同一屏内）。
+ * 场景的 prepare 已把模式切成 ClassRoom 并保证课表至少一节，所以预期走「三控件」分支；
+ * 判据仍写成「三控件或 data-empty 二选一」，与 §6.1 的门控口径一致、不吃夹具顺序。
+ */
+export const SETTINGS_NOTIFICATIONS_SCHEDULE_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const section = document.querySelector('[data-field="notifications.schedule"]')
+    if (section === null) return { ok: false, reason: '定时提醒区组不在 DOM' }
+    section.scrollIntoView({ block: 'start' })
+    await wait(220)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 定时提醒 + 勿扰时段区组的探针。
+ *
+ * 只量存在与取值范围：自动化总开关的复选框在、课前提醒「三控件或 data-empty 二选一」、
+ * 提前分钟数落在 1～30、勿扰两个输入都在。判据只写一份（pass 取 conditions 的乘积）。
+ */
+export const SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(260)
+    const count = (selector) => document.querySelectorAll(selector).length
+    const sectionRect = (() => {
+      const section = document.querySelector('[data-field="notifications.schedule"]')
+      if (section === null) return null
+      const rect = section.getBoundingClientRect()
+      return { width: Math.round(rect.width), height: Math.round(rect.height) }
+    })()
+    const autoToggle = document.querySelector('[data-field="automations.enabled"] input[type="checkbox"]')
+    const lead = document.querySelector('[data-field="modes.classroom.preClassLeadMinutes"] input[type="number"]')
+    const leadValue = lead === null ? null : Number(lead.value)
+    const controlsBranch =
+      count('[data-field="modes.classroom.preClassReminder"] input[type="checkbox"]') === 1 &&
+      lead !== null &&
+      count('[data-field="modes.classroom.preClassOpenFolder"] input[type="checkbox"]') === 1
+    const emptyBranch = count('[data-empty="modes.classroom.preClassReminder"]') > 0
+    const conditions = {
+      sectionPresent: sectionRect !== null && sectionRect.width > 300,
+      automationsToggle: autoToggle !== null,
+      preClassGating: controlsBranch || emptyBranch,
+      leadInRange: !controlsBranch || (leadValue !== null && leadValue >= 1 && leadValue <= 30),
+      quietStart: count('[data-field="advanced.quietHours.start"] input') === 1,
+      quietEnd: count('[data-field="advanced.quietHours.end"] input') === 1,
+    }
+    const pass = Object.keys(conditions).every((key) => conditions[key] === true)
+    return { section: sectionRect, controlsBranch, emptyBranch, conditions, pass }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
 export const SETTINGS_AWARENESS_SCROLL_ACT = `(async () => {  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const usage = document.querySelector('[data-field="fileAwareness.usage"]')

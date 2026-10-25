@@ -1,15 +1,22 @@
 <script setup lang="ts">
 /**
- * 提醒设置页（v37，v38 扩展；docs/07 §4、docs/08 §6.1）。
+ * 提醒设置页（v37，v38 扩展；2026-10-25 聚合定时提醒与勿扰时段；docs/07 §4、docs/08 §6/§6.1）。
  *
- * 管两件事，全部即时生效（`notifications.*`）：
- * 1. **提醒走哪条通道**（`channel`）—— 系统通知 / 流光提醒 / 两者 / 不打扰；
- * 2. **流光提醒长什么样、多大声、留多久**（`sound` / `volume` / `speak` / `size` / `durationMs`）。
+ * Aurora 所有提醒相关配置的集中入口，全部即时生效：
+ * 1. **提醒走哪条通道**（`notifications.channel`）—— 系统通知 / 流光提醒 / 两者 / 不打扰；
+ * 2. **流光提醒长什么样、多大声、留多久**（`sound` / `volume` / `speak` / `size` / `durationMs`）；
+ * 3. **定时提醒**：自动化总开关（`automations.enabled`）+ 课前提醒三件套
+ *    （`modes.classroom.preClass*`，与「模式」页 / 主界面自动化页同一字段；
+ *    门控按 docs/08 §6.1 —— 非 ClassRoom 模式或课表无节次时控件不进 DOM，换 `data-empty` 说明）；
+ * 4. **勿扰时段**（`advanced.quietHours`，与「通用」页同一字段与保存语义）。
  *
  * 语义边界（也写进页面文案）：`sound` / `speak` 是**总闸** —— 关掉之后连请求级
  * `sound: true` / `speak: true` 也不会越过；开着时请求级仍可让某一条静音 / 不读。
  * `channel` 只管 Aurora 自己发起的提醒；`notify_banner` 与插件 `ctx.banner` 是显式请求流光，
  * 但同样受这两个总闸约束（用户关了提示音就是不想被吵）。
+ *
+ * 写盘注意：`settings:update` 是**顶层浅合并**，`modes` / `advanced` 必须回传完整子树
+ * （丢子树 = 静默丢字段，同主界面自动化页 `BUILTIN_SETTING_KEYS` 的口径）。
  */
 import { computed, ref } from 'vue'
 import type { BannerCardSize, NotificationTestResult, ReminderChannel } from '@aurora/shared'
@@ -86,6 +93,78 @@ async function save(patch: Partial<NonNullable<typeof notifications.value>>): Pr
   message.value = '已保存，下一条提醒立即按新设置生效'
 }
 
+// ───────────────────────── 定时提醒（自动化总开关 + 课前提醒三件套） ─────────────────────────
+
+const modes = computed(() => settingsStore.settings?.modes ?? null)
+const classroom = computed(() => modes.value?.classroom ?? null)
+/** 门控与 docs/08 §6.1 一致：非 ClassRoom 模式或课表无节次时控件不进 DOM（换 data-empty 说明） */
+const preClassReady = computed(
+  () => modes.value?.current === 'classroom' && (classroom.value?.schedule.lessons.length ?? 0) > 0,
+)
+const preClassEmptyText = computed(() =>
+  modes.value?.current === 'classroom'
+    ? '先在「模式」页的课程表里添加节次，才能在这里配置课前提醒。'
+    : '切换到 ClassRoom 模式并配置课程表后，就能在这里设置课前提醒。',
+)
+const automationsEnabled = computed(() => settingsStore.settings?.automations.enabled ?? true)
+
+async function saveAutomations(enabled: boolean): Promise<void> {
+  const current = settingsStore.settings?.automations
+  if (current === undefined) return
+  const ok = await settingsStore.update({ automations: { ...current, enabled } })
+  if (!ok) {
+    error.value = settingsStore.error
+    return
+  }
+  error.value = null
+  message.value = '已保存'
+}
+
+async function saveClassroom(patch: {
+  preClassReminder?: boolean
+  preClassLeadMinutes?: number
+  preClassOpenFolder?: boolean
+}): Promise<void> {
+  const currentModes = modes.value
+  const currentClassroom = classroom.value
+  if (currentModes === null || currentClassroom === null) return
+  const ok = await settingsStore.update({
+    modes: { ...currentModes, classroom: { ...currentClassroom, ...patch } },
+  })
+  if (!ok) {
+    error.value = settingsStore.error
+    return
+  }
+  error.value = null
+  message.value = '已保存，下一次课前提醒立即按新设置生效'
+}
+
+// ───────────────────────── 勿扰时段（advanced.quietHours） ─────────────────────────
+
+const quietStart = computed(() => settingsStore.settings?.advanced?.quietHours?.start ?? '')
+const quietEnd = computed(() => settingsStore.settings?.advanced?.quietHours?.end ?? '')
+
+/** 保存语义与「通用」页同一份：留空 = 不启用；只填开始时结束时间按默认「07:00」补全 */
+async function saveQuiet(which: 'start' | 'end', value: string): Promise<void> {
+  const current = settingsStore.settings?.advanced ?? null
+  if (current === null) return
+  let next: { start: string; end: string } | null
+  if (which === 'start') {
+    const start = value.trim()
+    next = start === '' ? null : { start, end: current.quietHours?.end ?? '07:00' }
+  } else {
+    const end = value.trim()
+    next = current.quietHours?.start ? { start: current.quietHours.start, end } : null
+  }
+  const ok = await settingsStore.update({ advanced: { ...current, quietHours: next } })
+  if (!ok) {
+    error.value = settingsStore.error
+    return
+  }
+  error.value = null
+  message.value = '已保存'
+}
+
 /** 「试一下」：走主进程同一条提醒路由，因此验证的是真实生效路径 */
 async function testChannel(): Promise<void> {
   testing.value = true
@@ -118,7 +197,7 @@ function describeTest(result: NotificationTestResult): string {
   <section class="page" data-field="notifications.page">
     <header>
       <h1 class="page-title">提醒</h1>
-      <p class="page-sub">默认提醒方式与流光提醒的样式、声音、停留时长，改完立即生效。</p>
+      <p class="page-sub">Aurora 全部提醒相关设置：默认方式、流光样式、课前提醒与勿扰时段。</p>
     </header>
 
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
@@ -268,6 +347,112 @@ function describeTest(result: NotificationTestResult): string {
           />
           <span class="tiny muted mono duration-value">{{ Math.round(durationMs / 1000) }} 秒</span>
         </div>
+      </SettingField>
+    </section>
+
+    <section class="section-card" data-field="notifications.schedule">
+      <h2 class="section-title">定时提醒</h2>
+      <p class="section-desc">自动化总开关与课前提醒；课前提醒需 ClassRoom 模式并已配置课程表。</p>
+
+      <SettingField
+        data-field="automations.enabled"
+        label="自动化总开关"
+        hint="关闭后所有自动化暂停评估，含课前提醒与自建任务"
+      >
+        <input
+          type="checkbox"
+          :checked="automationsEnabled"
+          @change="saveAutomations(($event.target as HTMLInputElement).checked)"
+        />
+      </SettingField>
+
+      <template v-if="preClassReady && classroom !== null">
+        <SettingField
+          data-field="modes.classroom.preClassReminder"
+          label="课前提醒"
+          hint="按上方默认提醒方式投递；勿扰时段内静默跳过"
+        >
+          <input
+            type="checkbox"
+            :checked="classroom.preClassReminder"
+            @change="
+              saveClassroom({ preClassReminder: ($event.target as HTMLInputElement).checked })
+            "
+          />
+        </SettingField>
+
+        <SettingField
+          data-field="modes.classroom.preClassLeadMinutes"
+          label="提前分钟数"
+          hint="1～30 分钟，改完即时生效；设得太大时多节课会同时提醒"
+        >
+          <input
+            class="input"
+            type="number"
+            min="1"
+            max="30"
+            step="1"
+            :value="classroom.preClassLeadMinutes ?? 5"
+            @change="
+              saveClassroom({
+                preClassLeadMinutes: Math.min(
+                  30,
+                  Math.max(1, Math.round(Number(($event.target as HTMLInputElement).value) || 5)),
+                ),
+              })
+            "
+          />
+        </SettingField>
+
+        <SettingField
+          data-field="modes.classroom.preClassOpenFolder"
+          label="自动打开科目文件夹"
+          hint="课前提醒时同时打开对应科目文件夹；关闭后只发提醒"
+        >
+          <input
+            type="checkbox"
+            :checked="classroom.preClassOpenFolder"
+            @change="
+              saveClassroom({ preClassOpenFolder: ($event.target as HTMLInputElement).checked })
+            "
+          />
+        </SettingField>
+      </template>
+      <p v-else class="section-desc" data-empty="modes.classroom.preClassReminder">
+        {{ preClassEmptyText }}
+      </p>
+    </section>
+
+    <section class="section-card" data-field="notifications.quiet">
+      <h2 class="section-title">勿扰时段</h2>
+      <p class="section-desc">
+        只拦主动打扰（课前提醒、敏感工具确认），两端都填才生效；与「通用」页是同一份设置。
+      </p>
+
+      <SettingField
+        data-field="advanced.quietHours.start"
+        label="勿扰时段开始"
+        hint="格式 HH:mm；留空表示不启用"
+      >
+        <input
+          class="input"
+          type="text"
+          spellcheck="false"
+          placeholder="22:30"
+          :value="quietStart"
+          @change="saveQuiet('start', ($event.target as HTMLInputElement).value)"
+        />
+      </SettingField>
+
+      <SettingField data-field="advanced.quietHours.end" label="勿扰时段结束">
+        <input
+          class="input"
+          type="text"
+          spellcheck="false"
+          placeholder="07:00"
+          :value="quietEnd"
+          @change="saveQuiet('end', ($event.target as HTMLInputElement).value)"
+        />
       </SettingField>
     </section>
 
