@@ -6,6 +6,7 @@
  * 用法：
  *   node scripts/verify-update.mjs            # 校验已存在的 release 产物
  *   node scripts/verify-update.mjs --keep     # 校验后保留临时校验文件
+ *   node scripts/verify-update.mjs --unpacked <目录>  # 解包目录不在 release/win-unpacked 时指定
  *
  * 覆盖点：
  * 1. NSIS 安装包存在且体积合理（> 30MB，排除空包）；
@@ -117,7 +118,10 @@ const blockmapPath = join(releaseDir, `${installerName}.blockmap`)
 record('差分更新 blockmap 存在', await exists(blockmapPath), `${installerName}.blockmap`)
 
 // ── 4. 解包目录 ──
-const unpacked = join(releaseDir, 'win-unpacked')
+const unpackedFlag = process.argv.indexOf('--unpacked')
+const unpackedArg = unpackedFlag === -1 ? undefined : process.argv[unpackedFlag + 1]
+const unpacked =
+  unpackedArg === undefined ? join(releaseDir, 'win-unpacked') : resolve(root, unpackedArg)
 record('win-unpacked 存在', await exists(unpacked), 'win-unpacked')
 record('asar 已打包', await exists(join(unpacked, 'resources', 'app.asar')), 'resources/app.asar')
 

@@ -34,6 +34,11 @@ pnpm release -- --publish --push   # 顺便把 tag 推到 origin
 `scripts/release.mjs` 的预检：工作区必须干净（否则用 `--force` 显式承担"把未提交改动打进包"的风险）；
 产物校验通过才会打 tag。
 
+> 默认输出目录被占用（例如 IDE 索引锁住 `win-unpacked/resources/app.asar`）时，可把
+> electron-builder 输出改到子目录（`--config.directories.output=release/alt-xxx`），把三个资产
+> 复制回 `apps/desktop/release/`，再用 `release.mjs ... --unpacked release/alt-xxx/win-unpacked`
+> 让产物校验检查真实的解包目录。
+
 **发布完成条件（硬规则）**：每次上传安装包时，必须把同一版本的 `Aurora-Setup-<版本>.exe`、
 `Aurora-Setup-<版本>.exe.blockmap` 与 `latest.yml` 同时发布到 GitHub Releases 和 Aurora Center。
 只上传 GitHub、或只更新 Center 网页包但未同步 release 资产，都不算发布完成；Center 上传失败时，

@@ -13,6 +13,7 @@
  *   node scripts/release.mjs --publish --push # 再把 tag 推到 origin
  *   node scripts/release.mjs --skip-package  # 只校验已有产物 + 打 tag
  *   --notes-file docs/release-notes/v<版本>.md # 必传：完整版本差异与 Release Notes
+ *   --unpacked <目录> # 打包输出不在 release/win-unpacked 时，指定实际解包目录供校验
  *
  * 环境变量：
  *   GH_TOKEN  —— `--publish` 时 gh CLI 需要（repo 权限即可）
@@ -35,6 +36,11 @@ const shouldPublish = args.has('--publish')
 const shouldPublishCenter = args.has('--publish-center')
 const shouldPush = args.has('--push')
 const skipPackage = args.has('--skip-package')
+
+/** 默认输出被占用（如 IDE 索引锁住 win-unpacked）时可指定另一份解包目录 */
+const unpackedFlag = process.argv.indexOf('--unpacked')
+const unpackedArg = unpackedFlag === -1 ? undefined : process.argv[unpackedFlag + 1]
+const unpackedDir = unpackedArg === undefined ? undefined : resolve(root, unpackedArg)
 
 /**
  * 详细 Release Notes（硬规则：每个版本必须在 docs/release-notes/ 存档一份，
@@ -151,7 +157,10 @@ if (!skipPackage) {
 }
 
 // ── 3. 校验产物（离线可跑） ──
-run('node', ['scripts/verify-update.mjs'])
+run('node', [
+  'scripts/verify-update.mjs',
+  ...(unpackedDir === undefined ? [] : ['--unpacked', unpackedDir]),
+])
 
 if (!(await exists(join(releaseDir, `Aurora-Setup-${version}.exe`)))) {
   console.error(`产物缺失：Aurora-Setup-${version}.exe`)
