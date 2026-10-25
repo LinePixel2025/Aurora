@@ -2,10 +2,9 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「屏幕右缘提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前发布：**v0.5.3**（页面型小组件 RPC 修复、页面动作 `message` / `error` 回传，
-> 并新增桌面小组件 `hideCloseButton` 清单字段；配置 Schema 仍为 v36），
+> 当前发布：**v0.5.8**（Center 页面型插件面板参数修复 + 页面断流；配置 Schema 仍为 v38），
 > 详见 [`docs/README.md`](./docs/README.md)「当前实现状态」
-> 与 [release-notes/v0.5.3.md](./docs/release-notes/v0.5.3.md)。
+> 与 [release-notes/v0.5.8.md](./docs/release-notes/v0.5.8.md)。
 > 桌面客户端为 Electron 44.5.1（Chromium 152 / Node 24.18.1），恢复 Windows 原生最大化并保持 Acrylic；
 > 提示条用 `setShape()` 适配透明窗口平台最小宽度；剪贴板与 `console-message` 完成 Electron 44 API 迁移。
 > 历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。
@@ -35,7 +34,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 | `pnpm dev` | 启动 Electron（主进程 / preload / 渲染层 HMR） |
 | `pnpm build` | 构建三个包 + Electron 产物（`apps/desktop/out`） |
 | `pnpm typecheck` | 全仓类型检查（含 `vue-tsc`） |
-| `pnpm test` | vitest 单测（shared / agent-core / modes / 主进程纯逻辑），2834 项 |
+| `pnpm test` | vitest 单测（shared / agent-core / modes / 主进程纯逻辑），2928 项 |
 | `pnpm verify` | 真实磁盘的配置层验收脚本（需先 `pnpm build`），26 项断言 |
 | `pnpm lint` / `pnpm format` | ESLint / Prettier |
 | `pnpm icons` | 由 `scripts/assets/aurora-icon.png` 重新生成托盘 / 应用图标（含 `.ico`） |
@@ -43,7 +42,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 ### 端到端自测（真实 Electron + preload + IPC）
 
 ```powershell
-$env:AURORA_SMOKE='1'; pnpm dev   # 启动后自动跑 243 项链路断言，结果见日志并自动退出
+$env:AURORA_SMOKE='1'; pnpm dev   # 启动后自动跑 263 项链路断言，结果见日志并自动退出
 Get-Content "$env:TEMP\aurora-smoke-logs\aurora-*.log" | Select-String 'AURORA_SMOKE_RESULT'
 ```
 
@@ -71,7 +70,7 @@ scripts/                图标生成等构建脚本
 docs/                   项目文档（SSOT）
 ```
 
-## 已实现（截至 v0.6.0）
+## 已实现（累计摘要，最新进度见 docs/README.md）
 
 - **P0**：pnpm workspace monorepo、TS strict、ESLint/Prettier、vitest、GitHub Actions（Windows）。
 - **P1 基础壳与设置**
@@ -99,7 +98,7 @@ docs/                   项目文档（SSOT）
   - 设置页 MCP 状态灯接入 `mcp:status` / `mcp:statusChanged`；新增「懒连接」开关
 - 系统感知（时间 / 电源 / 网络，缺失项降级为 unknown）已注入真实系统提示词
 
-## v0.6.0 新增
+## ClassIsland 联动与接线修复（历史版本）
 
 - **ClassIsland 联动**（原 P7 项提前落地）：`schedule.provider = classisland` 从占位改为真实实现 ——
   读桥接插件写出的本地 JSON 或本机回环端点，感知摘要 / 课前提醒 / `timetable` Skill 三条消费链

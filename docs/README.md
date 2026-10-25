@@ -770,6 +770,12 @@ Center 网页端移动端对话区保底 60% 高度（面板收进分段切换�
 | 14 | [14-plugin-system.md](./14-plugin-system.md) | 插件系统：清单、权限、进程 / RPC、面板与页面、主题、市场与安全模型 | 扩展契约 |
 | 15 | [15-plugin-development-guide.md](./15-plugin-development-guide.md) | 插件开发指南：快速开始、API 参考、面板 / 页面、打包校验与 Agent 提示词模板 | 开发者文档 |
 
+### 补充材料（非 SSOT 编号）
+
+| 文档 | 内容 |
+|---|---|
+| [cloudflare-tunnel-bypass-icp.md](./cloudflare-tunnel-bypass-icp.md) | 大陆服务器 + Cloudflare DNS 免 ICP 拦截的实测方法论（合规灰区，属运维参考，不是产品设计） |
+
 ## 阅读顺序建议
 
 1. **了解项目是什么** → 01 项目总览
