@@ -7,7 +7,15 @@
 
 ## 当前实现状态
 
-**当前发布 v0.5.6：流光提醒通道 + 提醒设置页**（配置 Schema 从 **v36 升到 v38**）——
+**当前发布 v0.5.7：Center 插件侧栏面板镜像 + 提醒页聚合 + 插件用量统计**（配置 Schema 仍为
+**v38**，无迁移）——桌面已启用插件的侧栏面板会按账号自动出现在 Aurora Center 工作台侧栏，
+声明式面板可直接操作、页面型面板在沙箱 iframe 中经市场包资源加载，只镜像面板（小组件不上
+Center）且只允许设备属主访问；「提醒」页新增「定时提醒」与「勿扰时段」两个聚合区组；插件新增
+`ctx.usage` 本机用量统计（Token / 缓存命中 / 生图 / 语音，只存计数）。Aurora Center 服务器
+同步升级到 **0.5.1**（版本线独立）。完整更新点与验收结果见
+[release-notes/v0.5.7.md](./release-notes/v0.5.7.md)。
+
+**上一发布 v0.5.6：流光提醒通道 + 提醒设置页**（配置 Schema 从 **v36 升到 v38**）——
 新增一条独立于系统通知与 ClassIsland 的提醒通道：屏幕顶端光谱流光 + 置顶卡片，支持提示音 /
 语音朗读 / 可调大小与停留时长，来源包括 Agent 工具 `notify_banner`、插件 `ctx.banner` 与
 `ask_user` 提问时的旁路播报；设置侧栏「基础」组新增「提醒」页，可选默认提醒方式
@@ -15,7 +23,7 @@
 同时修好卡片入场 / 退场动效（原先元素挂载即终态，浏览器不播 transition）。
 完整更新点与验收结果见 [release-notes/v0.5.6.md](./release-notes/v0.5.6.md)。
 
-**上一发布 v0.5.5：插件独立界面启动修复、默认模型优先级与插件配置窗口**（配置 Schema 为
+**更早发布 v0.5.5：插件独立界面启动修复、默认模型优先级与插件配置窗口**（配置 Schema 为
 **v36**，无新增迁移）——页面型桌面小组件不再因窗口早于 IPC 注册创建而永久空窗
 （新增有界重试与全量 `plugins:changed` 广播，插件重启后已打开界面自动重载）；
 `llm.active` 恢复为全局默认唯一事实来源，Center 官方语言模型不再抢占用户在本机选的默认模型，
@@ -82,7 +90,8 @@ token 只统计不限制，迁移整体丢弃旧值）；
 端到端冒烟 **206/206**；窗口截图按窗口拆三轮覆盖全量 96 条 checks（非 onboarding 87 条、仅范围外
 `chat-model-picker` 恒红；onboarding 6 条全绿；memory / awareness-glow 3 条全绿）——**全量单轮在本机会卡在
 onboarding 截图**（窗口被完成流程隐藏后 `capturePage()` 不返回，已知 Electron 坑）。
-Center `verify:web` **102/102**（51 场景 × 暗/浅两档；v36 新增 `marketplace` / `marketplace-public` / `plugins-admin`）。
+Center `verify:web` **106/106**（54 个场景定义 → 106 条断言；含 `marketplace` / `marketplace-public` /
+`plugins-admin` / `plugin-panel` / `plugin-page`）。
 更早发布 **v0.4.8（Center 官方模型客户端选模真正生效、四周流光改强调色单色），
 配置 Schema v33（无迁移），桌面端发布 v0.4.8 安装包；Aurora Center 本版无代码改动，线上沿用 0.4.7** ——
 （以下为该版本发布时的记录，验收数字不随 HEAD 回写）
