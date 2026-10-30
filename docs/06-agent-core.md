@@ -575,7 +575,7 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
 >   尚未接好时意外变成"必然被拒"。
 > - 主进程侧由 `ProactiveScheduler` 承载（见 §9），60s 超时、勿扰时段一律按拒绝；
 >   设置项 `advanced.confirmSensitiveTools` 可整体关闭，且**每次调用即时判断**（改设置无需重启）。
-> - v0.7.0 起内核另有内置工具 `set_setting`（AI 修改自身配置，见 §12），
+> - P6++ 起内核另有内置工具 `set_setting`（AI 修改自身配置，见 §12），
 >   同样标记 `sensitivity = 'confirm'` —— 因此**每一次改配置都会弹确认卡片**，
 >   走的正是上面这条链路。
 
@@ -736,7 +736,7 @@ interface AgentHostDeps {
 - `systeminformation`（电源 / 网卡）与整个感知采集**在第一次 `summary()` 消费时才激活**：
   提示条收起、没有聊天、没开设置页的纯空闲进程不加载它、也不起 30s DNS 探测；
   首次激活并行采电源 + 网络，DNS 超时收紧到 800ms（2026-10-04 性能轮）。
-- ClassIsland 联动（`provider: 'classisland'`，v0.6.0 落地；v3 见 05 §3.4）：
+- ClassIsland 联动（`provider: 'classisland'`，P6+ 里程碑落地；v3 见 05 §3.4）：
   读桥接插件写出的本地 JSON 或本机回环端点，**读取失败一律降级为空课表、不抛错不阻塞**。
   未配置端点时仍走空实现——语义从「功能未实现」变为「已配置但尚未接线」。
   桥接 v2 起同一份 payload 内嵌**课堂状态快照**（`onClass` / `currentSubject` /
@@ -820,15 +820,15 @@ interface AgentHostDeps {
 
 - **凭据**：API key / MCP env 用 safeStorage 加密落盘；日志与导出配置一律脱敏。
 - **文件操作**：ClassRoom 分类管线只在「感知文件夹」内移动文件；Skill 只注入指令文本、永不执行
-  `scripts/`。**v0.7.0 起的电脑操控工具是另一回事**：`read_file` / `write_file` / `edit_file` /
+  `scripts/`。**P6++ 起的电脑操控工具是另一回事**：`read_file` / `write_file` / `edit_file` /
   `list_dir` / `grep` / `glob`
   **不受感知文件夹限制**（`workspaceDir` 不是沙箱），边界见 §11.1。
 - **网络**：LLM / MCP 支持系统代理（设置项 `advanced.proxy`）。
 - **执行**：命令 / 文件操作前经工具权限分级校验，敏感级需确认。
 
-## 11. 电脑操控工具（v0.7.0）
+## 11. 电脑操控工具（P6++）
 
-v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电脑操控工具，把命令执行与文件读写
+P6++ 起 Agent 从「只会说话」变为「能在本机动手」：新增电脑操控工具，把命令执行与文件读写
 接进 §5 的工具循环。工具定义（名称 / 参数 Schema / 敏感级）留在 `packages/agent-core`，
 真正的系统调用落在主进程并**经构造参数注入**，内核仍不依赖 Electron / DOM（见 §2 分层）。
 2026-09 新增 `edit_file`（精确替换，§11.6）与 `grep` / `glob`（内容与文件名检索，§11.5）。
@@ -1069,7 +1069,7 @@ DOCX / XLSX / PPTX 的读取、创建、元素级编辑、校验与渲染默认�
   （`set_setting` 只认配置路径，SessionMeta 不是配置；且改档位 = 自我提权）。
   全局 `agent.permissionMode` 仍只能由用户在设置页调（`SETTINGS_READONLY_PREFIXES` 口径不变）。
 
-### 11.3 非目标（v0.7.0 明确不做）
+### 11.3 非目标（P6++ 明确不做）
 
 - **鼠标 / 键盘模拟**：不做 `SendInput` / UI 自动化，Agent 不得代替用户点击、输入界面。
 - **录屏**：不做屏幕录制。**截屏不是非目标**：`screenshot` 工具（§25）按需截取当前屏幕像素并交给
@@ -1322,9 +1322,9 @@ DOCX / XLSX / PPTX 的读取、创建、元素级编辑、校验与渲染默认�
   理由：**否则 AI 可以给自己加一条 `git*` 直接摘掉自己的确认闸门，属于自我提权**。
   它**只能由用户在设置页修改**（设置页走 `settings:update`，不经过只读黑名单）。
 
-## 12. AI 修改自身配置（`set_setting`，v0.7.0）
+## 12. AI 修改自身配置（`set_setting`，P6++）
 
-v0.7.0 起 Agent 能读写**自己的配置**：内核新增内置工具 `set_setting`，定义在
+P6++ 起 Agent 能读写**自己的配置**：内核新增内置工具 `set_setting`，定义在
 `packages/agent-core/src/tools/settings.ts`（纯 Node，只认注入的端口，见 §2 分层），
 真实读写落在主进程 `apps/desktop/src/main/tools/settings-port.ts`。
 它与 §11 的电脑操控工具是**两条独立注册路径**：既不属于 `COMPUTER_TOOL_NAMES`，
@@ -1494,9 +1494,9 @@ AI 彻底失能、连改回来的机会都没有」是一条必须堵死的路�
 - **单次 `set` 是全有或全无**：跨分组的多条改动聚合成**一个** patch 一次性交给 `applyPatch`，
   不存在「写一半」的中间态；但两次 `set` 调用之间当然不是事务。
 
-## 13. 语音输出（TTS，v0.8.0）
+## 13. 语音输出（TTS，P6+ 语音轮）
 
-v0.8.0 起助手回复可以「读出来」：把助手消息的纯文本交给**用户自己配置**的 TTS 服务合成音频，
+P6+ 语音轮 起助手回复可以「读出来」：把助手消息的纯文本交给**用户自己配置**的 TTS 服务合成音频，
 由渲染层播放。本节只约定**出网协议与边界**；字段与设置页见 docs/08 §1 / §6，
 交互窗的按钮与状态见 07 §2.3，联网范围见 11 §4。
 它与 §3 的 LLM 提供者是**同构但完全独立**的两套 provider：`tts.providers.<id>` **不复用**
@@ -1582,7 +1582,7 @@ Content-Type: application/json
 - **无可用 provider 就不发请求**：`tts.enabled = false`、`tts.active` 为空、或指向不存在的条目时，
   朗读按钮不渲染（07 §2.3），`tts.autoRead` 也一并静默跳过——不能退化成「每个 provider 都试一遍」。
 - **语音输入（STT）自 v0.0.1 起落地**，与 TTS 同构但独立（`stt.*` 配置组，见 §15）；
-  本节标题里的「不做 STT」仅对 v0.8.0 有效。
+  本节标题里的「不做 STT」仅对 P6+ 语音轮 有效。
 
 ### 13.6 DashScope 原生协议（type: dashscope）
 
@@ -1645,7 +1645,7 @@ Content-Type: application/json
 
 ## 14. 扩展工具八件套（v0.0.1；`show_preview` / `show_image` / `notify_banner` 后续补入）
 
-v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/betav2-spec.md §6.2），
+v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具，
 2026-10-03 起加 `show_preview`（把成果展示到桌面右栏的预览面板，见 07 §2.3 的
 「Agent 展示」——渲染层收到推送后把目标投给**浏览器标签**：已有就复用、没有才新建，
 2026-10-03 二次修订）；2026-10-04 加 `show_image`（把本地图片加入**对话图片区**，
@@ -2742,7 +2742,7 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 
   - **`v35` 迁移**：`v34 → v35` 只为**已存在的 `agent`** 补 `browser`（以默认值为底、已有对象在上），
     用户已写的开关 / 上限原样保留；`agent` 整组缺失时交给默认配置兜底，**不凭空造半截对象**
-    （与 `v14 → v15` 同一套路）。迁移条数与 08 §2 的 `CONFIG_VERSION = 35` 同步。
+    （与 `v14 → v15` 同一套路）。迁移条数与当时 08 §2 的 `CONFIG_VERSION = 35` 同步（当前 38）。
 
 - **已知边界**：
   - **不接管弹窗**：页面自己 `target="_blank"` / `window.open` 打开的目标仍走普通用户标签

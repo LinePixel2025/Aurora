@@ -1,7 +1,7 @@
 # 15 · 插件开发指南
 
 > 面向**插件作者**与**其他编码 Agent**：从零写一个能装进 Aurora 的插件包。
-> 契约与安全模型见 [14-plugin-system.md](./14-plugin-system.md)；本指南只讲怎么做。
+> 契约与安全模型见 [01-contract.md](./01-contract.md)；本指南只讲怎么做。
 
 ## 1. 快速开始
 
@@ -422,7 +422,7 @@ await ctx.ui.panelEvent({ widgetId: 'duty-week', event: 'count-changed', payload
     "tokens": { "--bg-base": "#141210", "--text-primary": "#f5f0e8" } }] } }
 ```
 
-可用令牌见 [14 §7](./14-plugin-system.md)；**不能**覆盖强调色与毛玻璃。
+可用令牌见 [01-contract.md §7](./01-contract.md)；**不能**覆盖强调色与毛玻璃。
 用户在设置 → 插件 → 插件主题里选择；插件停用 / 卸载时令牌自动清理。
 
 ---

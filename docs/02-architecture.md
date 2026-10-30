@@ -19,8 +19,8 @@
 │                                 │  └ Proactive(主动引导)                    │ │
 │                                 └───────────────────────────────────────────┘ │
 │ Preload：contextBridge 白名单 API（window.aurora.*）                           │
-│ Renderer（Vue 3，每窗口一进程）：EdgeBar / Chat /                             │
-│          Settings / Onboarding                                                │
+│ Renderer（Vue 3，每窗口一进程）：EdgeBar / Chat / Settings /                    │
+│          Onboarding / Automation / Banner / Widget / Memory / PluginConfig 等   │
 └──────────┬────────────────────────┬────────────────────────┬──────────────────┘
            │                        │                        │
      LLM 服务(OpenAI 兼容)     MCP Servers(stdio/http)    系统(文件/电源/网络/前台窗口)
@@ -32,24 +32,29 @@
 
 - **主进程（Main）**：唯一入口。承载托盘、窗口管理、配置、文件监听、系统感知与 Agent 内核装配。v1 中 Agent 内核直接运行于主进程（异步 I/O，不阻塞事件循环）；**重任务**（文档内容提取、批量文件分析）走 `utilityProcess` 子进程隔离，避免卡顿。
 - **渲染进程（Renderer）**：每个窗口一个进程（Vue 3）。所有系统能力通过 preload 暴露的 `window.aurora.*` 调用，启用 `contextIsolation` 与 `sandbox`。
-- **单实例**：`app.requestSingleInstanceLock()`；二次启动时聚焦已有实例并唤起 AI 交互窗口。
+- **单实例**：`app.requestSingleInstanceLock()`；二次启动时聚焦已有实例并唤起主界面。
 
 ### 2.2 窗口清单
 
 | 窗口                 | 创建方        | 数量                    | 形态与来源                                                                                                                                              |
 | -------------------- | ------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 托盘 Tray            | 主进程        | 1                       | 系统托盘图标 + 菜单（打开对话 / 设置 / 切换模式 / 退出）                                                                                                |
-| 提示条 Edge Bar      | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停展开面板、点击呼出交互窗；始终置顶                                                                                                |
-| 主界面（chat）       | WindowManager | 1                       | 1280×800 常驻三栏大窗（2026-10-03 二次修订；BetaV2 起为 1120×720，居中显示）；唯一主对话窗口；标题栏右侧有 Windows 式「最小化 / 关闭」按钮，关闭 = 隐藏 |
+| 提示条 Edge Bar      | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停展开面板、点击呼出主界面；始终置顶                                                                                                |
+| 主界面（chat）       | WindowManager | 1                       | 1280×800 常驻三栏大窗（2026-10-03 二次修订）；唯一主对话窗口；标题栏右侧有 Windows 式「最小化 / 关闭」按钮，关闭 = 隐藏 |
 | 设置窗口             | WindowManager | 1                       | 单窗口分栏；无系统标题栏，侧栏顶部可拖动 + Windows 式「最小化 / 关闭」按钮（关闭 = 隐藏，Esc 等效）                                                     |
 | 记忆库窗口（memory） | WindowManager | 1                       | 文件自感知知识库的独立浏览器；左侧笔记列表 + 右侧 Markdown 预览，设置页只管配置与入口（关闭 = 隐藏）                                                    |
+| 自动化窗口（automation） | WindowManager | 1                   | 自动化列表 / 独立编辑器 / 历史详情；关闭 = 隐藏                                                                                                        |
 | 首次引导窗口         | WindowManager | 1                       | 向导式                                                                                                                                                  |
 | 插件配置窗口         | WindowManager | 1                       | 单例；插件配置 / 桌面小组件 / 权限 / 管理动作（`plugin-config`），关闭 = 隐藏                                                                          |
+| 流光提醒（banner-glow / banner-card） | WindowManager.showBanner | 各 1     | 两扇内部窗口：整屏穿透光带 + 可点卡片；统一走 `BannerService`，不进 `WINDOW_NAMES`、不写几何持久化                                                |
+| 桌面小组件（widget） | `main/plugins/widgets.ts` | ≤ 8        | 插件贡献的无边框透明窗口；默认置顶、`focusable:false`、不占任务栏；布局写 `plugin-widget-layout.json`（不进 settings）                                  |
 | 自感知流光浮层       | WindowManager | 1                       | 内部透明置顶浮层；仅在文件分析进行中、提示条可见且 `appearance.awarenessGlow` 未关闭时**覆盖目标显示器整块矩形**（v33 起四边流光，渲染层只在四条边画光带）。鼠标穿透、不可聚焦、不进 `WINDOW_NAMES` / 任务栏 / 窗口状态 |
 
 约定：**主界面、设置、记忆库、自动化详情窗口与插件配置窗口**显示任务栏图标（`skipTaskbar: false`）且可最小化 / 最大化（Windows 式标题栏按钮，2026-09 前端重构起）；提示条与引导窗口仍隐藏任务栏图标。所有窗口的「关闭」= 隐藏（仅托盘“退出”真正退出），托盘仍是统一管理入口。
 
-`awareness-glow` 是唯一的内部窗口例外：它只由主进程按自感知状态驱动，不暴露 `window:*` 操作，也不持久化几何。
+`awareness-glow`、`banner-glow` / `banner-card` 与桌面小组件是内部窗口例外：由主进程按
+自感知状态 / 提醒队列 / 插件贡献创建，不暴露 `window:*` 操作；三者都不进 `WINDOW_NAMES`，
+提醒窗口不持久化几何，桌面小组件的布局写在独立文件里。
 
 ## 3. 模块划分
 
@@ -129,7 +134,6 @@ aurora/
 │  └─ shared/                   # 类型、IPC 契约、配置 Schema、Center 协议
 ├─ skills/                      # 内置 Skill（SKILL.md 包）
 ├─ scripts/                     # 构建 / 发布脚本
-├─ Aurora.md                    # 需求原始记录
 ├─ package.json                 # workspace 根
 └─ pnpm-workspace.yaml
 ```

@@ -35,6 +35,5 @@ Center 版本号被客户端锁死、不能单独推进（镜像 tag、CLI `vers
 - 「发布 tag / 发布双投」（AGENTS.md、docs/09 §7/§10）明确**只约束桌面安装包**；
   往 Center 更新源传**安装包**（`--publish-center` / `aurora-center releases publish`）
   仍必须与 GitHub Release 双投 —— 那是桌面发布链路的一部分，与本口径不冲突。
-- 历史记忆（如 [2026-10-06-center-official-models-and-updates.md](2026-10-06-center-official-models-and-updates.md)
-  「双投硬规则」）按此理解：主语是桌面安装包。SSOT 落点：docs/12 §9、docs/09 §7/§10、
+- 历史记忆中的「双投硬规则」按此理解：主语是桌面安装包。SSOT 落点：docs/12 §9、docs/09 §7/§10、
   `packages/center/deploy/README.md` §0、AGENTS.md「编码与安全约定」。
