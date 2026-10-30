@@ -75,6 +75,7 @@ function parseEntry(value: unknown): PluginWidgetLayoutEntry | undefined {
   }
   const override = (value as { windowLevelOverride?: unknown }).windowLevelOverride
   if (isWidgetWindowLevel(override)) entry.windowLevelOverride = override
+  if ((value as { locked?: unknown }).locked === true) entry.locked = true
   return entry
 }
 

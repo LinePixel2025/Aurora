@@ -33,6 +33,8 @@ export {
   Minus,
   Square,
   X,
+  // 桌面小组件标题栏的「固定」（锁定位置与尺寸，2026-10-30）
+  Pin,
   ChevronRight,
   ChevronDown,
   ArrowUp,

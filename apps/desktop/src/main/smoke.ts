@@ -813,6 +813,45 @@ export function smokeScript(
           diagReset?.alwaysOnTop === true,
         JSON.stringify({ resetLevel, layoutReset, diagReset }).slice(0, 400),
       )
+      // 不可激活 + 固定（2026-10-30）：点击小组件不得把 Aurora 切成前台应用；
+      // 固定只锁用户拖动 / 缩放，状态写布局文件的 locked。
+      record(
+        '桌面小组件窗口不可激活（点击不抢前台）',
+        diagReset?.focusable === false,
+        JSON.stringify(diagReset).slice(0, 300),
+      )
+      const lockWidget = await window.aurora.plugins.setWidgetLocked({
+        pluginId: PLUGIN_ID,
+        widgetId: 'duty-week',
+        locked: true,
+      })
+      await wait(350)
+      const layoutLocked = await window.aurora.plugins.widgetLayout()
+      const diagLocked = await readWidgetDiagnostics()
+      record(
+        '固定小组件写入布局并关闭拖动 / 缩放',
+        lockWidget?.ok === true &&
+          layoutLocked?.ok === true &&
+          layoutLocked.value.widgets[PLUGIN_ID + '/duty-week']?.locked === true &&
+          diagLocked?.resizable === false,
+        JSON.stringify({ lockWidget, layoutLocked, diagLocked }).slice(0, 400),
+      )
+      const unlockWidget = await window.aurora.plugins.setWidgetLocked({
+        pluginId: PLUGIN_ID,
+        widgetId: 'duty-week',
+        locked: false,
+      })
+      await wait(350)
+      const layoutUnlocked = await window.aurora.plugins.widgetLayout()
+      const diagUnlocked = await readWidgetDiagnostics()
+      record(
+        '取消固定后恢复拖动 / 缩放且布局不再带 locked',
+        unlockWidget?.ok === true &&
+          layoutUnlocked?.ok === true &&
+          layoutUnlocked.value.widgets[PLUGIN_ID + '/duty-week']?.locked === undefined &&
+          diagUnlocked?.resizable === true,
+        JSON.stringify({ unlockWidget, layoutUnlocked, diagUnlocked }).slice(0, 400),
+      )
 
       // 面板事件推送（docs/14 §5.5）：打开声明式面板 → 插件主动推送 → DOM 不点刷新即更新
       const pushFlow = await (async () => {

@@ -3348,18 +3348,37 @@ export const CHAT_PLUGIN_PANEL_PUSH_CHECK = `(() => {
   }
 })()`
 
-/** 桌面小组件（docs/14 §5.3）：独立窗口里的浮动卡片。 */
-export const WIDGET_DESKTOP_PLUGIN_CHECK = `(() => {
+/** 桌面小组件（docs/14 §5.3）：独立窗口里的浮动卡片；固定按钮要真的能切布局状态。 */
+export const WIDGET_DESKTOP_PLUGIN_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const card = document.querySelector('.widget-card')
   const text = card === null ? '' : card.innerText
+  const pin = card === null ? null : card.querySelector('[data-field="widget.pin"]')
+  const pinnedBefore = pin !== null && pin.getAttribute('aria-pressed') === 'true'
+  const key = card === null ? '' : (card.dataset.pluginId ?? '') + '/' + (card.dataset.widgetId ?? '')
+  if (pin !== null) pin.click()
+  await wait(300)
+  const lockedAfterClick = pin !== null && pin.getAttribute('aria-pressed') === 'true'
+  const layout = await window.aurora.plugins.widgetLayout()
+  const layoutLocked = layout?.ok === true && layout.value.widgets[key]?.locked === true
+  // 切回未固定，夹具保持默认状态，不给后续场景留副作用
+  if (pin !== null) pin.click()
+  await wait(300)
+  const unlockedAgain = pin !== null && pin.getAttribute('aria-pressed') === 'false'
   return {
     pass:
       card !== null &&
       text.includes('本周值日') &&
       text.includes('完成一项') &&
-      (card.dataset.widgetId ?? '') === 'duty-week',
+      (card.dataset.widgetId ?? '') === 'duty-week' &&
+      pin !== null &&
+      pinnedBefore === false &&
+      lockedAfterClick &&
+      layoutLocked &&
+      unlockedAgain,
     widgetId: card === null ? '' : card.dataset.widgetId ?? '',
     material: card === null ? '' : card.dataset.material ?? '',
+    pin: pin === null ? 'missing' : lockedAfterClick && unlockedAgain ? 'toggles' : 'stuck',
     detail: text.slice(0, 160),
   }
 })()`

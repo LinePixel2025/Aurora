@@ -315,16 +315,19 @@ window.auroraPlugin = {
 - 声明式 widget 复用 `PluginSchemaRenderer`；页面型复用 `aurora-plugin://` + 专用 preload
   （与 §5.2 完全同一套沙箱口径；widget 窗口只为它开启 `webviewTag`）。
 - 布局写 `<userData>/plugin-widget-layout.json`（**不进 settings、不升 `CONFIG_VERSION`**，
-  文件版本仍为 `1`；`windowLevelOverride` 是可选扩展字段）：
+  文件版本仍为 `1`；`windowLevelOverride` / `locked` 是可选扩展字段）：
 
 ```ts
 { "version": 1, "widgets": { "<pluginId>/<widgetId>": {
   "visible": boolean, "x": number, "y": number, "width": number, "height": number,
-  "windowLevelOverride"?: "floating" | "normal" | "desktop"
+  "windowLevelOverride"?: "floating" | "normal" | "desktop",
+  "locked"?: boolean
 } } }
 ```
 
 - `windowLevelOverride` 记录用户在设置页选的层级，缺省 = 跟随清单；读取时丢弃非法值。
+- `locked` 记录用户点标题栏「固定」后的锁定状态（锁拖动 / 缩放），缺省 = 未固定。
+- 桌面小组件窗口不可激活：点击卡片 / 卡内按钮不抢前台焦点，卡内文本输入拿不到键盘焦点。
 - 新 widget 默认可见，位置从工作区右上角级联；用户拖动 / 缩放 / 改层级后 250ms 防抖原子写。
 - 设置 → 插件详情里每个桌面 widget 一枚「显示在桌面」开关 + 一枚层级下拉
   （跟随插件 / 置顶 / 普通 / 桌面层）；关闭开关即销毁窗口、保留布局条目。
@@ -452,7 +455,7 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 <userData>/plugins/registry.json              安装 / 启用 / 信任状态（原子写）
 <userData>/plugin-data/<id>/config.json       插件配置（非密文）
 <userData>/plugin-data/<id>/storage.json      插件键值存储（5 MB 配额）
-<userData>/plugin-widget-layout.json         桌面小组件位置 / 尺寸 / 显隐 / 层级覆盖（独立于 settings）
+<userData>/plugin-widget-layout.json         桌面小组件位置 / 尺寸 / 显隐 / 层级覆盖 / 固定（独立于 settings）
 <userData>/usage-stats.json                  本机用量账本（按日计数，保留 90 天；插件只读汇总）
 <userData>/logs/plugins/<id>.log
 ```

@@ -2,7 +2,10 @@
  * 桌面小组件窗口（docs/14 §5.3）。
  *
  * 每个可见的桌面小组件一张**无边框、透明、置顶、不占任务栏**的浮动卡片；
- * 位置 / 尺寸 / 显隐写在 `<userData>/plugin-widget-layout.json`，**不进 settings**。
+ * 位置 / 尺寸 / 显隐 / 固定写在 `<userData>/plugin-widget-layout.json`，**不进 settings**。
+ *
+ * 窗口**不可激活**（`focusable: false`）：点卡片 / 点按钮不会把 Aurora 切成前台应用，
+ * 当前工作应用的焦点保持不变（代价是小组件内的文本输入拿不到键盘焦点，2026-10-30 实测口径）。
  *
  * 本文件是**唯一**为小组件创建窗口、import electron 的访问层：
  * `PluginManager` 只给出声明式贡献，装配层（`main/index.ts`）负责把两者接起来。
@@ -240,6 +243,28 @@ export class WidgetManager {
   }
 
   /**
+   * 固定 / 取消固定桌面小组件（2026-10-30）：只锁用户拖动与缩放，不动位置、层级与页面状态。
+   *
+   * 状态写布局文件的可选 `locked`（缺省 = 未固定）；隐藏中的 widget 只落盘，
+   * 下次创建窗口时生效。渲染层的标题栏拖拽区与这里的 `setMovable` / `setResizable`
+   * 是同一件事的两道闸：窗口移动走系统非客户区，必须主进程真的关掉。
+   */
+  async setLocked(pluginId: string, widgetId: string, locked: boolean): Promise<boolean> {
+    const info = this.options
+      .contributions()
+      .find((item) => item.pluginId === pluginId && item.id === widgetId && item.slot === 'desktop')
+    if (info === undefined) return false
+    const key = this.keyOf(pluginId, widgetId)
+    const entry = this.ensureEntry(key, info)
+    if (locked) entry.locked = true
+    else delete entry.locked
+    this.schedulePersist()
+    const record = this.records.get(key)
+    if (record !== undefined) this.applyLocked(record, locked)
+    return true
+  }
+
+  /**
    * 外观毛玻璃总开关即时生效（v37）：只动已创建窗口的**原生材质**；
    * 页面内的 `data-glass` 由现有的 `settings:changed` 广播负责，两侧同一份配置驱动。
    */
@@ -261,6 +286,8 @@ export class WidgetManager {
         windowLevel: record.info.windowLevel,
         effectiveWindowLevel: record.windowLevel,
         alwaysOnTop: record.win.isAlwaysOnTop(),
+        focusable: record.win.isFocusable(),
+        resizable: record.win.isResizable(),
         desktopOwner: record.desktopOwner,
         desktopGuardFailed: record.desktopGuardFailed,
         windowMaterial: record.info.windowMaterial,
@@ -368,6 +395,9 @@ export class WidgetManager {
       // floating = 0.5.1 的置顶卡片；normal / desktop 都按普通 z-order 参与层叠
       alwaysOnTop: level === 'floating',
       skipTaskbar: true,
+      // 点击 / 拖动都不抢前台（WS_EX_NOACTIVATE）：桌面小组件是常驻陪衬，
+      // 不能因为点一下就把用户正在用的应用顶掉焦点（2026-10-30 实测：鼠标事件照常送达页面）。
+      focusable: false,
       resizable: true,
       maximizable: false,
       minimizable: false,
@@ -398,6 +428,7 @@ export class WidgetManager {
       restoreAttempts: [],
     }
     this.records.set(key, record)
+    this.applyLocked(record, entry.locked === true)
     this.wireWebview(info, win)
     this.wireWindowEvents(key, record)
     const materialActive = this.applyInitialMaterial(record)
@@ -496,6 +527,21 @@ export class WidgetManager {
           widgetId: record.info.id,
           level: details.level,
         })
+      })
+    }
+  }
+
+  /** 固定 = 关闭系统级拖动 / 缩放（幂等；固定中仍允许程序调整几何，如换显示器夹取）。 */
+  private applyLocked(record: WidgetRecord, locked: boolean): void {
+    if (record.win.isDestroyed()) return
+    try {
+      record.win.setMovable(!locked)
+      record.win.setResizable(!locked)
+    } catch (error) {
+      this.options.logger.debug('小组件固定状态应用失败', {
+        pluginId: record.info.pluginId,
+        widgetId: record.info.id,
+        error: String(error),
       })
     }
   }

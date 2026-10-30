@@ -146,6 +146,60 @@ describe('桌面小组件布局', () => {
     }
   })
 
+  it('locked 只认 true：旧文件 / 非布尔值读出来都没有该字段', () => {
+    const parsed = parseWidgetLayout({
+      version: 1,
+      widgets: {
+        'com.example.hello/locked': {
+          visible: true,
+          x: 1,
+          y: 2,
+          width: 300,
+          height: 200,
+          locked: true,
+        },
+        'com.example.hello/legacy': { visible: true, x: 3, y: 4, width: 300, height: 200 },
+        'com.example.hello/bad': {
+          visible: true,
+          x: 5,
+          y: 6,
+          width: 300,
+          height: 200,
+          locked: 'yes',
+        },
+      },
+    })
+    expect(parsed.widgets['com.example.hello/locked']?.locked).toBe(true)
+    expect(parsed.widgets['com.example.hello/legacy']?.locked).toBeUndefined()
+    expect(Object.hasOwn(parsed.widgets['com.example.hello/legacy'] ?? {}, 'locked')).toBe(false)
+    expect(parsed.widgets['com.example.hello/bad']?.locked).toBeUndefined()
+    // 可选扩展字段，布局版本仍是 1
+    expect(parsed.version).toBe(1)
+  })
+
+  it('固定状态写盘后能读回（读写往返不丢）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-widget-layout-'))
+    try {
+      await writeWidgetLayout(dir, {
+        version: 1,
+        widgets: {
+          'com.example.hello/duty-week': {
+            visible: true,
+            x: 1,
+            y: 2,
+            width: 300,
+            height: 200,
+            locked: true,
+          },
+        },
+      })
+      const loaded = await readWidgetLayout(dir)
+      expect(loaded.widgets['com.example.hello/duty-week']?.locked).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('effectiveWidgetWindowLevel 复用 widget-window 的解析器（覆盖优先，缺省跟随声明）', () => {
     expect(effectiveWidgetWindowLevel('floating', 'desktop')).toBe('desktop')
     expect(effectiveWidgetWindowLevel('desktop', 'normal')).toBe('normal')

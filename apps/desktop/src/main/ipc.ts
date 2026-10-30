@@ -115,6 +115,7 @@ import {
   type PluginRunCommandResult,
   type PluginSetWidgetVisibleRequest,
   type PluginSetWidgetWindowLevelRequest,
+  type PluginSetWidgetLockedRequest,
   type PluginSummary,
   type PluginUninstallRequest,
   type PluginUpdateInfo,
@@ -1370,6 +1371,15 @@ export function registerIpc(deps: DesktopDeps): () => void {
       return deps.widgets.setWindowLevel(pluginId, widgetId, level).then(ok, pluginError)
     },
   )
+  handle<boolean>(IPC.plugins.setWidgetLocked, (request: PluginSetWidgetLockedRequest) => {
+    if (deps.widgets === undefined) return pluginsMissing<boolean>()
+    const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
+    const widgetId = typeof request?.widgetId === 'string' ? request.widgetId : ''
+    if (pluginId === '' || widgetId === '') {
+      return err('E_INVALID_ARGUMENT', '缺少插件或小组件 id')
+    }
+    return deps.widgets.setLocked(pluginId, widgetId, request.locked === true).then(ok, pluginError)
+  })
   handle<unknown>(IPC.plugins.pageRpc, async (request: PluginPageRpcRequest) => {
     if (plugins === undefined) return pluginsMissing<unknown>()
     const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''

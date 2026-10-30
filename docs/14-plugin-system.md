@@ -305,6 +305,10 @@ window.auroraPlugin = {
 `frame:false` / `transparent:true` / `skipTaskbar:true`、最小 120×80；位置与尺寸夹取到当前显示器
 `workArea`，屏幕变化时重新夹取。窗口层级由清单 `windowLevel` 声明，用户可在设置页逐 widget 覆盖：
 
+- 窗口**不可激活**（`focusable: false`，2026-10-30）：点击卡片 / 卡片内按钮不会把 Aurora 切成
+  前台应用，当前工作应用的焦点保持不变；代价是小组件内的文本输入拿不到键盘焦点
+  （桌面场景优先「不打断」）。标题栏拖动与卡片内点击不受影响。
+
 - `"floating"`（默认）：置顶浮动卡片（`alwaysOnTop: true`），与旧版本行为一致；
 - `"normal"`：不置顶，按普通无边框窗口参与 z-order；
 - `"desktop"`：不置顶；宿主把窗口的 Win32 owner 指向桌面 shell 视图（`SHELLDLL_DefView`），
@@ -315,6 +319,10 @@ window.auroraPlugin = {
   裁剪；不满足条件或启用失败时保持不透明卡片。
 - 标题栏右上角的「×」由宿主绘制；清单 `hideCloseButton: true`（默认 `false`）可隐藏它，
   只对桌面小组件生效（提示条声明 `true` 会被拒绝）。
+- 标题栏另有一枚**固定按钮**（宿主绘制，不受清单控制）：点击固定 / 取消固定，只锁用户的
+  拖动与缩放（主进程 `setMovable` / `setResizable`），不动位置、层级与页面状态；
+  状态写布局条目的可选 `locked`（缺省 = 未固定），点击不抢前台（见上一条）。
+  默认未固定，即新 widget 创建后可以直接拖动 / 缩放。
 - 声明式 widget 复用 `PluginSchemaRenderer`；页面型复用 `aurora-plugin://` + 专用 preload
   （与 §5.2 完全同一套沙箱口径；widget 窗口只为它开启 `webviewTag`）。
 - 布局写 `<userData>/plugin-widget-layout.json`（**不进 settings、不升 `CONFIG_VERSION`**，
@@ -323,11 +331,13 @@ window.auroraPlugin = {
 ```ts
 { "version": 1, "widgets": { "<pluginId>/<widgetId>": {
   "visible": boolean, "x": number, "y": number, "width": number, "height": number,
-  "windowLevelOverride"?: "floating" | "normal" | "desktop"
+  "windowLevelOverride"?: "floating" | "normal" | "desktop",
+  "locked"?: boolean
 } } }
 ```
 
 - `windowLevelOverride` 记录用户在设置页选的层级，缺省 = 跟随清单；读取时丢弃非法值。
+- `locked` 记录用户点固定后的锁定状态，缺省 / 非 `true` 都按未固定处理。
 - 新 widget 默认可见，位置从工作区右上角级联；用户拖动 / 缩放 / 改层级后 250ms 防抖原子写。
 - 插件配置窗口（`plugin-config`）里每个桌面 widget 一枚「显示在桌面」开关 + 一枚层级下拉
   （跟随插件 / 置顶 / 普通 / 桌面层）；关闭开关即销毁窗口、保留布局条目。
@@ -485,7 +495,7 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 <userData>/plugins/registry.json              安装 / 启用 / 信任状态（原子写）
 <userData>/plugin-data/<id>/config.json       插件配置（非密文）
 <userData>/plugin-data/<id>/storage.json      插件键值存储（5 MB 配额）
-<userData>/plugin-widget-layout.json         桌面小组件位置 / 尺寸 / 显隐 / 层级覆盖（独立于 settings）
+<userData>/plugin-widget-layout.json         桌面小组件位置 / 尺寸 / 显隐 / 层级覆盖 / 固定（独立于 settings）
 <userData>/usage-stats.json                  本机用量账本（按日计数，保留 90 天；插件只读汇总）
 <userData>/logs/plugins/<id>.log
 ```
@@ -535,6 +545,8 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 市场不提供签名 / 发布者认证；
 - 桌面小组件默认置顶，可声明 `normal` / `desktop` 层级；`desktop` 的桌面亲和是尽力而为
   （失败回落 `normal`），不做壁纸层嵌入 / 桌面图标层 / 点击穿透；
+- 桌面小组件窗口**不可激活**（点击不抢前台），因此卡内文本输入拿不到键盘焦点；
+  「固定」只锁拖动 / 缩放，不改变层级；
 - `windowMaterial: "acrylic"` 只在 Windows 11 22H2+ 且外观毛玻璃开启时生效，否则保持不透明卡片；
 - 提示条小组件只支持声明式 schema（并拒绝 `windowLevel` / `windowMaterial` 非默认值）；
 - 插件工具不参与 `agent.tools.enabled` 门控（与扩展工具六件套同口径），只受插件总开关 /

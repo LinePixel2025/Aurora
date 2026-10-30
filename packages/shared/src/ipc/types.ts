@@ -93,6 +93,10 @@ export interface WidgetWindowDiagnostics {
   /** 用户覆盖优先后的实际层级 */
   effectiveWindowLevel: PluginWidgetWindowLevel
   alwaysOnTop: boolean
+  /** 点击是否会让小组件抢前台（固定为 false，2026-10-30） */
+  focusable: boolean
+  /** 用户固定后不允许拖动 / 缩放（`setMovable` / `setResizable` 的真实状态） */
+  resizable: boolean
   /** desktop 层是否成功挂到桌面 shell owner（Win32 最佳努力） */
   desktopOwner: boolean
   /** minimize 恢复守护是否已连续失败（true = 已按 normal 回落） */
@@ -2106,6 +2110,8 @@ export interface PluginWidgetLayoutEntry {
    * 布局文件仍是 version 1：该字段是可选的向后兼容扩展。
    */
   windowLevelOverride?: PluginWidgetWindowLevel
+  /** 用户点了小组件标题栏的「固定」：锁定位置与尺寸，缺省 = 可拖动 / 可缩放 */
+  locked?: boolean
 }
 
 export interface PluginWidgetLayout {
@@ -2292,6 +2298,13 @@ export interface PluginSetWidgetWindowLevelRequest {
   pluginId: string
   widgetId: string
   windowLevel: 'auto' | PluginWidgetWindowLevel
+}
+
+/** 固定（锁定位置 / 尺寸）：由小组件标题栏的固定按钮写入布局。 */
+export interface PluginSetWidgetLockedRequest {
+  pluginId: string
+  widgetId: string
+  locked: boolean
 }
 
 /** 主进程 → 小组件窗口：当前实际可用的原生材质（v37）。 */
@@ -2852,6 +2865,8 @@ export interface AuroraApi {
     setWidgetVisible(request: PluginSetWidgetVisibleRequest): Promise<Result<boolean>>
     /** 设置 / 清除某个桌面小组件的层级覆盖（写入布局文件并立即生效，v37） */
     setWidgetWindowLevel(request: PluginSetWidgetWindowLevelRequest): Promise<Result<boolean>>
+    /** 固定 / 取消固定某个桌面小组件（锁定位置与尺寸，写入布局文件并立即生效） */
+    setWidgetLocked(request: PluginSetWidgetLockedRequest): Promise<Result<boolean>>
     /** 宿主内部：小组件窗口实际可用的原生材质变化（on/off 成对，v37） */
     onWidgetMaterial(listener: (event: PluginWidgetMaterialEvent) => void): () => void
     /** 插件页面（webview）的 RPC 中继 */

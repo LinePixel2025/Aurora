@@ -18,7 +18,7 @@ import type {
   PluginUiNode,
   PluginWidgetInfo,
 } from '@aurora/shared'
-import { deepClone } from '@aurora/shared/browser'
+import { Pin, deepClone } from '@aurora/shared/browser'
 import AppToast from '../shared/components/AppToast.vue'
 import PluginPageFrame from '../plugins/PluginPageFrame.vue'
 import PluginSchemaRenderer from '../plugins/PluginSchemaRenderer.vue'
@@ -42,6 +42,9 @@ const values = ref<Record<string, unknown>>({})
 const loading = ref(false)
 const error = ref<string | null>(null)
 const toast = ref<string | null>(null)
+/** 固定（锁定位置 / 尺寸）：状态在布局文件里，窗口可拖动性由主进程同步。 */
+const locked = ref(false)
+const pinBusy = ref(false)
 
 let offWidgetEvent: (() => void) | null = null
 let offWidgetMaterial: (() => void) | null = null
@@ -158,6 +161,41 @@ async function hide(): Promise<void> {
   await window.aurora.plugins.setWidgetVisible({ pluginId, widgetId, visible: false })
 }
 
+/** 布局文件是固定状态的唯一来源（缺省 = 未固定）。 */
+async function loadLock(): Promise<void> {
+  // 固定按钮请求在途时不覆盖乐观状态（两者都是异步往返，先发后到会显示旧值）
+  if (pinBusy.value) return
+  try {
+    const result = await window.aurora.plugins.widgetLayout()
+    if (!result.ok) return
+    locked.value = result.value.widgets[`${pluginId}/${widgetId}`]?.locked === true
+  } catch {
+    // 启动期 handler 未注册时保持默认；`plugins:changed` 会再触发一次读取
+  }
+}
+
+async function toggleLock(): Promise<void> {
+  if (pinBusy.value) return
+  const next = !locked.value
+  pinBusy.value = true
+  try {
+    const result = await window.aurora.plugins.setWidgetLocked({
+      pluginId,
+      widgetId,
+      locked: next,
+    })
+    if (!result.ok) {
+      showToast(result.message)
+      return
+    }
+    locked.value = next
+  } catch {
+    showToast('固定状态保存失败')
+  } finally {
+    pinBusy.value = false
+  }
+}
+
 let initialized = false
 
 /**
@@ -175,6 +213,7 @@ async function refreshIfReady(): Promise<void> {
     return
   }
   retryCount = 0
+  void loadLock()
   if (!initialized) {
     initialized = true
     if (isPage.value) return
@@ -235,6 +274,19 @@ onBeforeUnmount(() => {
     <header class="widget-head">
       <span class="widget-title">{{ title }}</span>
       <span v-if="statusHint !== ''" class="widget-status">{{ statusHint }}</span>
+      <button
+        type="button"
+        class="widget-pin"
+        :class="{ 'is-locked': locked }"
+        :title="locked ? '取消固定' : '固定位置（锁定拖动与缩放）'"
+        :aria-label="locked ? '取消固定' : '固定位置'"
+        :aria-pressed="locked"
+        :disabled="pinBusy"
+        data-field="widget.pin"
+        @click="toggleLock"
+      >
+        <Pin :size="12" />
+      </button>
       <button
         v-if="!hideCloseButton"
         type="button"
@@ -338,6 +390,28 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   font-size: var(--text-xs);
   color: var(--warn-text, var(--text-muted));
+}
+
+.widget-pin {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  -webkit-app-region: no-drag;
+}
+
+.widget-pin:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+/* 固定中：图标点亮，提示「已锁定位置」 */
+.widget-pin.is-locked {
+  color: var(--accent-text);
 }
 
 .widget-hide {

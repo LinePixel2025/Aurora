@@ -306,6 +306,7 @@ const api: AuroraApi = {
     widgetLayout: () => invoke(IPC.plugins.widgetLayout),
     setWidgetVisible: (request) => invoke(IPC.plugins.setWidgetVisible, request),
     setWidgetWindowLevel: (request) => invoke(IPC.plugins.setWidgetWindowLevel, request),
+    setWidgetLocked: (request) => invoke(IPC.plugins.setWidgetLocked, request),
     onWidgetMaterial: (listener) => subscribe(IPC.plugins.widgetMaterial, listener),
     pageRpc: (request) => invoke(IPC.plugins.pageRpc, request),
     marketplaceList: (request) => invoke(IPC.plugins.marketplaceList, request),

@@ -405,6 +405,8 @@ const off = window.auroraPlugin.onEvent((event, payload) => console.log(event, p
 ```
 
 - `slot = "desktop"`：默认置顶浮动卡片，位置 / 尺寸 / 显隐由用户在设置页或拖动决定并持久化；
+  窗口**不可激活**（点击不抢前台，卡内文本输入拿不到键盘焦点），标题栏有宿主绘制的
+  「固定」按钮（锁拖动 / 缩放，默认未固定，状态写 `<userData>/plugin-widget-layout.json` 的 `locked`）；
 - `slot = "edge-bar"`：提示条展开面板底部的条目，**只允许声明式 schema**（不能 `entry`）。
 - schema 与面板同一套组件与限额；动作调用 `invokeWidget(widgetId, method, params, ctx)`；
 - 页面型桌面 widget 用 `entry`，内部仍走 `aurora-plugin://` + 专用 preload（无法在提示条使用）。

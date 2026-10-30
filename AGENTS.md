@@ -72,10 +72,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、263 条断言应当全绿（2026-10-25 实测 `SUMMARY 263/263 passed`；
+  **全量约 40 秒、266 条断言应当全绿（2026-10-30 实测 `SUMMARY 266/266 passed`；
   v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
   v36 插件系统 +24、小组件与推送 +4、v37 小组件层级 / 材质 +4、插件配置窗口 +1、
-  流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1 条断言）**——
+  流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1、小组件不可激活 / 固定 +3 条断言）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **提交前仍必须跑全量**。
@@ -216,9 +216,13 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **桌面小组件窗口只在 `main/plugins/widgets.ts` 创建**（唯一 import electron 的 widget 模块）：
   无边框 / 透明 / 不占任务栏，**默认置顶**；清单可声明 `windowLevel`（floating / normal / desktop）
   与 `windowMaterial`（none / acrylic，需 Win11 22H2+ 且外观毛玻璃开启）；`desktop` 只是
-  Win32 owner 亲和 + 最小化恢复守护（不是壁纸层嵌入，失败回落 normal）；位置、尺寸、显隐与可选
-  `windowLevelOverride` 写 `<userData>/plugin-widget-layout.json`，**不进 settings、不升
+  Win32 owner 亲和 + 最小化恢复守护（不是壁纸层嵌入，失败回落 normal）；位置、尺寸、显隐、可选
+  `windowLevelOverride` 与固定状态 `locked` 写 `<userData>/plugin-widget-layout.json`，**不进 settings、不升
   `CONFIG_VERSION`**；桌面窗口总数上限 8（防失控常量）。
+- **桌面小组件窗口必须 `focusable: false`**：点击 / 拖动不抢前台（当前应用焦点不变），
+  代价是卡内文本输入拿不到键盘焦点——别为了输入能力把窗口改回可激活。
+  标题栏「固定」= `setMovable(false)` + `setResizable(false)`（实测单靠 CSS 拖拽区挡不住系统移动），
+  状态写布局 `locked`，**默认未固定**；改这里时同步 `smoke` 的 `focusable` / `resizable` 断言。
 - **提示条小组件只接受声明式 schema**：`slot = "edge-bar"` 清单层就拒绝 `entry` / `defaultSize`
   与 `windowLevel` / `windowMaterial` 的非默认值；不要为了它改提示条窗口的 shape / 尺寸逻辑，也不要嵌 webview。
 - **插件推送（`ui.panelEvent`）必须在主进程校验**：panelId / widgetId 二选一、目标在本插件清单、
