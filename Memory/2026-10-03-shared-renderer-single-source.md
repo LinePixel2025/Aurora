@@ -43,5 +43,5 @@ source: 模型自动记录
   `lucide-vue-next` 与 `vue` 按同一条规矩声明在 `packages/shared` 的 devDependencies。
 - 两库无 `eval`，生产 CSP `script-src 'self'` 下动态 chunk 可正常加载（已核 mermaid 12 / echarts 6 的 dist）。
 - **改 `packages/shared` 里的视觉资产 = 同时改两端界面**：改完必须跑
-  `AURORA_CAPTURE`（桌面基线 73/73）与 `pnpm --filter @aurora/center verify:web`（网页基线 74/74）两边核对。
+  `AURORA_CAPTURE`（桌面基线 113）与 `pnpm --filter @aurora/center verify:web`（网页基线 106/106）两边核对。
 - 齿轮图标在 shared 里叫 **`SettingsGear`**（要类型写 `Settings`、要图标写 `SettingsGear`）。

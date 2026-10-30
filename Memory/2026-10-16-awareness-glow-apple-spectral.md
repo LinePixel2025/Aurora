@@ -1,60 +1,45 @@
 ---
 date: 2026-10-16
-title: 自感知流光改 Apple Intelligence 光谱 + 只保留顶边 + 删除光帘
-tags: [自感知, 流光, UI, CSS, 口径, Apple Intelligence]
+title: 自感知流光：Apple 光谱 + 只留顶边
+tags: [自感知, 流光, UI, 探针, 配置]
 source: 模型自动记录
 ---
 
-# 流光改 Apple Intelligence 光谱（2026-10-16）
-
-## 最终口径（同日两轮迭代）
-
-1. 配色从单色回到 Apple Intelligence 多色光谱（品红→紫→蓝→青→琥珀）；
-2. **只保留顶部一条边带**，删除 bottom / left / right 三边；
-3. **删除光帘（curtain）动画**，halo 只保留 color-flow。
+# 自感知流光（Apple 光谱，2026-10-16 口径）
 
 ## 现象
 
-用户要求「重构极光特效，对齐目前 Apple 中 iOS 的极光特效」—— 即 Apple Intelligence / iOS Siri
-激活时屏幕四周的「优雅弥散光芒」（官方描述：an elegant glowing light that wraps around the edge
-of the screen）。这**推翻了 2026-10-11 的「单色强调色」口径**，回到多色光谱，但做法不同：
-v33 之前的彩虹被批「太艳 / 像彩条」，这次对齐的是 Apple 的**液态弥散光** ——
-色相之间没有硬边界，靠多层半透明色团 + 大半径高斯模糊 + 缓慢呼吸位移产生深度。
+- 用户要求对齐 iOS Apple Intelligence 的屏幕边缘光：多色、弥散、缓慢，既不是 v33 之前被批「太艳像彩条」的硬边彩虹，也不是 2026-10-11 的单色青绿。
+- 2026-10-11 曾扩到四边；2026-10-16 同日两轮后收回为**只保留顶边**。
+- 现状：`renderer/awareness-glow/App.vue:5` 为 `EDGES=['top']`，`capture.ts:5504` 为 `edgeNames=['top']`；无 curtain 关键帧。
 
 ## 原因
 
-- Apple Intelligence 的 Siri 边缘光本身**就是多色光谱**（品红 / 紫 / 蓝 / 青 / 橙），
-  不是单色；2026-10-11 改单色是为了修「太艳」，但修过头了 —— 失去了 Apple 的核心视觉特征。
-- 「太艳」的根因不是多色本身，而是：饱和度过高 + 模糊不够 + 层数太少 → 高斯模糊后在白底桌面上
-  退化成硬边彩条。Apple 的做法是：每层 ≤36% 不透明度、blur 28px（bloom）/ 5–12px（其余）、
-  5 段光谱色标首尾呼应（rose → violet → accent → cyan → amber → rose）形成无缝循环。
+- 「太艳」的根因不是多色，而是饱和度过高、模糊不够、层数太少；Apple 的做法是每层 ≤36% 不透明度、大半径模糊、5 段光谱首尾呼应。
+- 只保留顶边是同日最终口径；四边的摆位细节随三边删除不再适用，不要按旧记忆恢复。
+- 浮层窗口不走 `bootstrapApp` / Pinia，不知道用户强调色，因此必须自己接 `applyAppearance`；`--glow-accent` / `--glow-soft` / `--glow-ink` 仍从 `--aurora-blue` 派生。
+- 类名与关键帧名被截图探针按 `animationName` 断言，改名等于制造假红。
+
+## 影响
+
+- 恢复四边或恢复单色都会与当前口径冲突；只改色令牌而不改光谱结构会丢掉 Apple 观感。
+- 不接 `applyAppearance` 会让 `--aurora-blue` 停在主题默认值，冷色主调不跟用户强调色。
+- 改类名 / 关键帧名，或让 `color-mix` 的序列化差异进入断言，会让 `awareness-glow` 探针失败。
+- 全屏透明浮层若改为不穿透或换窗口层级会挡住桌面点击；OS 级穿透目前只有真机手验，没有自动断言。
 
 ## 结论与做法
 
-- **光谱调色板**（固定色相，不随强调色变）：
-  `--glow-rose: #ff6b9d`、`--glow-violet: #bc82f3`、`--glow-cyan: #56d8ff`、`--glow-amber: #ffb347`；
-  冷色主调仍引用 `--aurora-blue`（换强调色时光谱微微偏暖 / 偏冷，与 Apple 一致 —— 它的极光不随主题变色）。
-- **四层结构不变**（bloom / halo / line / streak），但每层的色标从单色 mix 改为光谱渐变：
-  - bloom：5 个 radial-gradient 沿边带分布（rose 8% / violet 28% / accent 50% / cyan 72% / amber 92%），blur 28px；
-  - halo：linear-gradient 100deg 全光谱 + repeating-linear-gradient 白色纹理叠加，background-size 200%，
-    color-flow 18s 无缝循环（`0% 0%` → `200% 200%`，双轴动画让左右边带也能纵向流动）；
-  - line / streak：光谱高光带，flow 8.4s / flow-slow 11.5s，同样双轴 background-position。
-- **左右边带 halo 换轴**（此前只有 line/streak 换轴，halo 没换 → 左右边带的光谱流动方向不对）：
-  新增 `.glow-edge[data-edge='left'|'right'] .glow-halo { background-size: 100% 200%; background-repeat: repeat-y; }`。
-- **类名与关键帧名一个都没改**：capture 探针按 `animationName`（curtain / color-flow / flow / flow-slow）、
-  mask 的 `rgb(0, 0, 0) 0%`、bloom 含 `radial-gradient` 断言 —— 全部保持。
-- **动画节奏放慢**（Apple 的极光是「环境光」不是「通知闪烁」）：bloom 9→10s、curtain 11.5→12s、
-  color-flow 13→18s、sheen 6.4→7s、flow 7.6→8.4s、flow-slow 10.6→11.5s。
+- 配色：`--glow-rose: #ff6b9d`、`--glow-violet: #bc82f3`、`--glow-cyan: #56d8ff`、`--glow-amber: #ffb347`；冷色主调引用 `--aurora-blue`，`--glow-soft` / `--glow-ink` 由强调色混白 / 混深。每层 ≤36% 不透明度，bloom 模糊 28px。
+- 四层：bloom 是 5 个 `radial-gradient`（rose 8% / violet 28% / accent 50% / cyan 72% / amber 92%）；halo 是 100deg 全光谱 + 白色纹理叠加，`color-flow` 18s；line 用 `flow` 8.4s；streak 用 `flow-slow` 11.5s；两轴都动 `background-position`。整体节奏：bloom 10s、sheen 7s、入场 `awareness-glow-enter` 920ms。
+- 只保留顶边：`EDGES=['top']`，`--glow-band: 72px`；删除 bottom / left / right 与 curtain（「曾扩四边」只作为 2026-10-11 的一句历史，不恢复摆位细节）。
+- 浮层入口 `renderer/awareness-glow/main.ts`：`settings.get()` 读一次 + `settings.onChanged` 订阅，都喂 `applyAppearance`；不要引 `bootstrapApp` 或 Pinia。
+- 类名 / 关键帧名冻结：`awareness-glow-bloom`、`awareness-glow-color-flow`、`awareness-glow-flow`、`awareness-glow-flow-slow`、`awareness-glow-enter`；`color-mix` 在 computed style 里序列化成 `color(srgb …)`，探针不依赖这个序列化串。
+- 配置：`appearance.awarenessGlow` 默认 `true`（`schema.ts:122`，`AppearanceSchema` 唯一带 `.default(true)` 的字段）；v33 迁移 `v32 → v33`（`migrations.ts:1165`）、`WRITABLE_PATH_OVERRIDES`（`schema.ts:1322`）与 `set_appearance` 第 4 字段（`agent-core/src/tools/appearance.ts:24-29`）保持同步；`FileAwarenessStatus.glowEnabled` 是可选字段，缺字段按开启处理。
+- 几何：`main/awareness-glow.ts` 的 `awarenessGlowBounds(displayBounds)` 返回显示器 `bounds` 整块矩形；`ensureAwarenessGlow` 与 `showAwarenessGlow` 必须同口径（建窗与重定位各一处），不要用 `workArea`。
+- 探针：只量矩形不量存在 —— 顶边贴屏幕第 0 像素、水平覆盖 ≥95% 视口、厚度远薄于视口；`650ms` 前后 `background-position` 要有真实变化；主进程 `nativeCheck` 断言窗口矩形 ≥ 显示器 `bounds`（容差 1px，Electron 的这一像素差是既存行为）。
+- 该场景**不新增 PNG**；OS 级穿透（`setIgnoreMouseEvents(true, { forward: true })` 覆盖整屏仍可点桌面 / 任务栏）已真机手验，但没有自动化断言；改穿透实现、窗口层级或透明窗口参数后需再手验。
+- 性能：2026-10-16 定向 capture 量 85 帧，mean 5.57ms（≈60fps）；探针刻意不设阈值。
+- CSS 坑：`inset` 简写不接受 `auto` 的写法会被整条丢弃；不要用 `rotate` 给边带摆位（`getBoundingClientRect()` 量的是变换后的盒）；`height: auto` 必须显式写回；探针 / 脚本注释里禁反引号。
 
-## 实测
-
-- 定向 capture `awareness-glow` 场景：四边 `edgePass` 全 true、`motionChanged` 全 true、
-  `meanFrameMs: 5.57`（≈60fps，光谱渐变无额外渲染代价）、`native.coversDisplay: true`。
-- `pnpm typecheck` / `pnpm build` 全绿。
-- docs/07 §2.2 与 docs/06 §26 已同步为「多色光谱极光 / 对齐 Apple Intelligence」。
-
-## 与 2026-10-11 记忆的关系
-
-`2026-10-11-awareness-glow-mono-accent.md` 记录的「单色强调色」口径**已被本条推翻**。
-该文件保留作为历史（它记录了「为什么从彩虹改单色」的决策过程），但**当前生效口径以本条为准**。
-浮层窗口接 `applyAppearance` 的做法仍然保留（`--aurora-blue` 参与光谱冷色主调）。
+> 2026-10-25 合并自 2026-10-11-awareness-glow-mono-accent.md（原口径：单色强调色已作废）
+> 2026-10-25 合并自 2026-10-11-awareness-glow-four-edges-toggle.md（原口径：四边流光与摆位坑已作废）
