@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 38 as const
+export const CONFIG_VERSION = 39 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -776,6 +776,9 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 插件（v36，docs/14 §5）：安装 / 启停 / 信任 / 开发目录是用户的授权边界 ——
   // AI 自己装一个插件就等于给自己加任意代码执行与工具面，属自我提权路径。
   'plugins',
+  // Computer Use（v39，docs/06 §28）：允许 AI 截屏并合成鼠标键盘是本机最高权限的授权边界，
+  // AI 自行开启 / 放宽应用名单 / 调大动作上限都等于给自己扩权。只能由用户在设置页操作。
+  'computerUse',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -1201,6 +1204,44 @@ export const NotificationsSchema = z.object({
 })
 export type NotificationsSettings = z.infer<typeof NotificationsSchema>
 
+/**
+ * Computer Use（v39，docs/06 §28、docs/08 §1）。
+ *
+ * 让 Agent 截屏并合成鼠标 / 键盘 / 窗口 / UI Automation 操作。整组在
+ * `SETTINGS_READONLY_PREFIXES` 里：是否允许 AI 操控本机是用户对 Agent 的授权边界，
+ * AI 的 `set_setting` 一律改不动；只能由用户在设置页开启。
+ *
+ * 门控不是"注册后再拒绝"：工具注册还要求当前生效模型开启图片输入（vision），
+ * 且每个会话必须由用户在输入框显式授权后才从请求工具面里出现。
+ */
+export const ComputerUseSchema = z
+  .object({
+    /** 总开关；默认关闭（极高权限能力，出厂不默认授权）。 */
+    enabled: z.boolean().default(false),
+    /** 是否绘制虚拟光标（光环 + 拖尾）；原生系统指针始终保留。 */
+    showVirtualCursor: z.boolean().default(true),
+    /** 是否绘制屏幕四边流光；会话期间持续播放。 */
+    glow: z.boolean().default(true),
+    /** 是否显示底部一行实时操作 HUD。 */
+    showHud: z.boolean().default(true),
+    /** 鼠标移动的平滑时长（毫秒，0 = 瞬移）。 */
+    moveDurationMs: z.number().int().min(0).max(1000).default(160),
+    /** 逐字符输入间隔（毫秒；0 = 尽快）。 */
+    typingDelayMs: z.number().int().min(0).max(200).default(10),
+    /** 截图最长边（像素）；越小越省 token，越大点击越准。 */
+    screenshotMaxWidth: z.number().int().min(640).max(2560).default(1280),
+    /** 单会话允许的有副作用动作上限（截图/等待不计）。 */
+    maxActions: z.number().int().min(10).max(2000).default(300),
+    /** 最后一次 Computer Use 调用后多久自动结束会话（分钟）。 */
+    idleStopMinutes: z.number().int().min(1).max(60).default(10),
+    /** 允许操作的应用（exe 文件名，一行一个；留空 = 除禁止项与保护目标外全部允许）。 */
+    allowedApps: z.array(z.string().max(120)).max(100).default([]),
+    /** 禁止操作的应用；优先于 allowedApps。 */
+    deniedApps: z.array(z.string().max(120)).max(100).default([]),
+  })
+  .default({})
+export type ComputerUseSettings = z.infer<typeof ComputerUseSchema>
+
 export const SettingsSchema = z.object({
   version: z.number().int().min(0),
   general: GeneralSchema,
@@ -1220,6 +1261,7 @@ export const SettingsSchema = z.object({
   appearance: AppearanceSchema,
   plugins: PluginsSchema,
   notifications: NotificationsSchema,
+  computerUse: ComputerUseSchema,
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
@@ -1258,6 +1300,8 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   automations: '自动化总开关是用户对后台动作的总闸门，不允许通过工具修改（docs/13 §2.2）',
   fileAwareness: '文件自感知会读取文件并发送正文，必须由用户显式配置，不允许通过工具修改',
   plugins: '插件的安装与信任是用户的授权边界，不允许通过工具修改（docs/14）',
+  computerUse:
+    'Computer Use 会截屏并操控真实鼠标键盘，是用户对 Agent 的本机授权边界，AI 不得自行开启或放宽',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */

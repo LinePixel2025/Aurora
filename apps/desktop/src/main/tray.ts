@@ -71,6 +71,16 @@ export function createTray(deps: DesktopDeps, iconPath: string): TrayController 
 
     const template: MenuItemConstructorOptions[] = [
       { label: '显示主界面', click: () => deps.windows.showChat() },
+      ...(deps.computerUse?.status().active === true
+        ? [
+            {
+              label: '停止 Computer Use',
+              click: () => {
+                deps.computerUse?.stop({ reason: 'user' })
+              },
+            } satisfies MenuItemConstructorOptions,
+          ]
+        : []),
       { type: 'separator' },
       {
         label: '切换到模式',

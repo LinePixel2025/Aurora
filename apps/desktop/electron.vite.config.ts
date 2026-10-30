@@ -17,6 +17,8 @@ const windowEntries = {
   'awareness-glow': r('src/renderer/awareness-glow/index.html'),
   // 流光提醒（docs/07 §2.2.3）：一个入口两个窗口，`?layer=glow|card` 决定画哪一层
   banner: r('src/renderer/banner/index.html'),
+  // Computer Use（v39，docs/06 §28）：`?layer=overlay|hud` 决定画浮层还是 HUD
+  'computer-use': r('src/renderer/computer-use/index.html'),
   // 桌面小组件浮动卡片（docs/14 §5.3）：窗口 URL 带 `?pluginId=&widgetId=`
   widget: r('src/renderer/widget/index.html'),
 }

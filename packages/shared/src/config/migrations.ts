@@ -19,6 +19,7 @@ import {
   DEFAULT_FILE_AWARENESS,
   DEFAULT_IMAGEGEN,
   DEFAULT_NOTIFICATIONS,
+  DEFAULT_COMPUTER_USE,
   DEFAULT_PLUGINS,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_STT,
@@ -1304,6 +1305,28 @@ const migrateV37ToV38: Migration = {
   },
 }
 
+/**
+ * v38 → v39：新增 `computerUse`（Computer Use，docs/06 §28）。
+ *
+ * 口径同前面各步：以默认值为底、已有对象在上；老配置没有该组时补一份**关闭**的默认值
+ * （`enabled: false`），升级本身不会打开任何桌面操控能力。
+ */
+const migrateV38ToV39: Migration = {
+  from: 38,
+  to: 39,
+  describe: 'v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const computerUse = asRecord(next['computerUse'])
+    next['computerUse'] = {
+      ...DEFAULT_COMPUTER_USE,
+      ...(computerUse ?? {}),
+    }
+    next['version'] = 39
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1343,6 +1366,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV35ToV36,
   migrateV36ToV37,
   migrateV37ToV38,
+  migrateV38ToV39,
 ]
 
 export interface MigrationOutcome {

@@ -506,6 +506,67 @@ export function smokeScript(
     }))
     record('模型配置指向本地桩服务', repoint?.llm?.providers?.smoke?.baseUrl === STUB_BASE, repoint?.llm?.providers?.smoke?.baseUrl ?? '')
 
+    // 3.9 Computer Use（v39，docs/06 §28）：默认关闭、开启 + 视觉后能建立会话、浮层可见、停止幂等。
+    //     这里只建浮层（不启动 PowerShell、不移动鼠标），真实桌面动作由 capture / 手工验收覆盖。
+    {
+      const before = expectOk('settings.get（Computer Use 前置）', await window.aurora.settings.get())
+      const statusBefore = await window.aurora.computerUse.status()
+      record(
+        'Computer Use 默认关闭',
+        statusBefore && statusBefore.ok === true && statusBefore.value.enabled === false && statusBefore.value.active === false,
+        statusBefore && statusBefore.ok ? JSON.stringify(statusBefore.value) : statusBefore ? statusBefore.message : '无结果',
+      )
+      const rejected = await window.aurora.computerUse.start({ sessionId: 'main' })
+      record(
+        'Computer Use 未开启时 start 被拒绝',
+        rejected && rejected.ok === false,
+        rejected && rejected.ok ? '意外成功' : rejected ? rejected.message : '无结果',
+      )
+      const provider = before?.llm?.providers?.[before.llm.active]
+      const model = provider?.model ?? STUB_MODEL
+      const visionOn = await window.aurora.settings.update({
+        computerUse: { ...(before?.computerUse ?? {}), enabled: true },
+        llm: {
+          ...before.llm,
+          providers: {
+            ...before.llm.providers,
+            [before.llm.active]: {
+              ...provider,
+              modelParams: {
+                ...(provider?.modelParams ?? {}),
+                [model]: {
+                  ...(provider?.modelParams?.[model] ?? { reasoningEffort: 'auto', contextWindow: 0 }),
+                  vision: true,
+                },
+              },
+            },
+          },
+        },
+      })
+      record(
+        'Computer Use 可开启且当前模型视觉已打开',
+        visionOn && visionOn.ok === true && visionOn.value.computerUse.enabled === true,
+        visionOn && visionOn.ok ? '' : visionOn ? visionOn.message : '无结果',
+      )
+      const started = await window.aurora.computerUse.start({ sessionId: 'main' })
+      record(
+        'Computer Use 授权后会话建立、浮层可见',
+        started && started.ok === true && started.value.active === true && started.value.overlay.visible === true && started.value.overlay.displays > 0,
+        started && started.ok ? JSON.stringify(started.value.overlay) : started ? started.message : '无结果',
+      )
+      const stopped = await window.aurora.computerUse.stop({ sessionId: 'main', reason: 'user' })
+      record(
+        'Computer Use 停止后会话与浮层收起',
+        stopped && stopped.ok === true && stopped.value.active === false && stopped.value.overlay.visible === false,
+        stopped && stopped.ok ? JSON.stringify(stopped.value.overlay) : stopped ? stopped.message : '无结果',
+      )
+      // 还原：后续断言仍按 vision=false / Computer Use 关闭的出厂口径跑
+      await window.aurora.settings.update({
+        computerUse: { ...(before?.computerUse ?? {}), enabled: false },
+        llm: before?.llm,
+      })
+    }
+
     // 4. 模式与引导
     const modes = expectOk('mode.list', await window.aurora.mode.list())
     record('mode.list 返回三个模式', Array.isArray(modes) && modes.length === 3, modes ? modes.map((m) => m.id).join(',') : '')

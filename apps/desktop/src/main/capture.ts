@@ -132,7 +132,13 @@ export const ASK_USER_CAPTURE_SECOND = ASK_USER_CAPTURE_QUESTION.options?.[1]?.l
  * 与 `awareness-glow` / 桌面小组件同一类目标。
  */
 export type CaptureWindowName =
-  WindowName | 'awareness-glow' | 'widget' | 'banner-card' | 'banner-glow'
+  | WindowName
+  | 'awareness-glow'
+  | 'widget'
+  | 'banner-card'
+  | 'banner-glow'
+  | 'computer-use-overlay'
+  | 'computer-use-hud'
 
 export interface CaptureTarget {
   name: CaptureWindowName
@@ -303,6 +309,13 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
           : requestedName === 'banner-glow'
             ? 'glow'
             : undefined
+      // Computer Use 浮层 / HUD（v39，docs/06 §28）：同样走内部窗口捕获，不经过 show/ensure
+      const computerUseKind: 'overlay' | 'hud' | undefined =
+        requestedName === 'computer-use-overlay'
+          ? 'overlay'
+          : requestedName === 'computer-use-hud'
+            ? 'hud'
+            : undefined
       const widgetTarget = target.widget
       // 走 WindowManager 的目标名（widget / banner / 内部浮层单独走下面的分支，不会到这里）
       const windowName = requestedName as WindowName
@@ -315,6 +328,9 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       } else if (bannerKind !== undefined) {
         win = manager.ensureBannerForCapture(bannerKind)
         await manager.whenBannerLoaded(bannerKind)
+      } else if (computerUseKind !== undefined) {
+        win = manager.ensureComputerUseForCapture(computerUseKind)
+        await manager.whenComputerUseLoaded(computerUseKind)
       } else if (internalGlow) {
         win = manager.ensureAwarenessGlowForCapture()
         await manager.whenAwarenessGlowLoaded()
@@ -326,17 +342,22 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         await target.prepare?.()
       } else if (target.query !== undefined) {
         if (bannerKind !== undefined) await manager.reloadBannerForCapture(bannerKind, target.query)
-        else if (internalGlow) await manager.reloadAwarenessGlow(target.query)
+        else if (computerUseKind !== undefined) {
+          await manager.reloadComputerUseForCapture(computerUseKind, target.query)
+        } else if (internalGlow) await manager.reloadAwarenessGlow(target.query)
         else await manager.reload(windowName, target.query)
       }
       if (widgetTarget === undefined) {
         await target.prepare?.()
         if (bannerKind !== undefined) manager.showBannerForCapture(bannerKind)
+        else if (computerUseKind !== undefined) manager.showComputerUseForCapture(computerUseKind)
         else if (internalGlow) manager.showAwarenessGlow()
         else manager.show(windowName)
         // ensure() 里的加载是 fire-and-forget，必须显式等它结束（否则会截到空图）
         if (bannerKind !== undefined) await manager.whenBannerLoaded(bannerKind)
-        else if (internalGlow) await manager.whenAwarenessGlowLoaded()
+        else if (computerUseKind !== undefined) {
+          await manager.whenComputerUseLoaded(computerUseKind)
+        } else if (internalGlow) await manager.whenAwarenessGlowLoaded()
         else await manager.whenLoaded(windowName)
       }
       if (target.act !== undefined) {

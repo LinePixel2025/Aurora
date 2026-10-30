@@ -54,6 +54,8 @@ import WindowCaption from '../shared/components/WindowCaption.vue'
 import ComposerAttachments from './components/ComposerAttachments.vue'
 import ComposerContextBar from './components/ComposerContextBar.vue'
 import ComposerPermissionSelect from './components/ComposerPermissionSelect.vue'
+import ComposerComputerUseToggle from './components/ComposerComputerUseToggle.vue'
+import ComputerUseStatusBar from './components/ComputerUseStatusBar.vue'
 import SlashCommandMenu from './components/SlashCommandMenu.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import JobPanel from './components/JobPanel.vue'
@@ -100,6 +102,7 @@ import { isTtsConfigured } from '../shared/tts-config.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
 import { ArrowUp, Mic, PanelLeft, Trash2 } from '@aurora/shared/browser'
+import type { ComputerUseEvent, ComputerUseStatus } from '@aurora/shared'
 
 const chat = useChat('chat', 'main')
 const { catalog: centerCatalog } = useCenterOfficialCatalog()
@@ -891,6 +894,9 @@ onMounted(() => {
   offPluginOpenPanel = window.aurora.plugins.onOpenPanel((event) => {
     openPluginPanelById(event.pluginId, event.panelId)
   })
+  // Computer Use（v39）：状态条 / 输入框开关的实时状态与动作推送
+  offComputerUseEvent = window.aurora.computerUse.onEvent(onComputerUseEvent)
+  void refreshComputerUseStatus()
   document.addEventListener('pointerdown', onComposerPointerDown)
   document.addEventListener('keydown', onDocumentEscape)
   // 窗口缩放 → 重算两侧栏的生效宽度（宽度记忆是 px，主区下限靠 viewportWidth 兜）
@@ -921,6 +927,8 @@ onUnmounted(() => {
   offAgentStatus = null
   offPluginOpenPanel?.()
   offPluginOpenPanel = null
+  offComputerUseEvent?.()
+  offComputerUseEvent = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
   window.removeEventListener('resize', onViewportResize)
@@ -1817,6 +1825,92 @@ async function setPermission(mode: PermissionMode): Promise<void> {
   if (!ok) chatError.value = settingsStore.error
 }
 
+// ── Computer Use（v39，docs/06 §28）：用户显式授权后才让 Agent 操作桌面 ──
+
+const computerUseStatus = ref<ComputerUseStatus | null>(null)
+const computerUseError = ref<string | null>(null)
+const computerUseStarting = ref(false)
+let offComputerUseEvent: (() => void) | null = null
+
+/** 当前模型是否支持图片输入（Computer Use 的第二道前提）。 */
+const computerUseVision = computed(() => {
+  const settings = settingsStore.settings
+  if (settings === null) return false
+  const provider = settings.llm.providers[settings.llm.active]
+  return provider === undefined ? false : resolveModelParams(provider).vision === true
+})
+
+/** 输入框入口是否渲染：全局开启 + 多模态 + 非只读档。 */
+const computerUseEligible = computed(
+  () =>
+    settingsStore.settings?.computerUse.enabled === true &&
+    computerUseVision.value &&
+    permissionMode.value !== 'readonly',
+)
+
+const computerUseActiveHere = computed(
+  () =>
+    computerUseStatus.value?.active === true &&
+    computerUseStatus.value.sessionId === sessionId.value,
+)
+
+const computerUseBusy = computed(
+  () => computerUseStatus.value?.active === true && !computerUseActiveHere.value,
+)
+
+async function refreshComputerUseStatus(): Promise<void> {
+  const result = await window.aurora.computerUse.status()
+  if (result.ok) computerUseStatus.value = result.value
+}
+
+async function startComputerUse(): Promise<void> {
+  if (computerUseStarting.value) return
+  computerUseStarting.value = true
+  computerUseError.value = null
+  try {
+    const result = await window.aurora.computerUse.start({ sessionId: sessionId.value })
+    if (!result.ok) {
+      computerUseError.value = result.message
+      return
+    }
+    computerUseStatus.value = result.value
+  } finally {
+    computerUseStarting.value = false
+  }
+}
+
+async function stopComputerUse(): Promise<void> {
+  const result = await window.aurora.computerUse.stop({
+    sessionId: sessionId.value,
+    reason: 'user',
+  })
+  if (result.ok) computerUseStatus.value = result.value
+}
+
+function onComputerUseEvent(event: ComputerUseEvent): void {
+  if (event.type === 'started' || event.type === 'ended') {
+    void refreshComputerUseStatus()
+    return
+  }
+  if (event.type === 'action') {
+    const current = computerUseStatus.value
+    if (current === null) return
+    computerUseStatus.value = {
+      ...current,
+      actions: event.step,
+      maxActions: event.maxSteps,
+      lastAction: event.summary,
+      lastActionAt: event.at,
+    }
+  }
+}
+
+// 切换会话时刷新：授权是会话级的，另一条会话的状态条要显示「另一会话正在操作」
+watch(sessionId, () => {
+  computerUseError.value = null
+  void refreshComputerUseStatus()
+})
+
 // ── 斜杠命令（`/`） ──
 
 /** Skill 清单（`skills:list`，只显示 enabled 的；渲染层不缓存第二份） */
@@ -1856,7 +1950,7 @@ const slashOpen = computed(() => slashQuery.value !== null && slashItems.value.l
  * 斜杠是「输入隐含触发」的，其余四个是「点击显式打开」的，所以这里只存显式的那一个；
  * 斜杠的可见性由 `showSlash` 把它一并算进去，避免两处状态各说各话。
  */
-const openFlyout = ref<'permission' | 'model' | 'effort' | 'context' | null>(null)
+const openFlyout = ref<'permission' | 'computer-use' | 'model' | 'effort' | 'context' | null>(null)
 
 /** 斜杠浮层是否可见：候选存在，且没有被四个显式浮层挤掉 */
 const showSlash = computed(() => slashOpen.value && openFlyout.value === null)
@@ -2247,6 +2341,12 @@ async function markGuideDone(): Promise<void> {
 
       <footer v-if="view === 'chat'" class="composer">
         <div class="composer-inner">
+          <!-- Computer Use 实时状态条（v39）：动作 / 步数 / 时长 / 停止 -->
+          <ComputerUseStatusBar
+            :status="computerUseStatus"
+            :session-id="sessionId"
+            @stop="stopComputerUse"
+          />
           <div ref="composerBoxEl" class="composer-box glass-surface-strong" :class="{ streaming }">
             <!--
               附件条（2026-10-18，docs/07 §2.3）：在**输入卡内部**、textarea 上方。
@@ -2299,6 +2399,18 @@ async function markGuideDone(): Promise<void> {
                 :disabled="settingsStore.settings === null"
                 @change="setPermission"
                 @update:open="openFlyout = $event ? 'permission' : null"
+              />
+              <!-- Computer Use 授权入口（v39）：仅全局开启 + 多模态 + 非只读档时渲染 -->
+              <ComposerComputerUseToggle
+                :eligible="computerUseEligible"
+                :active="computerUseActiveHere"
+                :busy="computerUseBusy"
+                :open="openFlyout === 'computer-use'"
+                :disabled="computerUseStarting"
+                :error="computerUseError"
+                @update:open="openFlyout = $event ? 'computer-use' : null"
+                @start="startComputerUse"
+                @stop="stopComputerUse"
               />
               <!-- 模型 / 思考等级（2026-09 移入 composer 工具行）：data-field 锚点不变，2026-10-18 起自绘浮层 -->
               <ModelPickerSelect

@@ -225,6 +225,15 @@ const api: AuroraApi = {
   notifications: {
     test: () => invoke(IPC.notifications.test),
   },
+  // Computer Use（v39，docs/06 §28）：start/stop 只由输入框开关 / 状态条调用
+  computerUse: {
+    status: () => invoke(IPC.computerUse.status),
+    start: (request) => invoke(IPC.computerUse.start, request),
+    stop: (request) => invoke(IPC.computerUse.stop, request),
+    onEvent: (listener) => subscribe(IPC.computerUse.event, listener),
+    apps: () => invoke(IPC.computerUse.apps),
+    diagnose: () => invoke(IPC.computerUse.diagnose),
+  },
   mcp: {
     status: () => invoke(IPC.mcp.status),
     onStatusChanged: (listener) => subscribe(IPC.mcp.statusChanged, listener),

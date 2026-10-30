@@ -252,6 +252,27 @@ export const DEFAULT_NOTIFICATIONS = {
   durationMs: 6000,
 } as const
 
+/**
+ * Computer Use 默认配置（v39，docs/06 §28、docs/08 §1）。
+ *
+ * 默认**关闭**：它会截屏并合成鼠标 / 键盘 / 窗口操作，属于本机最高权限的授权面。
+ * 视觉默认开启（虚拟光标 / 流光 / HUD），节奏取「看得见但不拖沓」的档位；
+ * 应用名单为空 = 除保护目标外全部允许（禁止名单优先）。
+ */
+export const DEFAULT_COMPUTER_USE = {
+  enabled: false,
+  showVirtualCursor: true,
+  glow: true,
+  showHud: true,
+  moveDurationMs: 160,
+  typingDelayMs: 10,
+  screenshotMaxWidth: 1280,
+  maxActions: 300,
+  idleStopMinutes: 10,
+  allowedApps: [] as string[],
+  deniedApps: [] as string[],
+} as const
+
 export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   version: CONFIG_VERSION,
   general: {
@@ -408,6 +429,8 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   },
   // v37：默认提醒方式（docs/07 §4）
   notifications: { ...DEFAULT_NOTIFICATIONS },
+  // v39：Computer Use（docs/06 §28、docs/08 §1）
+  computerUse: { ...DEFAULT_COMPUTER_USE },
 }
 
 /** 返回一份全新的默认配置（避免调用方共享同一引用）。 */

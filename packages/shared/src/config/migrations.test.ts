@@ -1119,6 +1119,7 @@ describe('配置迁移链', () => {
         'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
         'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
+        'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1169,6 +1170,7 @@ describe('配置迁移链', () => {
         'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
         'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
+        'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1599,6 +1601,7 @@ describe('配置迁移链', () => {
         'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
         'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
+        'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>

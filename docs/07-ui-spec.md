@@ -2626,3 +2626,34 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   `settings-plugins-detail`（设置页列表 + 配置入口）/ `plugin-config` /
   `settings-plugins-marketplace` / `widget-desktop-plugin` / `edge-bar-plugin-widget` /
   `chat-plugin-panel-push`（另含设置页深链 `settings-plugins.png`）。
+
+## 7. Computer Use 浮层与实时状态（v39，06 §28）
+
+- **输入框授权入口**：`.composer-bar` 权限档位之后渲染「操作电脑」开关
+  （`data-field="chat.computer-use"`），仅当 `computerUse.enabled && 当前模型 vision &&
+  权限档非 readonly` 时出现。点击展开 `.composer-flyout` 说明浮层
+  （`chat.computer-use-menu`），确认按钮 `chat.computer-use-start`；激活态用强调色常驻，
+  另一会话持有时显示「另一会话正在操作」。开关**不写配置**，只建立内存中的会话授权。
+- **对话状态条**：composer 上方一条紧凑条（`chat.computer-use-status`），显示最近动作、
+  第 N / 上限步、运行时长与停止按钮（`chat.computer-use-stop`）；另一会话持有时显示
+  「另一会话正在操作」。不改变 composer 既有探针锚点与三栏布局。
+- **浮层窗口**：每块显示器一扇内部窗口（不在 `WINDOW_NAMES`、不写几何、不占任务栏）：
+  - 透明、`alwaysOnTop('screen-saver')`、`focusable: false`、`showInactive()`；
+  - `setIgnoreMouseEvents(true, { forward: true })`（透明 ≠ 穿透）；
+  - `setContentProtection(true)`：浮层不出现在 Agent 自己的截屏里；
+  - `backgroundThrottling: false`（光标 30fps 跟手）。
+- **视觉**：虚拟光标（`computer-use.cursor`）跟随真实指针，光环
+  `computer-use-cursor-pulse` + 拖尾；点击 / 拖拽 / 滚轮涟漪
+  `computer-use-click-ripple`；四边流光 `computer-use-glow-flow` 在会话期间**持续播放**；
+  `prefers-reduced-motion` 下降级为静态。原生系统指针保留（虚拟光标是光环 + 拖尾，
+  不替换系统光标）。
+- **HUD**：底部居中一扇穿透窗（`computer-use.hud`），一行
+  `● Computer Use · <动作> · 第 N / 上限步` + 运行时长；心跳 `computer-use-hud-heartbeat`；
+  空闲显示「等待下一步…」；检测到手动指针时短暂提示「任务继续」。不显示输入文字。
+- **截图锚点**：`computer-use-overlay.png`（`?layer=overlay&preview=1`，
+  `computer-use.root` / `.glow` / `.cursor` / `.cursor-ring` 与 glow 动画名）、
+  `computer-use-hud.png`（`?layer=hud&preview=1`，`computer-use.hud` / `.hud-text` 与
+  心跳动画名）、`settings-computer-use.png`（`?page=computer-use`，各 `computer-use.*`
+  字段锚点）。原生断言覆盖：可见、置顶、不可聚焦、鼠标穿透、内容保护。
+- **停止入口**：状态条按钮 / 输入框开关 / 托盘「停止 Computer Use」/
+  `Ctrl+Alt+Shift+Esc`（仅会话期间注册）。用户移动鼠标 / 键盘**不是**停止入口。

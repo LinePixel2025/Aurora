@@ -266,6 +266,23 @@ export const IPC = {
   notifications: {
     test: 'notifications:test',
   },
+  /**
+   * Computer Use（v39，docs/06 §28）：用户对「截屏 + 合成鼠标键盘」的显式授权。
+   *
+   * `start` / `stop` 只能由渲染层（输入框开关 / 状态条）调用；Agent 没有开启入口
+   * （`computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`）。`event` 是主进程 → 渲染层的
+   * 动作 / 光标 / 状态推送（on/off 成对）。
+   */
+  computerUse: {
+    status: 'computerUse:status',
+    start: 'computerUse:start',
+    stop: 'computerUse:stop',
+    event: 'computerUse:event',
+    /** P1：设置页「从当前窗口添加应用」列出可操作窗口 */
+    apps: 'computerUse:apps',
+    /** P1：设置页环境检查（PowerShell / UIA / 显示屏） */
+    diagnose: 'computerUse:diagnose',
+  },
   mcp: {
     status: 'mcp:status',
     statusChanged: 'mcp:statusChanged',

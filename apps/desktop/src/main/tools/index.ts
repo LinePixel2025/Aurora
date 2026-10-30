@@ -62,6 +62,8 @@ import {
   createTodoTools,
   createViewImageTool,
   createWebFetchTool,
+  createComputerUseTools,
+  COMPUTER_USE_TOOL_NAMES,
   TODO_WRITE_TOOL_NAME,
   createCenterSendFileTool,
   createCenterStatusTool,
@@ -82,6 +84,7 @@ import {
   type PreviewPort,
   type ReadTracker,
   type ScreenshotPort,
+  type ComputerUsePort,
   type SettingsToolPort,
   type TodoPort,
   type ToolRegistry,
@@ -827,6 +830,55 @@ export function registerBrowserTools(deps: BrowserToolsDeps): { sync(): string[]
       for (const tool of createBrowserTools({ port: deps.port })) deps.tools.register(tool)
       const names = BROWSER_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步内置浏览器工具', { names: [...names] })
+      return [...names]
+    },
+  }
+}
+
+export interface ComputerUseToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  port: ComputerUsePort
+  /** 总开关（`computerUse.enabled`，live getter） */
+  enabled: () => boolean
+  /** 平台是否支持（Windows） */
+  available: () => boolean
+  /** 当前生效模型是否支持图片输入（live getter，含会话覆盖由调用方判定） */
+  visionEnabled: () => boolean
+  /** 当前权限档（live getter）：只读档整组不注册 */
+  permissionMode: () => PermissionMode
+  /** 能力被关闭 / 降为只读时结束会话（幂等） */
+  onDisabled: () => void
+}
+
+/**
+ * Computer Use 工具装配器（v39，docs/06 §28）。
+ *
+ * 与内置浏览器同级：**不受 `agent.tools.enabled` 门控**，由 `computerUse.enabled` 自己控制；
+ * 额外要求当前模型开启图片输入（vision）且非只读档。注册是进程级的，
+ * "这个会话有没有授权"由 `computerUseRunProfile` 在请求级隐藏。
+ */
+export function registerComputerUseTools(deps: ComputerUseToolsDeps): { sync(): string[] } {
+  return {
+    sync(): string[] {
+      for (const name of COMPUTER_USE_TOOL_NAMES) deps.tools.unregister(name)
+
+      if (
+        !deps.enabled() ||
+        !deps.available() ||
+        !deps.visionEnabled() ||
+        deps.permissionMode() === 'readonly'
+      ) {
+        deps.onDisabled()
+        deps.logger.debug('Computer Use 工具不注册（开关 / 平台 / vision / 只读档）', {
+          names: [...COMPUTER_USE_TOOL_NAMES],
+        })
+        return []
+      }
+
+      for (const tool of createComputerUseTools({ port: deps.port })) deps.tools.register(tool)
+      const names = COMPUTER_USE_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步 Computer Use 工具', { names: [...names] })
       return [...names]
     },
   }
