@@ -122,8 +122,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   同理 `pnpm test` 迭代期只跑相关子集、全量放最后。验收口径本身不降级。
 - **CI 按需触发，不跟随 push / PR**（`.github/workflows/ci.yml`，Windows）：顺序
   `format:check → lint → typecheck → test → build`。日常验证靠本地
-  `pnpm typecheck && pnpm test && pnpm build`（与 CI 同一套检查、全量约 15 秒）；
-  需要干净环境时手动发起（Actions → Run workflow，或 `gh workflow run ci.yml`）。策略原因见 docs/09 §2。
+  `pnpm typecheck && pnpm test && pnpm build`（与 CI 同一套检查、全量约 30 秒）；
+  需要干净环境时手动发起（Actions → Run workflow，或 `gh workflow run ci.yml`；
+  高风险改动的短命分支用 `gh workflow run ci.yml --ref risk/<主题>`）。策略原因见 docs/09 §2。
 
 ## 架构硬约束（改错会直接构建失败或线上炸）
 
@@ -163,6 +164,20 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **Center 版本线独立**：Aurora Center 更新只升 `packages/center/package.json`
   （**不必与客户端版本号相同**，不动 root / apps/desktop），按
   `packages/center/deploy/README.md` §0 重新打包换装；不走 `scripts/release.mjs`。
+
+## 分支与合并（高风险改动）
+
+默认仍在 `main` 主干开发；只有四类改动先开短命分支 `risk/<主题>` 并走自审 PR：
+**配置 Schema 迁移**（`CONFIG_VERSION` / `config/schema.ts` / `migrations.ts`）、
+**IPC 契约**（`shared/src/ipc/channels.ts` 或 `preload/channels.ts`）、
+**两端共享渲染资产**（`packages/shared/src/browser/**`）、
+**发布流程**（`scripts/release*.mjs` / `electron-builder.yml` / `.github/workflows/**` / `docs/09`）。
+
+- 合并一律 **squash**（保持 `main` 线性、发布说明不含合并提交），合并后删分支；不建 develop / release 长期分支。
+- **发布 tag 只能从 `main` 打**：`release.mjs` 会拒绝非 `main` 分支（含 detached HEAD）。
+- 自审清单在 `.github/PULL_REQUEST_TEMPLATE.md`；PR **不是强制门禁**，检查靠本地命令，
+  需要云端干净环境时 `gh workflow run ci.yml --ref <分支>`。
+- 开分支前确认没有其它会话 / 子代理在同一工作树写文件；并行开发用 `git worktree`，不要直接切分支。
 
 ## 文档先行（Docs-first）
 

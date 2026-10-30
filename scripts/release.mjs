@@ -6,7 +6,7 @@
  * 上传命令。真正把产物送到 GitHub Releases 由显式参数触发，避免误发布。
  *
  * 用法：
- *   node scripts/release.mjs                 # 构建 + 打包 + 校验 + 打 tag（不上传）
+ *   node scripts/release.mjs                 # 构建 + 打包 + 校验 + 打 tag（仅限 main 分支）
  *   node scripts/release.mjs --publish       # 额外用 gh 上传产物到 releases 仓库
  *   node scripts/release.mjs --publish --publish-center --center-url <url> --center-user <名>
  *                              # GitHub Releases 与 Center 必须双投
@@ -61,6 +61,16 @@ if (notesFile !== undefined) {
 const packageJson = JSON.parse(await fs.readFile(join(root, 'package.json'), 'utf8'))
 const version = packageJson.version
 const tag = `v${version}`
+
+// 发布只从 main 打 tag（docs/09 §2）：短命分支上的提交必须先 squash 合并回主干。
+const currentBranch = capture('git', ['rev-parse', '--abbrev-ref', 'HEAD'])
+if (currentBranch !== 'main') {
+  console.error(
+    `发布必须在 main 分支执行（当前：${currentBranch}）。\n` +
+      '高风险改动请先 squash 合并回 main，再重新执行；不要在短命分支或 detached HEAD 上打包。',
+  )
+  process.exit(2)
+}
 
 const previousTag = capture('git', ['tag', '--merged', 'HEAD', '--sort=-version:refname'])
   .split('\n')

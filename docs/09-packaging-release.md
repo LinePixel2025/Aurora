@@ -31,8 +31,8 @@ pnpm release -- --publish --publish-center --center-url <Center 地址> --center
 pnpm release -- --publish --push   # 顺便把 tag 推到 origin
 ```
 
-`scripts/release.mjs` 的预检：工作区必须干净（否则用 `--force` 显式承担"把未提交改动打进包"的风险）；
-产物校验通过才会打 tag。
+`scripts/release.mjs` 的预检：**必须在 `main` 分支**（非 `main` 直接以退出码 2 拒绝）、工作区必须干净
+（否则用 `--force` 显式承担"把未提交改动打进包"的风险）；产物校验通过才会打 tag。
 
 > 默认输出目录被占用（例如 IDE 索引锁住 `win-unpacked/resources/app.asar`）时，可把
 > electron-builder 输出改到子目录（`--config.directories.output=release/alt-xxx`），把三个资产
@@ -43,6 +43,30 @@ pnpm release -- --publish --push   # 顺便把 tag 推到 origin
 `Aurora-Setup-<版本>.exe.blockmap` 与 `latest.yml` 同时发布到 GitHub Releases 和 Aurora Center。
 只上传 GitHub、或只更新 Center 网页包但未同步 release 资产，都不算发布完成；Center 上传失败时，
 本次发布按失败处理，修复后把三个资产重新上传再宣布完成。
+
+### 分支与合并（高风险改动）
+
+日常仍在 `main` 主干开发（提交粒度与发布口径不变）。只有四类**高风险改动**先开**短命分支 + 自审 PR**：
+
+| 类别 | 判定范围 |
+|---|---|
+| 配置 Schema 迁移 | 推进 `CONFIG_VERSION`，或改 `packages/shared/src/config/schema.ts` / `migrations.ts` |
+| IPC 契约 | 改 `packages/shared/src/ipc/channels.ts` 或 `apps/desktop/src/preload/channels.ts`（改一侧也算） |
+| 两端共享渲染资产 | 改 `packages/shared/src/browser/**`（桌面与 Center Web 同源） |
+| 发布流程 | 改 `scripts/release*.mjs`、`apps/desktop/electron-builder.yml`、`.github/workflows/**` 或本文发布口径 |
+
+做法（分支存活期以「天」计，合并即删）：
+
+1. 从最新 `main` 开分支 `git switch -c risk/<主题>`。**开分支前确认没有其它会话 / 子代理在同一工作树写文件**；
+   并行开发用 `git worktree` 隔离，不要直接切分支。
+2. 正常提交（Conventional Commits、一功能一 commit），文档与代码一起进分支。
+3. 推送并开 PR：`git push -u origin risk/<主题>`，`gh pr create --base main --fill`。
+4. 按 [`.github/PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md) 自审：迁移链、通道双向断言、
+   两端截图、本地全量检查逐条打勾；需要云端干净环境时 `gh workflow run ci.yml --ref risk/<主题>`。
+5. **squash 合并**：`gh pr merge --squash --delete-branch`，保持 `main` 线性、发布说明不含合并提交。
+
+PR 只承担「自审 + 可回滚」，**不是强制门禁**（Free 私有仓库没有 branch protection，required checks 不可用）。
+不建 `develop` / `release` 长期分支，也不为普通改动手动开分支。
 
 ### CI（按需触发，不自动跑）
 
@@ -55,8 +79,9 @@ pnpm release -- --publish --push   # 顺便把 tag 推到 origin
 
 手动发起：Actions 页面 → **Run workflow**，或 `gh workflow run ci.yml`。
 
-**为什么默认不自动跑**：单人私有仓库、无 PR 门禁（GitHub 的 branch protection 需 Pro），
-本地 `pnpm test`（598 项，约 8s）+ `pnpm build`（约 6s）已覆盖同一套检查；
+**为什么默认不自动跑**：单人私有仓库；PR 只用于高风险改动自审、不构成强制门禁
+（GitHub 的 branch protection 需 Pro），
+本地 `pnpm test`（2930 项 / 204 个文件，约 30s）+ `pnpm build`（约 6s）已覆盖同一套检查；
 自动跑只会产生与代码无关的红噪音（典型是下方 `minimumReleaseAge` 的安装期拦截），
 拖慢开发节奏。**发布前的权威验证走本地 `scripts/release.mjs`。**
 
