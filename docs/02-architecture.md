@@ -49,7 +49,7 @@
 | 流光提醒（banner-glow / banner-card） | WindowManager.showBanner | 各 1     | 两扇内部窗口：整屏穿透光带 + 可点卡片；统一走 `BannerService`，不进 `WINDOW_NAMES`、不写几何持久化                                                |
 | 桌面小组件（widget） | `main/plugins/widgets.ts` | ≤ 8        | 插件贡献的无边框透明窗口；默认置顶、`focusable:false`、不占任务栏；布局写 `plugin-widget-layout.json`（不进 settings）                                  |
 | 自感知流光浮层       | WindowManager | 1                       | 内部透明置顶浮层；仅在文件分析进行中、提示条可见且 `appearance.awarenessGlow` 未关闭时**覆盖目标显示器整块矩形**（v33 起四边流光，渲染层只在四条边画光带）。鼠标穿透、不可聚焦、不进 `WINDOW_NAMES` / 任务栏 / 窗口状态 |
-| Computer Use 浮层（computer-use） | WindowManager | 每显示器 1 + HUD 1 | 会话期间每块显示器一扇透明置顶窗（虚拟光标 + 四边流光）与底部 HUD；鼠标穿透、不可聚焦、`setContentProtection(true)` 不进截图；不进 `WINDOW_NAMES`、不写几何（v39，06 §28） |
+| Computer Use 浮层（computer-use） | WindowManager | 每显示器 1 + 过程面板 1 | 首次操作时每块显示器一扇透明置顶窗（虚拟光标 + 顶部光谱流光）与顶部操作过程面板；鼠标穿透、不可聚焦、**不做内容保护**（远程桌面看不到），操作期间持续显示、实时更新；不进 `WINDOW_NAMES`、不写几何（v39，06 §28） |
 
 约定：**主界面、设置、记忆库、自动化详情窗口与插件配置窗口**显示任务栏图标（`skipTaskbar: false`）且可最小化 / 最大化（Windows 式标题栏按钮，2026-09 前端重构起）；提示条与引导窗口仍隐藏任务栏图标。所有窗口的「关闭」= 隐藏（仅托盘“退出”真正退出），托盘仍是统一管理入口。
 

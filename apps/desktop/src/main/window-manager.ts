@@ -364,8 +364,8 @@ export class WindowManager {
   private bannerCardLoad: Promise<void> | undefined
   /**
    * Computer Use 浮层（v39，docs/06 §28）：每块显示器一扇透明置顶窗 + 一扇 HUD。
-   * 都不在 `WINDOW_NAMES` 里、不写几何、不占任务栏；`setContentProtection(true)` 让它们
-   * 不出现在 Agent 的截屏里。
+   * 都不在 `WINDOW_NAMES` 里、不写几何、不占任务栏；**不做内容保护**（远程桌面会看不到），
+   * 进入操作模式后持续显示、实时更新（模型截图里会带上浮层，这是持续可见的取舍）。
    */
   private readonly computerUseOverlays = new Map<
     number,
@@ -1334,11 +1334,12 @@ export class WindowManager {
   // ───────────────────────── Computer Use 浮层（v39，docs/06 §28） ─────────────────────────
 
   /**
-   * 显示 Computer Use 浮层：每块显示器一扇透明窗 + 一块底部 HUD。
+   * 显示 Computer Use 浮层：每块显示器一扇透明窗 + 一块**顶部**操作过程面板。
    *
    * 三条硬口径：`showInactive()`（绝不抢用户当前应用的焦点）、
    * `setIgnoreMouseEvents(true, { forward: true })`（透明 ≠ 穿透，必须显式开）、
-   * `setContentProtection(true)`（浮层不进 Agent 截屏）。
+   * **不用内容保护**（远程桌面 / 屏幕共享下会完全不可见）；进入操作模式后一直显示，
+   * 用户要求「特效与提示框一直在场、实时更新」，因此不再在截屏时隐藏它们。
    */
   async showComputerUseOverlays(
     displays: ReadonlyArray<{ id: number; bounds: WindowBounds }>,
@@ -1589,13 +1590,10 @@ export class WindowManager {
     } catch (error) {
       this.options.logger.warn('Computer Use 浮层鼠标穿透不可用', { error: String(error) })
     }
-    let contentProtected = false
-    try {
-      win.setContentProtection(true)
-      contentProtected = win.isContentProtected()
-    } catch (error) {
-      this.options.logger.warn('Computer Use 浮层内容保护不可用', { error: String(error) })
-    }
+    // 不再使用 `setContentProtection(true)`：WDA_EXCLUDEFROMCAPTURE 会让窗口在远程桌面 /
+    // 屏幕共享（本机实测 RustDesk）里直接不可见，用户就看不到光标、流光与过程面板。
+    // 浮层在操作期间**持续显示**，不再为截图隐藏。
+    const contentProtected = false
     this.reassertComputerUseTopmost(win)
     win.on('always-on-top-changed', (_event, isAlwaysOnTop) => {
       if (isAlwaysOnTop) return
@@ -1659,13 +1657,8 @@ export class WindowManager {
       this.computerUseHudMousePassthrough = false
       this.options.logger.warn('Computer Use HUD 鼠标穿透不可用', { error: String(error) })
     }
-    try {
-      win.setContentProtection(true)
-      this.computerUseHudContentProtected = win.isContentProtected()
-    } catch (error) {
-      this.computerUseHudContentProtected = false
-      this.options.logger.warn('Computer Use HUD 内容保护不可用', { error: String(error) })
-    }
+    // 同浮层：内容保护会让远程桌面看不到过程面板；改由截图前临时隐藏来保证不进截图。
+    this.computerUseHudContentProtected = false
     this.reassertComputerUseTopmost(win)
     win.on('closed', () => {
       if (this.computerUseHudWindow === win) {
@@ -1689,11 +1682,12 @@ export class WindowManager {
 
   private computerUseHudBounds(): WindowBounds {
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    // 置顶操作过程面板：贴在目标显示器顶部居中（不是底部）。窗口 = 卡片，透明区不拦截鼠标。
     const width = 560
-    const height = 48
+    const height = 116
     return {
       x: Math.round(display.bounds.x + (display.bounds.width - width) / 2),
-      y: Math.round(display.bounds.y + display.bounds.height - height - 28),
+      y: Math.round(display.bounds.y + 20),
       width,
       height,
     }

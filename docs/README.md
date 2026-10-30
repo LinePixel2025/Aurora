@@ -9,8 +9,8 @@
 
 **开发中：Computer Use（配置 Schema v39）**——让 Agent 在用户显式授权后截屏并操控真实
 鼠标 / 键盘 / 窗口 / UI Automation：常驻 PowerShell 输入宿主、虚拟光标与持续流光浮层、
-实时操作 HUD / 对话状态条、独立设置页、按多模态模型与会话授权三层门控。设计见
-[06 §28](./06-agent-core.md)、[07](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)。
+顶部操作过程面板 / 对话状态条、`/computer` 授权入口、独立设置页、按多模态模型与会话授权三层门控。
+设计见 [06 §28](./06-agent-core.md)、[07](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)。
 未发布前不改变上一版安装包。
 
 **当前发布 v0.5.8：Center 页面型插件面板参数修复 + 页面断流**（配置 Schema 仍为

@@ -25,6 +25,7 @@ export const COMPUTER_USE_TOOL_NAMES = [
   'computer_window',
   'computer_ui',
   'computer_wait',
+  'computer_stop',
 ] as const
 export type ComputerUseToolName = (typeof COMPUTER_USE_TOOL_NAMES)[number]
 
@@ -142,6 +143,12 @@ export interface ComputerWaitInput {
   signal?: AbortSignal
 }
 
+/** `computer_stop`：Agent 主动退出操作模式（任务完成 / 用户要求停止 / 交还桌面）。 */
+export interface ComputerStopInput {
+  sessionId: string
+  signal?: AbortSignal
+}
+
 /**
  * 主进程端口：所有系统能力都在这里。
  *
@@ -155,6 +162,8 @@ export interface ComputerUsePort {
   window(input: ComputerWindowInput): Promise<ToolResult>
   ui(input: ComputerUiInput): Promise<ToolResult>
   wait(input: ComputerWaitInput): Promise<ToolResult>
+  /** 退出操作模式：撤销本会话授权、收起浮层与过程面板（幂等）。 */
+  stop(input: ComputerStopInput): Promise<ToolResult>
 }
 
 const DISPLAY_VALUES = ['auto', 'primary', 'cursor', 'foreground'] as const
@@ -208,6 +217,7 @@ export function createComputerUseTools(options: ComputerUseToolOptions): ToolDef
     windowTool(port),
     uiTool(port),
     waitTool(port),
+    stopTool(port),
   ]
 }
 
@@ -384,6 +394,29 @@ function waitTool(port: ComputerUsePort): ToolDefinition {
     },
     sensitivity: 'safe',
     execute: async (input, ctx) => guard(() => port.wait(parseWait(input, ctx))),
+  }
+}
+
+function stopTool(port: ComputerUsePort): ToolDefinition {
+  return {
+    name: 'computer_stop',
+    description:
+      '主动退出 Computer Use 操作模式：任务完成、用户要求停止，或准备把桌面交还用户时调用。' +
+      '退出后本会话授权立即失效，屏幕上的流光与过程面板收起；下次操作需用户重新输入 /computer。',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+    sensitivity: 'safe',
+    execute: async (_input, ctx) =>
+      guard(() =>
+        port.stop({
+          sessionId: ctx.sessionId,
+          ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+        }),
+      ),
   }
 }
 

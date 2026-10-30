@@ -1212,7 +1212,7 @@ export type NotificationsSettings = z.infer<typeof NotificationsSchema>
  * AI 的 `set_setting` 一律改不动；只能由用户在设置页开启。
  *
  * 门控不是"注册后再拒绝"：工具注册还要求当前生效模型开启图片输入（vision），
- * 且每个会话必须由用户在输入框显式授权后才从请求工具面里出现。
+ * 且每个会话必须由用户在输入框输入 `/computer` 显式授权后才从请求工具面里出现。
  */
 export const ComputerUseSchema = z
   .object({
@@ -1220,9 +1220,9 @@ export const ComputerUseSchema = z
     enabled: z.boolean().default(false),
     /** 是否绘制虚拟光标（光环 + 拖尾）；原生系统指针始终保留。 */
     showVirtualCursor: z.boolean().default(true),
-    /** 是否绘制屏幕四边流光；会话期间持续播放。 */
+    /** 是否绘制屏幕顶部的光谱流光带（与「流光提醒」同款）；首次操作开始后持续播放。 */
     glow: z.boolean().default(true),
-    /** 是否显示底部一行实时操作 HUD。 */
+    /** 是否显示顶部操作过程面板（当前步骤 + 最近几步，不含坐标）。 */
     showHud: z.boolean().default(true),
     /** 鼠标移动的平滑时长（毫秒，0 = 瞬移）。 */
     moveDurationMs: z.number().int().min(0).max(1000).default(160),

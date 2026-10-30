@@ -41,7 +41,7 @@ const readiness = computed(() => {
   if (!config.value.enabled) return '未启用'
   if (!vision.value) return '当前模型不支持图片输入'
   if (permissionMode.value === 'readonly') return '只读档下不可用'
-  return '可用（在对话输入框授权后使用）'
+  return '可用（在对话输入框输入 /computer 授权后使用）'
 })
 
 async function save(patch: Partial<ComputerUseSettings>): Promise<boolean> {
@@ -90,13 +90,14 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
       </div>
       <div class="group-body">
         <p class="section-desc">
-          Agent 会截取屏幕并合成鼠标、键盘、窗口操作。只有你在对话输入框再次授权后才会执行。
+          Agent 会截取屏幕并合成鼠标、键盘、窗口操作。只有你在对话输入框输入 /computer
+          授权后才会执行。
         </p>
 
         <SettingField
           data-field="computer-use.enabled"
           label="启用 Computer Use"
-          hint="默认关闭；开启后仍需在对话输入框逐会话授权"
+          hint="默认关闭；开启后仍需在对话输入框输入 /computer 逐会话授权"
         >
           <label class="row tiny">
             <input
@@ -141,7 +142,7 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
         <SettingField
           data-field="computer-use.glow"
           label="屏幕流光"
-          hint="会话期间四边持续流动的极光，表示正在操作"
+          hint="操作期间屏幕顶端的光谱流光，表示 Agent 正在动手"
         >
           <label class="row tiny">
             <input
@@ -155,8 +156,8 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
 
         <SettingField
           data-field="computer-use.showHud"
-          label="实时操作提示"
-          hint="屏幕底部一行当前动作摘要，不显示输入内容"
+          label="操作过程面板"
+          hint="屏幕顶部显示这一步在干什么与最近几步；不显示坐标与输入内容"
         >
           <label class="row tiny">
             <input
@@ -164,7 +165,7 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
               :checked="config.showHud"
               @change="save({ showHud: ($event.target as HTMLInputElement).checked })"
             />
-            <span>显示底部 HUD</span>
+            <span>显示顶部过程面板</span>
           </label>
         </SettingField>
       </div>
@@ -321,7 +322,8 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
       </div>
       <div class="group-body">
         <p class="section-desc">
-          在对话输入框点「操作电脑」授权，再描述任务。同一时间只允许一个会话；停止可用对话状态条、托盘或
+          在对话输入框输入 /computer 授权（也可写 /computer
+          任务），再描述任务。同一时间只允许一个会话；停止可用对话状态条、托盘或
           <code class="mono">Ctrl+Alt+Shift+Esc</code>。
         </p>
         <p class="section-desc">

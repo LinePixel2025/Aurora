@@ -300,12 +300,12 @@
     "durationMs": 6000, // v38：停留时长（2000–30000）
   },
   // v39 新增：Computer Use（docs/06 §28）。整组在 SETTINGS_READONLY_PREFIXES 里；
-  // 真正的会话授权在对话输入框逐会话确认，不写配置。
+  // 真正的会话授权在对话输入框用 /computer 斜杠命令逐会话确认，不写配置。
   "computerUse": {
     "enabled": false, // 默认关闭；仅 Windows + 多模态模型 + 非只读档时生效
     "showVirtualCursor": true, // 虚拟光标（光环 + 拖尾）；原生指针保留
-    "glow": true, // 屏幕四边持续流光
-    "showHud": true, // 底部一行操作 HUD
+    "glow": true, // 操作期间屏幕顶部的光谱流光（与「流光提醒」同款）
+    "showHud": true, // 屏幕顶部操作过程面板（当前步骤 + 最近 3 步）
     "moveDurationMs": 160, // 鼠标平滑移动（0–1000）
     "typingDelayMs": 10, // 逐字符间隔（0–200）
     "screenshotMaxWidth": 1280, // 截图最长边（640–2560）
@@ -651,7 +651,7 @@
   节奏（移动时长 / 输入间隔 / 截图宽度）、限额（动作上限 / 闲置结束）与应用允许 / 禁止名单。
   整组在 `SETTINGS_READONLY_PREFIXES` 里 —— 允许 AI 截屏并合成输入是本机最高权限的授权边界，
   AI 不得自行开启或放宽；只有用户在设置页能改。真正的「本会话是否授权」不写配置，
-  由输入框「操作电脑」按钮逐会话确认。`SettingsPatch` 新增可选 `computerUse` 字段（顶层浅合并）。
+  由对话输入框的 `/computer` 斜杠命令逐会话确认。`SettingsPatch` 新增可选 `computerUse` 字段（顶层浅合并）。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -1033,7 +1033,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     `voice` 语音（TTS 区组 + STT 区组）、
     `agent` Agent 设置（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠；2026-10 前称「智能与工具」）、
     **`computer-use` Computer Use（v39 新增，06 §28）**：总开关与前提（平台 / 模型 vision / 权限档）、
-    视觉（`showVirtualCursor` / `glow` / `showHud`）、节奏（`moveDurationMs` / `typingDelayMs` /
+    视觉（`showVirtualCursor` / `glow` / `showHud`，其中 `showHud` = 顶部操作过程面板）、
+    节奏（`moveDurationMs` / `typingDelayMs` /
     `screenshotMaxWidth`）、安全限额（`maxActions` / `idleStopMinutes` / `allowedApps` /
     `deniedApps`）与使用说明；锚点前缀 `computer-use.*`，截图场景 `settings-computer-use.png`。
     整组在 `SETTINGS_READONLY_PREFIXES`，AI 不可改。

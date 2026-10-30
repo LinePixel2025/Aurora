@@ -17,18 +17,30 @@ function port(): ComputerUsePort {
     window: vi.fn(async () => ({ content: 'window ok' })),
     ui: vi.fn(async () => ({ content: 'ui ok' })),
     wait: vi.fn(async () => ({ content: 'waited' })),
+    stop: vi.fn(async () => ({ content: 'stopped' })),
   }
 }
 
 const ctx = { sessionId: 's1' }
 
 describe('Computer Use 工具定义', () => {
-  it('六个工具都有名字且默认串行', () => {
+  it('七个工具都有名字且默认串行', () => {
     const tools = createComputerUseTools({ port: port() })
     expect(tools.map((tool) => tool.name)).toEqual([...COMPUTER_USE_TOOL_NAMES])
     expect(tools.every((tool) => tool.parallel !== true)).toBe(true)
     expect(tools.find((tool) => tool.name === 'computer_screenshot')?.sensitivity).toBe('safe')
     expect(tools.find((tool) => tool.name === 'computer_mouse')?.sensitivity).toBe('confirm')
+    expect(tools.find((tool) => tool.name === 'computer_stop')?.sensitivity).toBe('safe')
+  })
+
+  it('computer_stop 透传 sessionId 并允许 Agent 主动退出', async () => {
+    const fake = port()
+    const tool = createComputerUseTools({ port: fake }).find(
+      (item) => item.name === 'computer_stop',
+    )!
+    const result = await tool.execute({}, ctx)
+    expect(result.isError).toBeUndefined()
+    expect(fake.stop).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }))
   })
 
   it('截图透传图片分片与默认 display', async () => {

@@ -3225,7 +3225,7 @@ async function bootstrap(): Promise<void> {
   deps.terminal = terminalService
   // 内置浏览器的两条回执通道（browser:agentReport / agentStop）：管理器在 7.1.2b 已建好
   if (browserAgent !== undefined) deps.browserAgent = browserAgent
-  // Computer Use（v39）：start/stop 只由输入框开关 / 状态条经 IPC 调用
+  // Computer Use（v39）：start/stop 只由 `/computer` 斜杠命令 / 状态条经 IPC 调用
   if (
     computerUseService !== undefined &&
     computerUsePort !== undefined &&
@@ -3535,8 +3535,8 @@ async function runCapture(dir: string): Promise<void> {
   }
 
   const chatComputerUseTarget: CaptureTarget = {
-    // Computer Use 输入框授权入口（v39）：先打开总开关 + 当前模型 vision，再点开浮层。
-    // 只验证入口与说明，不真的 start（start 会建浮层并占用会话）。
+    // Computer Use 授权入口（v39，2026-10-31 改为斜杠命令）：先打开总开关 + 当前模型 vision，
+    // 再在输入框敲 `/computer` 唤起候选。只验证入口与候选，不真的 start（start 会占用会话）。
     name: 'chat',
     file: 'chat-computer-use.png',
     prepare: async () => {
@@ -3569,9 +3569,9 @@ async function runCapture(dir: string): Promise<void> {
         },
       })
     },
-    act: '(async () => { const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); await wait(350); const button = document.querySelector(\'[data-field="chat.computer-use"]\'); if (button !== null) button.click(); await wait(180); return true; })()',
+    act: '(async () => { const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); await wait(350); const el = document.querySelector("textarea.composer-input"); if (el === null) return false; const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set; setter.call(el, "/computer"); el.dispatchEvent(new Event("input", { bubbles: true })); await wait(260); return true; })()',
     check:
-      "(() => { const trigger = document.querySelector('[data-field=\"chat.computer-use\"]'); const menu = document.querySelector('[data-field=\"chat.computer-use-menu\"]'); const start = document.querySelector('[data-field=\"chat.computer-use-start\"]'); return { pass: trigger !== null && menu !== null && start !== null, trigger: trigger === null ? '' : trigger.textContent, menu: menu !== null, start: start !== null }; })()",
+      "(() => { const item = document.querySelector('[data-field=\"chat.slash-computer\"]'); const toggle = document.querySelector('[data-field=\"chat.computer-use\"]'); const start = document.querySelector('[data-field=\"chat.computer-use-start\"]'); const text = item === null ? '' : item.textContent || ''; return { pass: item !== null && text.indexOf('/computer') !== -1 && toggle === null && start === null, text, item: item !== null, toggle: toggle !== null, start: start !== null }; })()",
   }
 
   // 场景级过滤：`AURORA_CAPTURE_ONLY=<文件名子串, ...>`；特殊值 `failed` = 只重跑上次
@@ -3757,13 +3757,13 @@ async function runCapture(dir: string): Promise<void> {
           }
         },
       },
-      // Computer Use（v39，docs/06 §28）：虚拟光标 + 流光浮层、底部 HUD、设置页。
+      // Computer Use（v39，docs/06 §28）：虚拟光标 + 流光浮层、顶部操作过程面板、设置页。
       {
         name: 'computer-use-overlay',
         file: 'computer-use-overlay.png',
         query: { layer: 'overlay', preview: '1' },
         check:
-          "(() => { const root = document.querySelector('[data-field=\"computer-use.root\"]'); const glow = document.querySelector('[data-field=\"computer-use.glow\"]'); const cursor = document.querySelector('[data-field=\"computer-use.cursor\"]'); const ring = document.querySelector('[data-field=\"computer-use.cursor-ring\"]'); const edge = document.querySelector('.cu-glow-edge'); const style = edge === null ? null : getComputedStyle(edge); return { pass: root !== null && glow !== null && cursor !== null && ring !== null && style !== null && style.animationName.includes('computer-use-glow-flow'), glowAnimation: style === null ? '' : style.animationName, cursor: cursor !== null, ring: ring !== null }; })()",
+          "(() => { const root = document.querySelector('[data-field=\"computer-use.root\"]'); const glow = document.querySelector('[data-field=\"computer-use.glow\"]'); const band = document.querySelector('[data-field=\"computer-use.glow-band\"]'); const bloom = document.querySelector('.cu-glow-bloom'); const halo = document.querySelector('.cu-glow-halo'); const line = document.querySelector('.cu-glow-line'); const bloomStyle = bloom === null ? null : getComputedStyle(bloom); const lineStyle = line === null ? null : getComputedStyle(line); const cursor = document.querySelector('[data-field=\"computer-use.cursor\"]'); const ring = document.querySelector('[data-field=\"computer-use.cursor-ring\"]'); return { pass: root !== null && glow !== null && band !== null && bloom !== null && halo !== null && line !== null && bloomStyle !== null && bloomStyle.animationName.indexOf('computer-use-glow-breathe') !== -1 && lineStyle !== null && lineStyle.animationName.indexOf('computer-use-glow-spectrum') !== -1 && cursor !== null && ring !== null, bloomAnimation: bloomStyle === null ? '' : bloomStyle.animationName, lineAnimation: lineStyle === null ? '' : lineStyle.animationName, cursor: cursor !== null, ring: ring !== null }; })()",
         nativeCheck: () => {
           const diagnostics = manager.getComputerUseDiagnostics()
           const overlay = diagnostics.overlays[0]
@@ -3774,7 +3774,8 @@ async function runCapture(dir: string): Promise<void> {
               overlay.alwaysOnTop &&
               overlay.focusable === false &&
               overlay.mousePassthrough &&
-              overlay.contentProtected,
+              // 回归护栏：内容保护会让远程桌面看不到浮层，必须是 false（改用截屏前隐藏）
+              overlay.contentProtected === false,
             ...diagnostics,
           }
         },
@@ -3784,16 +3785,25 @@ async function runCapture(dir: string): Promise<void> {
         file: 'computer-use-hud.png',
         query: { layer: 'hud', preview: '1' },
         check:
-          "(() => { const hud = document.querySelector('[data-field=\"computer-use.hud\"]'); const text = document.querySelector('[data-field=\"computer-use.hud-text\"]'); const dot = document.querySelector('.hud-dot'); const style = dot === null ? null : getComputedStyle(dot); return { pass: hud !== null && text !== null && (text.textContent || '').includes('正在操作') && style !== null && style.animationName.includes('computer-use-hud-heartbeat'), text: text === null ? '' : text.textContent, animation: style === null ? '' : style.animationName }; })()",
+          "(() => { const hud = document.querySelector('[data-field=\"computer-use.hud\"]'); const title = document.querySelector('[data-field=\"computer-use.hud-title\"]'); const text = document.querySelector('[data-field=\"computer-use.hud-text\"]'); const items = document.querySelectorAll('[data-field=\"computer-use.hud-step\"]'); const currentIcon = document.querySelector('.hud-current-icon'); const historyIcons = document.querySelectorAll('.hud-history-icon'); const repeats = document.querySelectorAll('.hud-repeat'); const timer = document.querySelector('.hud-time'); const dot = document.querySelector('.hud-dot'); const style = dot === null ? null : getComputedStyle(dot); const titleText = title === null ? '' : title.textContent || ''; const stepText = text === null ? '' : text.textContent || ''; return { pass: hud !== null && title !== null && titleText.indexOf('正在操作') !== -1 && text !== null && stepText.indexOf('正在') !== -1 && stepText.indexOf('(') === -1 && items.length >= 2 && currentIcon !== null && historyIcons.length >= 2 && repeats.length >= 1 && timer === null && style !== null && style.animationName.indexOf('computer-use-hud-heartbeat') !== -1, title: titleText, text: stepText, history: items.length, historyIcons: historyIcons.length, repeats: repeats.length, hasTimer: timer !== null, animation: style === null ? '' : style.animationName }; })()",
         nativeCheck: () => {
           const hud = manager.getComputerUseDiagnostics().hud
+          const display =
+            hud.bounds === undefined ? undefined : screen.getDisplayMatching(hud.bounds)
+          // 「置顶显示操作过程」：窗口必须贴在显示器**顶部**（旧底部 HUD 会在这里变红）。
+          const topPinned =
+            hud.bounds !== undefined &&
+            display !== undefined &&
+            hud.bounds.y - display.bounds.y <= 200
           return {
             pass:
               hud.exists &&
               hud.visible &&
               hud.focusable === false &&
               hud.mousePassthrough &&
-              hud.contentProtected,
+              hud.contentProtected === false &&
+              topPinned,
+            topPinned,
             ...hud,
           }
         },

@@ -269,7 +269,7 @@ export const IPC = {
   /**
    * Computer Use（v39，docs/06 §28）：用户对「截屏 + 合成鼠标键盘」的显式授权。
    *
-   * `start` / `stop` 只能由渲染层（输入框开关 / 状态条）调用；Agent 没有开启入口
+   * `start` / `stop` 只能由渲染层（`/computer` 斜杠命令 / 状态条）调用；Agent 没有开启入口
    * （`computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`）。`event` 是主进程 → 渲染层的
    * 动作 / 光标 / 状态推送（on/off 成对）。
    */

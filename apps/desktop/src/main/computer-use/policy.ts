@@ -110,36 +110,32 @@ export function isListableWindow(input: {
   return input.visible && input.title.trim() !== '' && input.width > 1 && input.height > 1
 }
 
-/** 动作摘要（给人看；**绝不包含输入文字 / 剪贴板内容**）。 */
-export function describeMouseAction(input: {
-  action: string
-  button?: string
-  display?: { x: number; y: number }
-  physical?: { x: number; y: number }
-}): string {
-  const where =
-    input.display === undefined
-      ? ''
-      : ` (${Math.round(input.display.x)}, ${Math.round(input.display.y)})`
+/**
+ * 动作摘要（给人看的过程说明，**不是给模型的坐标回执**）。
+ *
+ * 口径：一律「正在 …」的现在进行时，只说这一步在干什么；**不写坐标 / 矩形 / 尺寸**，
+ * 也**绝不包含输入文字 / 剪贴板内容**。坐标只出现在工具结果里，供模型换算使用。
+ */
+export function describeMouseAction(input: { action: string; button?: string }): string {
   switch (input.action) {
     case 'move':
-      return `移动鼠标到${where}`
+      return '正在移动鼠标'
     case 'click':
-      return `${buttonLabel(input.button)}单击${where}`
+      return `正在${buttonLabel(input.button)}单击`
     case 'double_click':
-      return `${buttonLabel(input.button)}双击${where}`
+      return `正在${buttonLabel(input.button)}双击`
     case 'right_click':
-      return `右键单击${where}`
+      return '正在右键单击'
     case 'middle_click':
-      return `中键单击${where}`
+      return '正在中键单击'
     case 'drag':
-      return `拖拽鼠标${where}`
+      return '正在拖拽'
     case 'scroll':
-      return `滚动鼠标${where}`
+      return '正在滚动'
     case 'position':
-      return '读取鼠标位置'
+      return '正在读取鼠标位置'
     default:
-      return `鼠标动作 ${input.action}${where}`
+      return `正在执行鼠标动作（${input.action}）`
   }
 }
 
@@ -154,35 +150,37 @@ export function describeKeyboardAction(input: {
   chars?: number
   keys?: readonly string[]
 }): string {
-  if (input.action === 'type') return `输入 ${Math.max(0, input.chars ?? 0)} 个字符`
-  return `按键 ${(input.keys ?? []).join('+')}`
+  if (input.action === 'type') {
+    return `正在输入文字（${Math.max(0, input.chars ?? 0)} 个字符）`
+  }
+  return `正在按 ${(input.keys ?? []).join('+')}`
 }
 
 export function describeWindowAction(input: { action: string; title?: string }): string {
   const title = input.title === undefined ? '' : `「${truncateTitle(input.title)}」`
   switch (input.action) {
     case 'list':
-      return '列出窗口'
+      return '正在查看窗口列表'
     case 'active':
-      return '读取前台窗口'
+      return '正在查看前台窗口'
     case 'activate':
-      return `激活窗口${title}`
+      return `正在切换到${title}`
     case 'move':
-      return `移动窗口${title}`
+      return `正在移动窗口${title}`
     case 'resize':
-      return `调整窗口大小${title}`
+      return `正在调整窗口大小${title}`
     case 'minimize':
-      return `最小化窗口${title}`
+      return `正在最小化${title}`
     case 'maximize':
-      return `最大化窗口${title}`
+      return `正在最大化${title}`
     case 'restore':
-      return `还原窗口${title}`
+      return `正在还原${title}`
     case 'close':
-      return `关闭窗口${title}`
+      return `正在关闭${title}`
     case 'launch':
-      return `启动应用${title}`
+      return `正在启动应用${title}`
     default:
-      return `窗口动作 ${input.action}${title}`
+      return `正在执行窗口动作（${input.action}）${title}`
   }
 }
 
@@ -190,23 +188,23 @@ export function describeUiAction(input: { action: string; name?: string }): stri
   const target = input.name === undefined ? '' : `「${truncateTitle(input.name)}」`
   switch (input.action) {
     case 'tree':
-      return '读取控件树'
+      return '正在读取界面控件'
     case 'find':
-      return '查找控件'
+      return '正在查找界面控件'
     case 'invoke':
-      return `调用控件${target}`
+      return `正在点击控件${target}`
     case 'set_value':
-      return `设置控件值${target}`
+      return `正在填写控件${target}`
     case 'focus':
-      return `聚焦控件${target}`
+      return `正在定位控件${target}`
     case 'expand':
-      return `展开控件${target}`
+      return `正在展开控件${target}`
     case 'collapse':
-      return `折叠控件${target}`
+      return `正在折叠控件${target}`
     case 'select':
-      return `选择控件${target}`
+      return `正在选择控件${target}`
     default:
-      return `UI 动作 ${input.action}${target}`
+      return `正在操作界面控件（${input.action}）${target}`
   }
 }
 

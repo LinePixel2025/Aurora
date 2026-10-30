@@ -2791,7 +2791,7 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   端口（`packages/agent-core/src/tools/computer-use.ts`），PowerShell 输入宿主、截屏、坐标换算、
   应用策略与浮层全在主进程（`apps/desktop/src/main/computer-use/`）。
 
-- **工具表（6 个，`COMPUTER_USE_TOOL_NAMES`）**：
+- **工具表（7 个，`COMPUTER_USE_TOOL_NAMES`）**：
 
 | 工具 | 动作 | sensitivity | 关键约束 |
 |---|---|---|---|
@@ -2801,18 +2801,24 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 | `computer_window` | list / active / activate / move / resize / minimize / maximize / restore / close / launch | confirm | 窗口 id 来自 list；titleMatch 必须唯一；launch 只接受 .exe / .com |
 | `computer_ui` | tree / find / invoke / set_value / focus / expand / collapse / select | confirm | 基于 UI Automation；path 来自 tree / find，布局变化后失效 |
 | `computer_wait` | 等待 0–30 秒 | safe | 等待期间会话保持运行 |
+| `computer_stop` | 主动退出操作模式 | safe | 任务完成 / 用户要求停止时调用；撤销本会话授权并收起浮层（幂等） |
 
 - **三层门控（缺一不可）**：
   1. **注册级**：`process.platform === 'win32'` + `computerUse.enabled` + 当前全局模型
-     `vision === true` + `agent.permissionMode !== 'readonly'`，否则 6 个工具一个都不注册；
+     `vision === true` + `agent.permissionMode !== 'readonly'`，否则 7 个工具一个都不注册；
   2. **请求级**：`computerUseRunProfile` 对未授权会话返回 `hiddenTools`，模型在系统提示词、
      `tools` 数组与循环里都看不到；会话级模型覆盖到非视觉模型时同样隐藏；
   3. **执行级**：端口的 `ensureCallAllowed` 每次调用重查会话授权 / 总开关 / 模型视觉 / 权限档，
      防止「请求开始后授权被撤销」继续操作。只读档同样不注册（点击输入有外部副作用）。
 
-- **授权生命周期**：授权只在内存里、按会话保存；用户在输入框点「操作电脑」并确认后
-  `computerUse:start` 建立，只允许同时一个会话；`stop`、关闭总开关、切只读档、锁屏 / 休眠、
-  模型失去视觉、闲置超时、应用退出都会撤销。应用重启不恢复。Agent 没有开启入口，
+- **授权生命周期**：授权只在内存里、按会话保存；用户在输入框输入 `/computer`（可带任务，
+  如 `/computer 打开记事本输入今天的待办`）后 `computerUse:start` 建立，只允许同时一个会话。
+  **`/computer` 同时是显式指令**：客户端会把
+  「请使用 Computer Use 工具操作电脑，完成：」放进用户消息，运行档也要求模型优先调用
+  `computer_*` 工具，而不是用 `run_command` / 内置浏览器替代。
+  **授权与「开始操作」是两件事**：`start` 只建立授权，不建浮层、不启动光标循环；Agent 的第一次
+  工具调用（截图 / 读窗口 / 动作）才进入操作态并显示浮层。`stop`、`computer_stop`（Agent 主动退出）、
+  关闭总开关、切只读档、锁屏 / 休眠、模型失去视觉、闲置超时、应用退出都会撤销。应用重启不恢复。Agent 没有开启入口，
   `computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`，`set_setting` 改不动。
 
 - **坐标协议**：模型读的是**最近一张截图的图片像素**。主进程记录 `ScreenView`
@@ -2840,22 +2846,30 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   - 不暴露 `mouse_down/up`、`key_down/up` 给模型；点击 / 拖拽 / 组合键在一条命令内完成，
     宿主退出前 `release_all`。
   - 限额：`maxActions` 只计有副作用动作，`idleStopMinutes` 从最后一次调用起算；都热生效。
-  - 日志 / HUD / 事件摘要不含输入文字、剪贴板或截图内容。
+  - 日志与事件摘要不含坐标、输入文字、剪贴板或截图内容；过程面板只显示动作描述与步数。
 
 - **用户干扰**：用户移动鼠标 / 敲键盘**不会**暂停、隐藏浮层或撤销授权；光标循环持续跟随
   真实指针，下一动作重新定位。只有「目标被换掉 / 受保护应用」会让**单次动作**失败并要求
   重新截图，会话继续。
 
-- **浮层**：每块显示器一扇透明置顶窗（鼠标穿透、不可聚焦、`setContentProtection(true)`）画
-  虚拟光标 + 四边持续流光；一扇底部 HUD 显示当前动作。两者 `showInactive()`，不进截图；
-  对话窗另有状态条与停止按钮。停止入口：状态条、输入框开关、托盘、`Ctrl+Alt+Shift+Esc`。
+- **浮层**：每块显示器一扇透明置顶窗（鼠标穿透、不可聚焦）画虚拟光标 + **顶部光谱流光带**
+  （与「流光提醒」同款：品红 → 紫罗兰 → 强调色 → 青 → 琥珀，大半径模糊 + 呼吸 / 流转）；
+  另有一扇**顶部操作过程面板**（同样穿透 / 不可聚焦），逐条显示
+  「正在查看屏幕 / 正在点击『保存』/ 正在输入文字（12 个字符）」这类**动作描述**，
+  不显示坐标、尺寸、输入文字或截图内容。每一步带机器可读 `action`，面板与对话状态条据此显示
+  语义图标；**连续的同一 `action + summary` 合并为 `×N`**，`ComputerUseStatus.recentActions`
+  是 `{ action, summary, count }[]`（新 → 旧）。浮层在**第一次工具调用**时出现，**进入操作模式后
+  持续在场、每个动作实时更新**（不再为截图隐藏）。两者 `showInactive()`；**不做
+  `setContentProtection`**（远程桌面 / 屏幕共享下会完全看不到），代价是模型截图里会带上
+  过程面板与虚拟光标。对话窗另有状态条与停止按钮。
+  停止入口：状态条、托盘、`Ctrl+Alt+Shift+Esc`，以及 **Agent 自己调用 `computer_stop`**。
 
 - **配置（v39，`computerUse`）**：
 
 | 字段 | 默认 | 作用 |
 |---|---|---|
 | `enabled` | `false` | 总开关；默认关闭 |
-| `showVirtualCursor` / `glow` / `showHud` | `true` | 虚拟光标 / 屏幕流光 / 底部 HUD |
+| `showVirtualCursor` / `glow` / `showHud` | `true` | 虚拟光标 / 屏幕流光 / 顶部操作过程面板 |
 | `moveDurationMs` | `160` | 鼠标平滑移动时长（0–1000） |
 | `typingDelayMs` | `10` | 逐字符间隔（0–200） |
 | `screenshotMaxWidth` | `1280` | 截图最长边（640–2560） |

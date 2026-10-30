@@ -65,6 +65,13 @@ export const BUILTIN_COMMANDS: readonly SlashItem[] = [
     description: '把历史压成摘要，降低后续请求的上下文占用',
   },
   {
+    id: 'command:computer',
+    kind: 'command',
+    name: 'computer',
+    label: '操作电脑',
+    description: '让 Agent 用 Computer Use 操作电脑（仅当前会话）',
+  },
+  {
     id: 'command:subagents',
     kind: 'command',
     name: 'subagents',

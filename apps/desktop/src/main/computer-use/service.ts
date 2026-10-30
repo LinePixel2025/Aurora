@@ -2,10 +2,12 @@
  * Computer Use 会话状态机（docs/06 §28）。
  *
  * 只做「授权 / 唯一会话 / 限额 / 事件 / 浮层协调」，不碰系统 API：
- * - 授权只在内存里：start 建立，stop / 切换设置 / 锁屏 / 退出撤销；
+ * - 授权只在内存里：`start` 建立，stop / 切换设置 / 锁屏 / 退出撤销；
+ * - **授权 ≠ 开始操作**：`start` 不建浮层，第一次工具调用（截图 / 读窗口 / 动作）才进入
+ *   操作态并显示流光浮层与顶部过程面板；
  * - 同一时间只允许一个会话操控桌面（桌面只有一个指针与焦点）；
  * - 动作上限只计有副作用的调用；截图 / 等待不计；
- * - 事件同时驱动浮层 HUD 与对话状态条，摘要不含输入文字。
+ * - 事件同时驱动浮层过程面板与对话状态条，摘要只描述「正在做什么」，不含坐标 / 输入文字。
  *
  * 依赖全部注入（settings / vision / overlay / 光标点 / 显示器），便于单测；
  * Electron 的 `screen` 与窗口创建留在装配层。
@@ -14,6 +16,7 @@ import type {
   ComputerUseEvent,
   ComputerUseSettings,
   ComputerUseStatus,
+  ComputerUseStep,
   Settings,
 } from '@aurora/shared'
 import type { Logger, PermissionMode } from '@aurora/shared'
@@ -79,12 +82,17 @@ export class ComputerUseService {
   private startedAt: string | undefined
   private actions = 0
   private lastAction: string | undefined
+  private lastActionKind: string | undefined
   private lastActionAt: string | undefined
   private idleTimer: ReturnType<typeof setTimeout> | undefined
   private cursorTimer: ReturnType<typeof setInterval> | undefined
   private lastCursor: { x: number; y: number } | undefined
   private lastDisplayId: number | undefined
   private stopHotkeyAvailable = false
+  /** 浮层是否已经为本次授权显示过（第一次工具调用时才置 true）。 */
+  private overlayShown = false
+  /** 最近几步动作描述（新 → 旧），供过程面板挂载时补齐历史。 */
+  private recentActions: ComputerUseStep[] = []
 
   constructor(options: ComputerUseServiceOptions) {
     this.options = options
@@ -122,7 +130,9 @@ export class ComputerUseService {
       actions: this.actions,
       maxActions: current.computerUse.maxActions,
       ...(this.lastAction === undefined ? {} : { lastAction: this.lastAction }),
+      ...(this.lastActionKind === undefined ? {} : { lastActionKind: this.lastActionKind }),
       ...(this.lastActionAt === undefined ? {} : { lastActionAt: this.lastActionAt }),
+      ...(this.recentActions.length === 0 ? {} : { recentActions: [...this.recentActions] }),
       overlay,
       stopHotkeyAvailable: this.stopHotkeyAvailable,
       ...(this.disabledReason(current) === undefined
@@ -165,26 +175,21 @@ export class ComputerUseService {
     this.startedAt = startedAt
     this.actions = 0
     this.lastAction = undefined
+    this.lastActionKind = undefined
     this.lastActionAt = undefined
+    this.recentActions = []
+    this.overlayShown = false
     const displays = this.options.displays()
-    try {
-      await this.options.overlay.show(displays)
-    } catch (error) {
-      this.sessionId = undefined
-      this.startedAt = undefined
-      this.options.logger.warn('Computer Use 浮层启动失败', { error: String(error) })
-      throw new ComputerUseError('E_CU_OVERLAY', `浮层启动失败：${String(error)}`)
-    }
-    this.options.overlay.applyConfig(cfg)
+    // 授权本身**不**建浮层：用户刚敲 /computer 时屏幕上还没有任何操作，突然满屏流光会像
+    // 「已经开始乱点」。浮层由第一次工具调用经 `ensureOperating()` 显示。
     this.emit({
       type: 'started',
       sessionId,
       startedAt,
       displayIds: displays.map((display) => display.id),
     })
-    this.startCursorLoop()
     this.armIdleTimer()
-    this.options.logger.info('Computer Use 会话已开始', {
+    this.options.logger.info('Computer Use 授权已建立', {
       sessionId,
       displays: displays.map((display) => display.id),
     })
@@ -194,18 +199,24 @@ export class ComputerUseService {
   stop(reason: ComputerUseStatusStopReason = 'user'): ComputerUseStatus {
     if (this.sessionId === undefined) return this.status()
     const sessionId = this.sessionId
+    const wasShown = this.overlayShown
+    this.overlayShown = false
     this.clearTimers()
     this.sessionId = undefined
     this.startedAt = undefined
     this.actions = 0
     this.lastAction = undefined
+    this.lastActionKind = undefined
     this.lastActionAt = undefined
+    this.recentActions = []
     this.lastCursor = undefined
     this.lastDisplayId = undefined
-    try {
-      this.options.overlay.hide()
-    } catch (error) {
-      this.options.logger.warn('Computer Use 浮层收起失败', { error: String(error) })
+    if (wasShown) {
+      try {
+        this.options.overlay.hide()
+      } catch (error) {
+        this.options.logger.warn('Computer Use 浮层收起失败', { error: String(error) })
+      }
     }
     this.options.onStopped?.(sessionId)
     this.emit({ type: 'ended', sessionId, reason })
@@ -218,7 +229,7 @@ export class ComputerUseService {
     if (this.sessionId === undefined) {
       throw new ComputerUseError(
         'E_CU_NOT_ACTIVE',
-        'Computer Use 未授权，请先在输入框点击「操作电脑」',
+        'Computer Use 未授权，请先在输入框输入 /computer',
       )
     }
     if (this.sessionId !== sessionId) {
@@ -238,12 +249,14 @@ export class ComputerUseService {
       throw new ComputerUseError('E_CU_READONLY', '只读档下不能使用 Computer Use')
     }
     this.armIdleTimer()
+    // 第一次工具调用 = 真正开始操作：到这时才建浮层 / 启动光标循环。
+    this.ensureOperating()
   }
 
   /**
    * 记录一次有副作用的动作：预算检查 → 发事件 → 返回当前步数。
    *
-   * `summary` 由端口生成，必须**不含输入文字 / 剪贴板内容**。
+   * `summary` 由端口生成，只描述「正在做什么」，必须**不含坐标 / 输入文字 / 剪贴板内容**。
    */
   beginAction(
     sessionId: string,
@@ -258,9 +271,7 @@ export class ComputerUseService {
       throw new ComputerUseError('E_CU_BUDGET', `已达到单会话动作上限（${cfg.maxActions}），已停止`)
     }
     this.actions += 1
-    const at = new Date(this.options.now?.() ?? Date.now()).toISOString()
-    this.lastAction = summary
-    this.lastActionAt = at
+    const at = this.recordStep(action, summary)
     this.emit({
       type: 'action',
       sessionId,
@@ -274,6 +285,25 @@ export class ComputerUseService {
       ...(meta.y === undefined ? {} : { y: meta.y }),
     })
     return { step: this.actions, maxSteps: cfg.maxActions }
+  }
+
+  /**
+   * 记录一次**只读步骤**（截图 / 读窗口 / 等控件）：计入过程面板与状态条，但不计动作限额。
+   * 这些调用本身没有副作用，却正是用户最需要看到的「Agent 现在在干嘛」。
+   */
+  noteStep(sessionId: string, action: string, summary: string): void {
+    this.ensureCallAllowed(sessionId)
+    const cfg = this.options.settings().computerUse
+    const at = this.recordStep(action, summary)
+    this.emit({
+      type: 'action',
+      sessionId,
+      action,
+      summary,
+      step: this.actions,
+      maxSteps: cfg.maxActions,
+      at,
+    })
   }
 
   noteClick(input: {
@@ -307,7 +337,8 @@ export class ComputerUseService {
       this.stop('permission')
       return
     }
-    this.options.overlay.applyConfig(cfg)
+    // 只有已经进入操作态才需要重建 / 调整浮层；仅授权时改视觉设置不应突然弹出满屏流光。
+    if (this.overlayShown) this.options.overlay.applyConfig(cfg)
   }
 
   dispose(): void {
@@ -322,6 +353,57 @@ export class ComputerUseService {
       return '当前模型未开启图片输入（AI 模型页 → 支持图片输入）'
     }
     return undefined
+  }
+
+  /**
+   * 记一条过程（新 → 旧，最多 6 条）并更新状态条的「最近动作」。
+   *
+   * 分组：**连续**的同一 `action + summary` 合并成一条并累加 `count`（面板显示 ×N）；
+   * 中间隔了别的步骤就保留为新的一条，不丢时间顺序。
+   */
+  private recordStep(action: string, summary: string): string {
+    const at = new Date(this.options.now?.() ?? Date.now()).toISOString()
+    this.lastAction = summary
+    this.lastActionKind = action
+    this.lastActionAt = at
+    const head = this.recentActions[0]
+    if (head !== undefined && head.action === action && head.summary === summary) {
+      this.recentActions = [{ ...head, count: head.count + 1 }, ...this.recentActions.slice(1)]
+    } else {
+      this.recentActions = [{ action, summary, count: 1 }, ...this.recentActions].slice(0, 6)
+    }
+    return at
+  }
+
+  /**
+   * 第一次工具调用时显示浮层；失败只降级成「没有视觉效果」，**不阻断操作**
+   * （有的显卡 / 远程桌面会话拿不到透明窗，不能因此让整个能力不可用）。
+   */
+  private ensureOperating(): void {
+    if (this.overlayShown || this.sessionId === undefined) return
+    this.overlayShown = true
+    const displays = this.options.displays()
+    const cfg = this.options.settings().computerUse
+    void this.options.overlay
+      .show(displays)
+      .then(() => {
+        if (this.sessionId === undefined) {
+          // 浮层还没加载完用户就停止了：别把窗口留在屏幕上
+          this.options.overlay.hide()
+          return
+        }
+        this.options.overlay.applyConfig(cfg)
+        this.startCursorLoop()
+        this.options.logger.info('Computer Use 开始操作，浮层已显示', {
+          displays: displays.map((display) => display.id),
+        })
+      })
+      .catch((error) => {
+        this.overlayShown = false
+        this.options.logger.warn('Computer Use 浮层显示失败（操作继续）', {
+          error: String(error),
+        })
+      })
   }
 
   private armIdleTimer(): void {
@@ -406,4 +488,13 @@ export class ComputerUseService {
 }
 
 export type ComputerUseStatusStopReason =
-  'user' | 'settings' | 'model' | 'permission' | 'idle' | 'budget' | 'error' | 'system' | 'quit'
+  | 'user'
+  | 'agent'
+  | 'settings'
+  | 'model'
+  | 'permission'
+  | 'idle'
+  | 'budget'
+  | 'error'
+  | 'system'
+  | 'quit'

@@ -506,8 +506,9 @@ export function smokeScript(
     }))
     record('模型配置指向本地桩服务', repoint?.llm?.providers?.smoke?.baseUrl === STUB_BASE, repoint?.llm?.providers?.smoke?.baseUrl ?? '')
 
-    // 3.9 Computer Use（v39，docs/06 §28）：默认关闭、开启 + 视觉后能建立会话、浮层可见、停止幂等。
-    //     这里只建浮层（不启动 PowerShell、不移动鼠标），真实桌面动作由 capture / 手工验收覆盖。
+    // 3.9 Computer Use（v39，docs/06 §28）：默认关闭、开启 + 视觉后能建立授权、停止幂等。
+    //     2026-10-31 起授权与「开始操作」分离：start 只建立授权，浮层要等第一次工具调用才出现。
+    //     这里只验授权（不启动 PowerShell、不移动鼠标、不建浮层）。
     {
       const before = expectOk('settings.get（Computer Use 前置）', await window.aurora.settings.get())
       const statusBefore = await window.aurora.computerUse.status()
@@ -550,8 +551,8 @@ export function smokeScript(
       )
       const started = await window.aurora.computerUse.start({ sessionId: 'main' })
       record(
-        'Computer Use 授权后会话建立、浮层可见',
-        started && started.ok === true && started.value.active === true && started.value.overlay.visible === true && started.value.overlay.displays > 0,
+        'Computer Use 授权后会话建立、操作前不显示浮层',
+        started && started.ok === true && started.value.active === true && started.value.overlay.visible === false,
         started && started.ok ? JSON.stringify(started.value.overlay) : started ? started.message : '无结果',
       )
       const stopped = await window.aurora.computerUse.stop({ sessionId: 'main', reason: 'user' })

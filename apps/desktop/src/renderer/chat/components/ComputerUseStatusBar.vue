@@ -2,12 +2,13 @@
 /**
  * Computer Use 实时状态条（v39，docs/06 §28）。
  *
- * 挂在输入卡上方：显示当前动作、步数、已运行时长与停止按钮。
+ * 挂在输入卡上方：显示当前动作、步数与停止按钮（2026-10-31 删除运行时长计时）。
  * 另一会话持有授权时显示「另一会话正在操作」并允许停止（同一时间只有一个会话）。
  */
-import { computed, onUnmounted, ref, watch } from 'vue'
-import { CircleStop, MousePointer2 } from '@aurora/shared/browser'
+import { computed } from 'vue'
+import { CircleStop } from '@aurora/shared/browser'
 import type { ComputerUseStatus } from '@aurora/shared'
+import { computerUseIcon } from '../../shared/computer-use-steps.js'
 import AppButton from '../../shared/components/AppButton.vue'
 
 const props = defineProps<{
@@ -16,9 +17,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ stop: [] }>()
-
-const elapsed = ref('0:00')
-let timer: ReturnType<typeof setInterval> | undefined
 
 const activeHere = computed(
   () => props.status?.active === true && props.status.sessionId === props.sessionId,
@@ -33,44 +31,31 @@ const actionText = computed(() => {
   return props.status.lastAction
 })
 
-const stepText = computed(() =>
-  props.status === null ? '' : `${props.status.actions} / ${props.status.maxActions}`,
-)
+/** 状态条左侧显示当前动作的语义图标（暂无动作时用鼠标指针兜底）。 */
+const actionIcon = computed(() => computerUseIcon(props.status?.lastActionKind))
 
-function tick(): void {
-  const started = props.status?.startedAt
-  if (started === undefined) {
-    elapsed.value = '0:00'
-    return
-  }
-  const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(started)) / 1000))
-  elapsed.value = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
-}
-
-watch(
-  () => props.status?.startedAt,
-  () => {
-    tick()
-    if (timer !== undefined) clearInterval(timer)
-    timer = visible.value ? setInterval(tick, 1000) : undefined
-  },
-  { immediate: true },
-)
-
-onUnmounted(() => {
-  if (timer !== undefined) clearInterval(timer)
+const stepText = computed(() => {
+  if (props.status === null) return ''
+  return props.status.actions > 0
+    ? `${props.status.actions} / ${props.status.maxActions} 步`
+    : '准备中'
 })
 </script>
 
 <template>
   <div v-if="visible" class="cu-status" data-field="chat.computer-use-status">
-    <MousePointer2 class="cu-status-icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
+    <component
+      :is="actionIcon"
+      class="cu-status-icon"
+      :size="14"
+      :stroke-width="1.8"
+      aria-hidden="true"
+    />
     <span class="cu-status-title" :class="{ other: activeOther }">
       {{ activeOther ? '另一会话正在操作' : 'Computer Use' }}
     </span>
     <span class="cu-status-action">{{ activeOther ? '切换到该会话可查看进度' : actionText }}</span>
-    <span v-if="activeHere" class="cu-status-step">{{ stepText }} 步</span>
-    <span class="cu-status-time">{{ elapsed }}</span>
+    <span v-if="activeHere" class="cu-status-step">{{ stepText }}</span>
     <AppButton size="sm" data-field="chat.computer-use-stop" @click="emit('stop')">
       <CircleStop :size="13" :stroke-width="1.8" aria-hidden="true" /> 停止
     </AppButton>
@@ -115,8 +100,7 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
-.cu-status-step,
-.cu-status-time {
+.cu-status-step {
   flex: 0 0 auto;
   font-family: var(--font-mono);
   font-variant-numeric: var(--num-tabular);

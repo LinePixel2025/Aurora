@@ -5,24 +5,27 @@
  * 是请求级的：未授权的会话用 `hiddenTools` 把 6 个工具从工具面摘掉，模型在系统提示词、
  * `tools` 数组和循环里都看不到它们。
  *
- * 未授权但功能已启用时只给一句 `runContext`：告诉模型「用户还没授权，请让用户点输入框
- * 的『操作电脑』」，不产生任何调用能力。
+ * 未授权但功能已启用时只给一句 `runContext`：告诉模型「用户还没授权，请让用户输入
+ * `/computer`」，不产生任何调用能力。
  */
 import { COMPUTER_USE_TOOL_NAMES, type RunProfile } from '@aurora/agent-core'
 
 export const COMPUTER_USE_RUN_CONTEXT = [
   '## 本次运行：Computer Use',
   '- 用户已在本会话显式授权你操作真实桌面（截屏 + 鼠标 + 键盘 + 窗口）。',
+  '- 用户通过 `/computer` 明确要求使用 Computer Use：需要操作图形界面时**必须优先调用 `computer_*` 工具**，' +
+    '不要用 `run_command` / 内置浏览器替代（除非用户明确说不要动桌面）。',
   '- 先 `computer_screenshot` 看屏幕并建立坐标空间；坐标默认按最近截图的像素。',
   '- 优先用 `computer_ui` 的控件名 / 快捷键，不要盲点坐标；每次动作后复核界面。',
   '- 不得操作 Aurora 自身、终端、任务管理器、UAC / 锁屏等受保护窗口。',
   '- 用户手动移动鼠标或键盘时任务继续，不要因此停止或重复已成功的动作。',
+  '- 任务完成、用户要求停止或准备把桌面交还用户时，调用 `computer_stop` 退出操作模式。',
 ].join('\n')
 
 export const COMPUTER_USE_UNAUTHORIZED_CONTEXT = [
   '## 本次运行：Computer Use 未授权',
   '- 用户在设置里启用了 Computer Use，但本会话尚未授权。',
-  '- 如果用户要求你操作电脑，请让用户点击输入框工具行的「操作电脑」按钮授权；不要假装已经操作。',
+  '- 如果用户要求你操作电脑，请让用户在输入框输入 `/computer` 授权；不要假装已经操作。',
 ].join('\n')
 
 export interface ComputerUseProfileInput {

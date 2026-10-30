@@ -13,6 +13,7 @@ import type {
   ComputerKeyboardInput,
   ComputerMouseInput,
   ComputerScreenshotInput,
+  ComputerStopInput,
   ComputerUiInput,
   ComputerUsePort,
   ComputerWaitInput,
@@ -100,6 +101,8 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     }
 
     const display = await this.pickDisplay(displays, input, requested ?? foreground)
+    // 截图是「只读步骤」：不进动作限额，但过程面板要能看见 Agent 正在看屏幕。
+    this.options.service.noteStep(input.sessionId, 'screen.capture', '正在查看屏幕')
     const windowRect = requested?.bounds
     const maxWidth = input.maxWidth ?? this.options.settings().computerUse.screenshotMaxWidth
     let captured
@@ -142,7 +145,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     ].join('\n')
     return {
       content: text,
-      summary: `已截屏（${captured.imageWidth}×${captured.imageHeight}）`,
+      summary: '已截屏',
       images: [captured.image],
     }
   }
@@ -152,6 +155,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     await this.options.host.ensureReady()
     const view = this.views.get(input.sessionId)
     if (input.action === 'position') {
+      this.options.service.noteStep(input.sessionId, 'mouse.position', '正在读取鼠标位置')
       const cursor = await this.options.host.request<CursorPoint>('cursor_get')
       const image = view === undefined ? undefined : physicalToImage(view, cursor)
       return {
@@ -183,7 +187,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       this.options.service.beginAction(
         input.sessionId,
         'mouse.move',
-        describeMouseAction({ action: 'move', display: displayPoint(input) }),
+        describeMouseAction({ action: 'move' }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
       const landed = await this.movePointer(
@@ -214,7 +218,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       this.options.service.beginAction(
         input.sessionId,
         'mouse.click',
-        describeMouseAction({ action: input.action, button, display: displayPoint(input) }),
+        describeMouseAction({ action: input.action, button }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
       await this.movePointer(start, 0)
@@ -245,7 +249,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       this.options.service.beginAction(
         input.sessionId,
         'mouse.drag',
-        describeMouseAction({ action: 'drag', button: input.button, display: displayPoint(input) }),
+        describeMouseAction({ action: 'drag', button: input.button }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
       await this.withModifiers(input.modifiers, async () => {
@@ -270,7 +274,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       this.options.service.beginAction(
         input.sessionId,
         'mouse.scroll',
-        describeMouseAction({ action: 'scroll', display: displayPoint(input) }),
+        describeMouseAction({ action: 'scroll' }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
       if (start !== undefined) await this.movePointer(start, 0)
@@ -338,6 +342,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     await this.options.host.ensureReady()
     const windows = await this.windowList()
     if (input.action === 'list') {
+      this.options.service.noteStep(input.sessionId, 'window.list', '正在查看窗口列表')
       const filter = (input.filter ?? '').trim().toLowerCase()
       const list = windows.filter(
         (item) =>
@@ -364,6 +369,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       }
     }
     if (input.action === 'active') {
+      this.options.service.noteStep(input.sessionId, 'window.active', '正在查看前台窗口')
       const foreground = windows.find((item) => item.foreground)
       return {
         content:
@@ -496,6 +502,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     this.assertOperable(target)
     const windowId = target?.windowId
     if (input.action === 'tree') {
+      this.options.service.noteStep(input.sessionId, 'ui.tree', '正在读取界面控件')
       const tree = await this.options.host.request<{
         nodes: Array<Record<string, unknown>>
         truncated: boolean
@@ -515,6 +522,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       }
     }
     if (input.action === 'find') {
+      this.options.service.noteStep(input.sessionId, 'ui.find', '正在查找界面控件')
       const result = await this.options.host.request<{
         candidates: Array<Record<string, unknown>>
       }>('ui_find', {
@@ -558,8 +566,27 @@ export class DesktopComputerUsePort implements ComputerUsePort {
   async wait(input: ComputerWaitInput): Promise<ToolResult> {
     this.options.service.ensureCallAllowed(input.sessionId)
     const seconds = Math.max(0, Math.min(30, input.seconds ?? 1))
+    this.options.service.noteStep(input.sessionId, 'wait', `正在等待 ${seconds} 秒`)
     await sleep(seconds * 1000, input.signal)
     return { content: `已等待 ${seconds} 秒。`, summary: `等待 ${seconds}s` }
+  }
+
+  /**
+   * Agent 主动退出操作模式（`computer_stop`，2026-10-31）。
+   *
+   * 与用户点停止走**同一条** `service.stop()`：撤销授权、收起浮层与过程面板、清坐标空间。
+   * 这里不做 `ensureCallAllowed`：已经停下（或从未授权）时再调一次应当是**幂等成功**，
+   * 不该给模型一个误导性的错误。
+   */
+  async stop(input: ComputerStopInput): Promise<ToolResult> {
+    if (!this.options.service.isAuthorized(input.sessionId)) {
+      return { content: '当前会话没有 Computer Use 授权，无需退出。', summary: '未在操作模式' }
+    }
+    this.options.service.stop('agent')
+    return {
+      content: '已退出 Computer Use 操作模式：授权已撤销，屏幕上的流光与过程面板已收起。',
+      summary: '已退出操作模式',
+    }
   }
 
   /** 设置页 / 诊断用：列出窗口（不执行动作）。 */
@@ -803,10 +830,6 @@ function findWindow(windows: WindowInfo[], windowId: string): WindowInfo | undef
 
 function requirePoint(x: number | undefined, y: number | undefined): void {
   if (x === undefined || y === undefined) throw new Error('需要 x / y 坐标（先截图后用图片像素）')
-}
-
-function displayPoint(input: { x?: number; y?: number }): { x: number; y: number } | undefined {
-  return input.x === undefined || input.y === undefined ? undefined : { x: input.x, y: input.y }
 }
 
 function distance(left: Point, right: Point): number {

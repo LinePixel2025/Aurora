@@ -18,11 +18,14 @@ function makeService(options: {
   interval?: typeof setInterval
 }) {
   const events: string[] = []
+  const showCalls: number[] = []
   const service = new ComputerUseService({
     settings: () => options.settings,
     logger: logger() as never,
     overlay: {
-      show: async () => undefined,
+      show: async (displays) => {
+        showCalls.push(displays.length)
+      },
       hide: () => undefined,
       emit: (event) => events.push(event.type),
       applyConfig: () => undefined,
@@ -36,7 +39,7 @@ function makeService(options: {
     setInterval: () => ({ unref: () => undefined }) as never,
     clearInterval: () => undefined,
   })
-  return { service, events }
+  return { service, events, showCalls }
 }
 
 describe('ComputerUseService', () => {
@@ -59,6 +62,39 @@ describe('ComputerUseService', () => {
     expect(events).toContain('ended')
     await service.start('main')
     expect(service.status().active).toBe(true)
+  })
+
+  it('授权本身不建浮层：第一次工具调用才进入操作态并记录过程', async () => {
+    const settings = createDefaultSettings()
+    settings.computerUse.enabled = true
+    const { service, showCalls } = makeService({ settings })
+    await service.start('main')
+    expect(showCalls).toHaveLength(0)
+    expect(service.status().recentActions).toBeUndefined()
+
+    service.ensureCallAllowed('main')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(showCalls).toHaveLength(1)
+
+    // 只读步骤（截图 / 等控件）进过程面板，但不计动作限额；连续相同动作合并为 count
+    service.noteStep('main', 'screen.capture', '正在查看屏幕')
+    service.noteStep('main', 'screen.capture', '正在查看屏幕')
+    expect(service.status().actions).toBe(0)
+    expect(service.status().recentActions).toEqual([
+      { action: 'screen.capture', summary: '正在查看屏幕', count: 2 },
+    ])
+
+    service.beginAction('main', 'mouse.click', '正在左键单击')
+    expect(service.status().actions).toBe(1)
+    expect(service.status().lastActionKind).toBe('mouse.click')
+    expect(service.status().recentActions).toEqual([
+      { action: 'mouse.click', summary: '正在左键单击', count: 1 },
+      { action: 'screen.capture', summary: '正在查看屏幕', count: 2 },
+    ])
+
+    service.stop('user')
+    expect(service.status().recentActions).toBeUndefined()
   })
 
   it('唯一会话：另一个会话 start 返回 E_CU_BUSY', async () => {

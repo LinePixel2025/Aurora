@@ -1281,15 +1281,37 @@ export interface BannerDiagnostics {
 
 // ───────────────────────── Computer Use（v39，docs/06 §28） ─────────────────────────
 
-/** 会话结束原因（用户停止 / 配置变化 / 限额 / 错误 / 系统事件）。 */
+/** 会话结束原因（用户停止 / Agent 主动退出 / 配置变化 / 限额 / 错误 / 系统事件）。 */
 export type ComputerUseStopReason =
-  'user' | 'settings' | 'model' | 'permission' | 'idle' | 'budget' | 'error' | 'system' | 'quit'
+  | 'user'
+  | 'agent'
+  | 'settings'
+  | 'model'
+  | 'permission'
+  | 'idle'
+  | 'budget'
+  | 'error'
+  | 'system'
+  | 'quit'
 
 /**
- * Computer Use 运行态（输入框开关、状态条、设置页共用）。
+ * 过程面板的一步（`recentActions` 的元素）。
+ *
+ * `action` 是机器可读动作名（决定图标），`summary` 是给人看的「正在…」描述；
+ * 连续的同一动作会被主进程合并成一条并把 `count` 累加。
+ */
+export interface ComputerUseStep {
+  action: string
+  summary: string
+  count: number
+}
+
+/**
+ * Computer Use 运行态（状态条、设置页、过程面板共用）。
  *
  * `active` 是**全局**状态：同一时间只允许一个会话操控桌面；`sessionId` 是持有者。
- * 渲染层据 `sessionId !== 当前会话` 显示「另一会话正在操作」，而不是把开关画成自己的激活态。
+ * 渲染层据 `sessionId !== 当前会话` 显示「另一会话正在操作」，而不是把授权画成自己的激活态。
+ * 注意 `active` 只表示**已授权**，不表示已经开始操作：浮层在第一次工具调用时才出现。
  */
 export interface ComputerUseStatus {
   /** 用户在设置页打开的总开关 */
@@ -1300,7 +1322,7 @@ export interface ComputerUseStatus {
   /** 当前生效模型是否支持图片输入（全局档；会话覆盖另行判定） */
   vision: boolean
   permissionMode: PermissionMode
-  /** 当前是否已经有一个会话在操控桌面 */
+  /** 当前是否已经有一个会话持有授权（不代表正在操作） */
   active: boolean
   sessionId?: string
   startedAt?: string
@@ -1308,14 +1330,21 @@ export interface ComputerUseStatus {
   actions: number
   maxActions: number
   lastAction?: string
+  /** 最近一步的机器可读动作名（状态条据此显示语义图标） */
+  lastActionKind?: string
   lastActionAt?: string
+  /**
+   * 最近的操作过程（新 → 旧，最多 6 条，**只有动作描述、没有坐标 / 输入文字**）。
+   * 过程面板挂载时从这里补齐历史，避免漏掉「窗口还没加载完」时发生的前几步。
+   */
+  recentActions?: ComputerUseStep[]
   overlay: {
     visible: boolean
     displays: number
   }
   /** 全局停止快捷键是否注册成功；失败时界面提示用别的停止入口 */
   stopHotkeyAvailable: boolean
-  /** 为什么当前不能开始（设置页 / 输入框提示用） */
+  /** 为什么当前不能开始（设置页提示用） */
   disabledReason?: string
 }
 
@@ -2897,8 +2926,8 @@ export interface AuroraApi {
   /**
    * Computer Use（v39，docs/06 §28）。
    *
-   * `start` / `stop` 是**用户授权**入口：只有输入框开关 / 状态条会调用；
-   * Agent 没有开启通道（工具本身也要求会话已授权）。
+   * `start` / `stop` 是**用户授权**入口：`start` 由输入框的 `/computer` 斜杠命令触发，
+   * `stop` 由对话状态条 / 托盘 / 全局快捷键触发；Agent 没有开启通道（工具本身也要求会话已授权）。
    */
   computerUse: {
     status(): Promise<Result<ComputerUseStatus>>
