@@ -120,7 +120,7 @@ export interface ModeGuide {
 > **尚未实现**：用户修正后的「反哺规则」已落地（见 3.2 ④ 与 §3.3），
 > 但**修正历史不参与跨启动的规则重建之外的学习**（不做基于内容的相似度学习）。
 >
-> **v0.6.0 补充**：`autoMove=false`（或移动失败、处理失败）时文件会留在感知文件夹里，
+> **P6+ 补充**：`autoMove=false`（或移动失败、处理失败）时文件会留在感知文件夹里，
 > 而 chokidar 的 `ignoreInitial: false` 每次启动都会再次报出同一个文件 ——
 > 不去重就会反复记流水、反复弹通知。现在按 `(路径, 大小, 修改时间)` 作为"已处理"签名
 > （落库在流水的 `modifiedAt` 字段），仅在记录**未被移动**（`movedTo` 缺失）时命中跳过；
@@ -182,7 +182,7 @@ export interface IScheduleProvider {
   触发历史照常进「自动化 → 历史」（Normal Mode 只记触发时间与成败）；
 - **自动分类不在这轮迁移内**：它仍是独立的分类管线（§3.2），与自动化引擎无关。
 
-#### v2 实现说明（v0.6.0）：ClassIsland 联动
+#### v2 实现说明（P6+）：ClassIsland 联动
 
 **为什么不是"直接读 ClassIsland"**：ClassIsland 的扩展体系是 .NET（`PluginBase` + `manifest.yml`，
 每个插件独立 `AssemblyLoadContext`），跨进程能力走 `dotnetCampus.Ipc` **命名管道**；

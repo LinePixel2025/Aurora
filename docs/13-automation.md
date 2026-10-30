@@ -66,7 +66,7 @@ AutomationRun（运行记录）
 **自动化定义不进 `config.json`**：它是用户数据（可多条、带历史），同会话 / 待办一样
 走独立文件，不占 CONFIG_VERSION 迁移链。配置里只有一个总开关（下条）。
 
-### 2.2 配置（v19 新增；当前 `CONFIG_VERSION = 20`）
+### 2.2 配置（v19 新增；当前 `CONFIG_VERSION = 38`）
 
 ```ts
 automations: {
@@ -191,7 +191,14 @@ automations: {
   `collectLessons` 逻辑）；
 - 课程表不可用（provider 抛错 / 无课）时课堂条件本轮跳过，绝不抛错。
 
-### 4.3 组件目录（catalog）
+### 4.3 插件事件（v36）
+
+`plugin-event` 触发器：参数 `pluginId` + `event`。插件用 `ctx.emitEvent(name, payload)` 发出，
+事件名与清单同规则（`^[a-z][a-z0-9_.-]{0,63}$`），payload ≤ 64 KB。自动化执行期间同一
+`(pluginId, event)` 的重入会被忽略（`AutomationEngine.pluginEventsInFlight` 防自激）；
+运行历史记 `triggerDetail = 插件事件 <id>/<event>`，操作步骤同样落 `steps`。
+
+### 4.4 组件目录（catalog）
 
 触发器与操作组件的**表单元数据**由主进程统一提供（渲染层编辑器与 Center 网页端
 共用，新增组件只改注册表）：
@@ -227,10 +234,12 @@ interface AutomationDescriptorField {
 | `open-folder`        | `target: 'subject' \| 'path'`；`subject?`（科目名，解析到科目文件夹）或 `path?`（绝对路径） | 用系统默认方式打开文件夹                                             | 目录解析为空 → 该次执行记 `warn` 跳过                                      |
 | `open-url`           | `url`（必填，仅 http/https）                                                                | 用系统默认浏览器打开网址（`shell.openExternal`）                     | 不会（协议白名单在保存校验与执行器双层把守）                               |
 | `open-app`           | `path`（必填，可执行文件 / `.lnk` 绝对路径）                                                | 用系统默认方式打开应用（`shell.openPath`，不经 shell、无参数拼接面） | 不会                                                                       |
+| `plugin-action`      | `pluginId`、`action`、`params`（JSON 对象文本，≤ 8 KB）                                      | 调用插件清单声明的动作（v36）                                        | 插件未启用 / 动作不存在时该次执行记失败                                     |
 
 **封闭性就是安全边界**：Normal Mode 没有 `run_command`、没有任意写——
 自动化的「无人值守」面被限制在通知 / 打开文件夹 / ClassIsland 提醒 / 打开网址 / 打开应用
-这几个预设能力上，不引入新的确认或提权问题。要更强的能力请用 Agent Mode（受三档权限与确认链约束）。
+以及插件清单声明的动作（v36）这几个预设能力上，不引入新的确认或提权问题。要更强的能力请用
+Agent Mode（受三档权限与确认链约束）。
 `open-url` / `open-app`（v0.2.9 新增）的边界维持手法：URL 走 http(s) 协议白名单
 （`catalog.isWebUrl`，保存校验与执行器共用）；应用路径只接受**单一**路径参数走 `shell.openPath`
 （与「打开文件夹」同一通道，不存在 shell 注入面）；两者的参数都只能由用户在 UI 里配置

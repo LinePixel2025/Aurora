@@ -1,4 +1,4 @@
-# Aurora 插件开发工具包（v0.5.2）
+# Aurora 插件开发工具包（v0.5.8）
 
 这是一个**可整体拷走**的插件开发工具包：把整个目录复制到任意工作目录，让编码 Agent
 先读 [AGENTS.md](./AGENTS.md) 与 [PROMPT.md](./PROMPT.md)，再以 [template/](./template) 为起点开发即可，
@@ -61,14 +61,14 @@ node scripts/verify-plugin.mjs <插件目录|zip>
 
 - 安装到 Aurora 时，宿主会用同一份 zod schema 再校验一次；失败信息以安装弹窗为准。
 
-## 更新工具包（v0.5.1 → v0.5.2）
+## 更新工具包（v0.5.1 → v0.5.8）
 
 工具包是 Aurora 仓库的**整目录快照**，不要只拷贝其中一两个文件；升级时整体替换：
 
-1. 从 Aurora 仓库的 `v0.5.2` tag 取整包（推荐先备份旧目录）：
+1. 从 Aurora 仓库的 `v0.5.8` tag 取整包（推荐先备份旧目录）：
 
 ```powershell
-# 在 Aurora 源码仓库根目录（建议取 main；v0.5.2 tag 已含新字段/校验器，
+# 在 Aurora 源码仓库根目录（建议取 main；v0.5.8 tag 已含新字段/校验器，
 # 两处版本标记在后续提交 6a973dd 修正，固定历史版本时请取该提交或更新后的 main）
 git archive main plugin-dev-kit | tar -x -C <你的工作目录>
 # 或直接复制当前工作树（注意不要覆盖你自己的插件目录）
@@ -113,6 +113,6 @@ node <Aurora>/scripts/verify-plugin.mjs <插件目录或 zip>
 
 ## 版本
 
-本工具包对应 **Aurora v0.5.2 / 插件 API v1 / 配置 Schema v36**。
+本工具包对应 **Aurora v0.5.8 / 插件 API v1 / 配置 Schema v38**。
 Aurora 升级后若 `apiVersion` 变化，以 Aurora 仓库 `docs/14-plugin-system.md` 为准，
 并重新生成本目录的 `docs/` 快照。

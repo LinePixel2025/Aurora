@@ -120,7 +120,7 @@
   材质不可用（非 win32 / 旧 Windows / `appearance.glass = false`）时窗口底色回退不透明
   `--bg-base`，面板 tint 同时退实色（`:root[data-glass='off']`），不出现「透明窗口裸漏桌面」。
   `general.edgeBar.opacity` 仍是整窗额外透明度（`setOpacity`），不再是“有没有玻璃感”的来源。
-  - 实现状态（v0.6.0；2026-10-11 恢复 acrylic；2026-10-04 曾退出）：`general.edgeBar.opacity` 保存后即时应用（`setOpacity`，范围 0.2–1.0）；
+  - 实现状态（P6+；2026-10-11 恢复 acrylic；2026-10-04 曾退出）：`general.edgeBar.opacity` 保存后即时应用（`setOpacity`，范围 0.2–1.0）；
     `general.edgeBar.quietHours` 由 `main/edge-bar-scheduler.ts` 每 30s 判定，**仅控制提示条自身显隐**，
     与 `advanced.quietHours`（控制主动打扰：课前提醒 / 敏感工具确认）职责分离、互不影响。
     可见性只在状态翻转时切换，避免反复 show 把用户刚手动隐藏的提示条拉回来。
@@ -608,7 +608,7 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   录音走 MediaRecorder → `stt:transcribe`，
   录音态用 theme.css 的 `pulse-ring` 扩散环动画。
 - **完整对话**：Markdown、代码高亮、流式渲染、执行轨迹（可展开查看细节）、附件与文件拖拽发送。
-  - 实现状态（v0.6.0）：**附件拖拽已落地** —— 路径解析在 preload（`webUtils.getPathForFile`，Electron 32+ 已移除 `File.path`），
+  - 实现状态（P6+）：**附件拖拽已落地** —— 路径解析在 preload（`webUtils.getPathForFile`，Electron 32+ 已移除 `File.path`），
     文本提取复用分类管线的 utilityProcess 提取器（单文件上限 8000 字、单条消息最多 5 个）；提取失败的附件会在上下文里**如实标注「未读取」**，不假装已读。
   - **图片附件与缩略图预览（v22 多模态输入，见 06 §3.1）**：附件 chip 上，图片类附件
     （`png / jpg / jpeg / webp / gif / bmp`）渲染一张 **24×24 的缩略图**（`object-fit: cover`、
@@ -621,7 +621,7 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
     该开关**同时决定图像工具（`view_image` / `screenshot` / `clipboard_read_image`）是否注册给模型**
     （见 06 §25）—— 开启后模型除收到图片附件外，还能主动读图 / 截屏 / 读剪贴板里的图片。
 - **尺寸**：见本节开头的主界面规格（1280×800 / min 1060×660 / 居中）；位置记忆与多会话能力不变。
-  - 实现状态（v0.6.0）：**多会话列表已落地**（`chat:sessions` 列表 + `chat:newSession` 新建 + 切换）。
+  - 实现状态（P6+）：**多会话列表已落地**（`chat:sessions` 列表 + `chat:newSession` 新建 + 切换）。
     标题优先取主进程异步生成的 `meta.title`（6–14 字任务名），生成前 / 失败时回落首条用户
     消息前 24 字；按最后消息时间倒序；
     空会话显示为「新会话」且不落空文件（首条消息才创建）。窗口默认会话仍为 `main`，老数据继续可读。
@@ -661,7 +661,7 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   工具栏位与样式（折叠态摘要行 / 展开态竖脊 + 节点）见下文「执行轨迹」；
   耗时是**渲染层观察到的本次调用耗时**，历史水合出来的行不伪造耗时。
   流式追加只在末尾加光标（父级 `::after`），不对每条 `delta` 重放进场动画。
-- **朗读 / 停止（TTS，v0.8.0）**：每条**助手**消息正文下方有一枚「朗读 / 停止」按钮，
+- **朗读 / 停止（TTS，P6+ 语音轮）**：每条**助手**消息正文下方有一枚「朗读 / 停止」按钮，
   点它把该条回复的纯文本交给「设置 → 语音」里选中的 TTS provider 合成并播放，再点一次即停止
   （合成中与朗读中共用同一枚按钮，按下即取消在途合成 / 播放）。
   朗读状态（`合成中` / `朗读中` / `失败`）与消息正文**同行展示**（贴着正文末尾的状态文本，
@@ -864,7 +864,7 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   工具卡按工具名给语义图标（`renderer/shared/toolIcons.ts`，未知工具退到扳手、MCP 退到拼图）；
   新图标不再手写内联 SVG（唯一例外：代码块「复制」按钮的图标 —— 它由字符串注入
   `v-html` 输出里，用不了组件，路径与 lucide 保持一致）。
-- **消息区跟随最新（v0.6.0 修复「对话不会自动拉到底」；2026-09-30 修复「经常跟丢」）**：
+- **消息区跟随最新（P6+ 修复「对话不会自动拉到底」；2026-09-30 修复「经常跟丢」）**：
   滚动容器是窗口自己的 `.thread`，逻辑分两层：
   `composables/stickToBottomCore.ts`（**纯逻辑、零 DOM**：状态机与帧循环，能被 vitest 的 node
   环境直接收单测，见 `stickToBottomCore.test.ts`）+ `composables/useStickToBottom.ts`（Vue 薄壳：
@@ -1498,7 +1498,7 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   模型行内参数里的「支持图片输入」（`data-field` 锚点 `…modelParams.<模型 id>.vision`）勾选后，
   除图片附件按分片下发外，还会给模型**注册图像工具**（`view_image` / `screenshot` /
   `clipboard_read_image`，见 06 §25）。
-- **语音页（v0.8.0 新增；BetaV2 扩为 TTS + STT 双区组）**：页面提供 TTS 区组 —— 总开关（`tts.enabled`）、
+- **语音页（P6+ 语音轮 新增；BetaV2 扩为 TTS + STT 双区组）**：页面提供 TTS 区组 —— 总开关（`tts.enabled`）、
   默认 TTS 模型（`tts.active`）、自动朗读（`tts.autoRead`）、截断上限（`tts.maxChars`），
   以及 TTS provider 列表的**增 / 改 / 删 + 「试听」**；BetaV2 新增 **STT 区组**（`stt.enabled` / `stt.active` /
   provider 的 type / baseUrl / model / apiKey / language，锚点 `stt.*`；
@@ -1532,7 +1532,7 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 - **视觉（前端刷新轮）**：页面骨架统一用 theme.css 的 `.page` / `.page-title` / `.page-sub`，
   分组卡片用 `settings/settings.css` 的 `.section-card` / `.section-title` / `.section-desc`
   （该样式表只被设置窗 import，不影响其它窗口）；空状态用 `.empty-state`。
-- **条件显示（v0.6.0）**：每个控件带 `data-field="<配置路径>"`，条件不成立时**控件不在 DOM 里**
+- **条件显示（P6+）**：每个控件带 `data-field="<配置路径>"`，条件不成立时**控件不在 DOM 里**
   （不是 `disabled`、也不是 CSS 隐藏），原位置改为 `data-empty="<路径>"` 说明块。
   完整门控矩阵见 docs/08 §6.1；`general.language` 是死字段，**任何页面都不显示**。
 - **实现说明（v0.4.0 / v0.5.0 / 前端刷新轮）**：ClassRoom 的完整配置由
@@ -1568,7 +1568,7 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   面板的「打开主界面」只是显示 / 聚焦它，不再存在可跳转的第二对话窗口；
   「收起」= 隐藏窗口（配置里仍只记几何，重启按记录恢复位置）。
 - **全局快捷键**：唤出 / 隐藏交互窗 `Alt+Space`（可在设置中改）。
-  - 实现状态（v0.6.0）：**已落地**（`main/hotkey.ts`）—— 启动时注册、退出前注销、
+  - 实现状态（P6+）：**已落地**（`main/hotkey.ts`）—— 启动时注册、退出前注销、
     设置改绑即时生效（幂等：值未变不重复注册，避免闪断窗口）、注册失败会把真实原因回传设置页。
   - **冲突是预期路径**：`Alt+Space` 是 Windows 的系统窗口菜单键，常被系统占用。
     此时设置页显示「被占用」并给出可操作建议，用户改绑即可 —— 不静默失败，也不报成 bug。

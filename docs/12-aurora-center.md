@@ -3,7 +3,8 @@
 状态：`已定稿`（v0.2.0 随本设计首次落地；2026-09 扩展轮：注册、设备授权登录、确认卡网页批复、文件 24h 管理与自动删除、移动端适配，并删除手动配对令牌；v0.2.5：§6.3 追加 `automation.*` 六命令、§10 追加自动化视图；
 v0.3.3：§4/§5 追加 `ask.request` / `ask.resolve`（提问中转）、§6.1 补语音能力位的重连语义、
 §10 整节按三栏控制台重写并补验证 harness；2026-10-07：§10 改为官网入口 + 登录后工作台，
-公开更新目录提供官网下载信息）
+公开更新目录提供官网下载信息；2026-10：插件市场（Center 0.5.0）、插件侧栏面板镜像（0.5.1）、
+页面型面板参数直传与断流修复（0.5.2）。当前 Center 服务器为 **0.5.2**。）
 
 Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控制台**：
 
@@ -576,7 +577,7 @@ interface ClientPluginInfo { id: string; name: string; version: string; panels: 
   `connect-src 'none'`，脚本 / 样式只放行 Center Host 与内联。引用外部 CDN / 字体或自己
   `fetch`（含包内 JSON）的页面会缺功能。
 
-## 7. 客户端配置（`center` 分组，CONFIG_VERSION 17）
+## 7. 客户端配置（`center` 分组，v17 引入；当前版本见 08 §2）
 
 Schema / 默认值 / 迁移见 docs/08 §1。要点：
 

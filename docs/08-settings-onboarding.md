@@ -735,7 +735,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 37`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 38`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -1032,7 +1032,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   - 旧页深链兼容映射：`?page=tts` → `voice`、`?page=skills|mcp` → `agent`；
     `general` / `modes` / `llm` / `advanced` 页 id 不变，旧深链继续可用。
 - **Skill 管理**（目标 6 页 IA 下为「Agent 设置」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
-  - 实现状态（v0.6.0）：`skills.userDir` **真正生效**（此前运行时硬编码 `userData/skills`，
+  - 实现状态（P6+）：`skills.userDir` **真正生效**（此前运行时硬编码 `userData/skills`，
     配置项是死字段）。空串回落 `userData/skills`；填自定义目录后保存会**按新目录重扫**。
     页面显示「当前生效目录」与「上次扫描时间」，并提供**真实的**「重新扫描」
     （`skills:rescan`，重扫磁盘而非重新拉取内存清单）；解析失败的技能计入
@@ -1050,7 +1050,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     编辑交互与「环境变量」完全同款）；已配置的头在服务器条目上按名字列出并注明「值已加密存储」
     （读只读标记 `headersSet`，§1.1），留空 = 不改动已有值，删除某一行 = 删除该头。
     字段与凭据链路见 §1 / §1.1，传输侧行为见 06 §7。
-- **电脑操控**（`agent.tools.*`，v0.7.0）：目标 6 页 IA 下并入「智能与工具」页（`agent`，
+- **电脑操控**（`agent.tools.*`，P6++）：目标 6 页 IA 下并入「智能与工具」页（`agent`，
   与技能、MCP 区组同页折叠；v8 前为「AI 能力」组独立页）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
   终端（开关 / 超时 ms / 输出字符上限 / **免确认命令模式列表**）、文件（开关 / 单次读取字节上限）、
   **文件检索**（开关 / 结果条数上限，`agent.tools.search.*`，v12 新增）、打开（开关）；
@@ -1100,7 +1100,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     （不改变自动播放策略）。
   - 整组**只读**（`SETTINGS_READONLY_PREFIXES`）：AI 的 `set_setting` 一律拒绝，只能由用户在这里改；
     只读权限档下整组不注册（门控见 §6.1）。
-- **语音**（`tts.*` / `stt.*`，v0.8.0 起）：目标 6 页 IA 下为「语音」页（`voice`，TTS 区组 + STT 区组；
+- **语音**（`tts.*` / `stt.*`，P6+ 语音轮 起）：目标 6 页 IA 下为「语音」页（`voice`，TTS 区组 + STT 区组；
   v8 前为「AI 能力」组第 2 项、仅 TTS）。TTS 区组提供「总开关」（`tts.enabled`）、「默认 TTS 模型」
   （`tts.active`）、「自动朗读」（`tts.autoRead`）、「截断上限」（`tts.maxChars`），以及 provider 列表的
   **增 / 改 / 删 + 「试听」**（用当前表单值合成一小段试听音频）。字段路径见 §1，请求协议与失败降级见 06 §13。
@@ -1134,7 +1134,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     所有敏感工具直接放行），且**每次调用即时判断**，改设置无需重启。
     用户要在项目边界之外重新逐次确认，就在设置页「智能与工具」或对话窗把档位切回「变更前确认」；
     该档现在恢复旧 auto 语义：项目根内直接执行、越界弹卡，无项目时直接放行。
-  - 实现状态（v0.6.0）：**代理与日志级别真正生效**（此前是「存了不生效」的死配置）——
+  - 实现状态（P6+）：**代理与日志级别真正生效**（此前是「存了不生效」的死配置）——
     - `advanced.proxy`：`main/net.ts` 交给 `session.setProxy`，出网改用 Electron `net.fetch`
       （走 Chromium 网络栈 → 自动遵守代理）并保留 `globalThis.fetch` 回落；
       注入到 LLM provider、MCP HTTP 传输与「测试连接」，**保存后立即生效**（含关闭残留连接）。
@@ -1142,7 +1142,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     - `advanced.logLevel`：`FileLogger` 的级别改为**共享可变引用**，改一次即对整棵日志树
       （含已存在的子 logger）生效。此前是构造期快照，改级别只影响之后新建的 logger。
     - 另：「日志查看」走 `app:openLogs`（该通道此前只有常量与 preload 镜像、没有 handler，
-      调用会挂起，v0.6.0 补齐）。
+      调用会挂起，P6+ 补齐）。
 
 ### 6.1 按条件显示的设置项（前端刷新轮）
 
@@ -1217,7 +1217,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   改科目名会同步改写引用它的课程表条目，删除时提示仍有多少节课引用该科目。
 - **课程表**：`schedule.provider`（manual / classisland）+ 课程行
   （星期 0–6 中文、起止 `HH:mm`、科目下拉）。
-  - **ClassIsland 联动（v0.6.0）**：选中 `classisland` 时展开子配置 ——
+  - **ClassIsland 联动（P6+）**：选中 `classisland` 时展开子配置 ——
     「数据来源」（JSON 文件 / 本地 HTTP 端点）、「端点 / 文件路径」、
     「读取超时」（毫秒）与「**测试连接**」按钮。
     测试连接会立即按当前配置解析一次，回传**今日课程预览 + 逐行告警 + 错误原因 + 耗时**；
@@ -1295,7 +1295,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 
 ## 9. 插件配置（v36）
 
-`CONFIG_VERSION = 36`，迁移 `v35 → v36`：缺 `plugins` 时补默认值，不改其它对象。
+`CONFIG_VERSION = 36`（当时），迁移 `v35 → v36`：缺 `plugins` 时补默认值，不改其它对象。
 
 ```ts
 plugins: {
