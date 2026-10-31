@@ -12,6 +12,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-31 | 合并 PR 时分支还挂在 worktree：`gh pr merge --delete-branch` 退出码 1 但合并已成功、远端分支未删 | 发布, git, GitHub, PR, worktree, 坑, 口径 | [2026-10-31-pr-merge-worktree-gotcha.md](2026-10-31-pr-merge-worktree-gotcha.md) |
 | 2026-10-31 | Computer Use（v39）：`/computer` + `computer_start` 授权、退出回前台、PowerShell 宿主、顶部过程面板、RustDesk 下浮层可见性 | Computer Use, 工具, 权限, PowerShell, 浮层, 过程面板, 前台, RustDesk, 远程桌面, 探针, 坑, 口径 | [2026-10-31-computer-use.md](2026-10-31-computer-use.md) |
 | 2026-10-30 | 桌面小组件点击不抢前台（focusable:false）与「固定」= 锁位置                     | 插件, 小组件, Electron, 窗口, 焦点, 布局, 探针, 坑, 口径 | [2026-10-30-widget-focus-and-lock.md](2026-10-30-widget-focus-and-lock.md) |
 | 2026-10-25 | format:check 在 Windows 本机假红：core.autocrlf 与 endOfLine=lf 打架，靠 .gitattributes 定死 | 构建, 格式化, 环境, pnpm, 坑 | [2026-10-25-lf-eol-format-gate.md](2026-10-25-lf-eol-format-gate.md) |
