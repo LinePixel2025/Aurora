@@ -8,8 +8,9 @@
 ## 当前实现状态
 
 **开发中：Computer Use（配置 Schema v39）**——让 Agent 在用户显式授权后截屏并操控真实
-鼠标 / 键盘 / 窗口 / UI Automation：常驻 PowerShell 输入宿主、虚拟光标与持续流光浮层、
-顶部操作过程面板 / 对话状态条、`/computer` 授权入口、独立设置页、按多模态模型与会话授权三层门控。
+鼠标 / 键盘 / 窗口 / UI Automation：常驻 PowerShell 输入宿主、虚拟光标与顶部光谱流光浮层、
+顶部操作过程面板 / 对话状态条、`/computer` 用户入口与 `computer_start` Agent 入口、独立设置页、
+按多模态模型与会话授权三层门控；Agent 任务完成调用 `computer_stop` 退出并把 Aurora 调回前台。
 设计见 [06 §28](./06-agent-core.md)、[07](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)。
 未发布前不改变上一版安装包。
 

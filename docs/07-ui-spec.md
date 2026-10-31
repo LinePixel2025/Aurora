@@ -2636,6 +2636,10 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   命令只在 `computerUse.enabled && 当前模型 vision && 权限档非 readonly` 时出现在斜杠候选里；
   授权失败（未开启 / 非视觉模型 / 只读档 / 另一会话占用）用左上提示条说明原因。
   命令**不写配置**，只建立内存中的会话授权；重复执行是幂等的。
+- **Agent 入口（v39 优化）**：Agent 也可调用 `computer_start` 建立授权（走同一条
+  `computerUse:start` 服务状态机）。界面不新增任何锚点：渲染层收到 `started` 事件后
+  刷新状态，表现与用户手敲 `/computer` 完全一致；授权本身同样**不建浮层**，第一次动作
+  工具调用才显示。`computer_start` 是 `confirm` 敏感级，confirm 档会先弹确认卡。
 - **对话状态条**：composer 上方一条紧凑条（`chat.computer-use-status`），显示最近动作
   （左侧按 `lastActionKind` 显示语义图标）、第 N / 上限步与停止按钮（`chat.computer-use-stop`）；
   另一会话持有时显示「另一会话正在操作」。**不显示运行时长**（2026-10-31 删除计时）。
@@ -2676,5 +2680,7 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   与心跳动画名）、`settings-computer-use.png`（`?page=computer-use`，各 `computer-use.*`
   字段锚点）。原生断言覆盖：可见、置顶、不可聚焦、鼠标穿透、**内容保护必须为 false**、
   过程面板贴在显示器顶部（不是底部）。
-- **停止入口**：状态条按钮 / 托盘「停止 Computer Use」/ `Ctrl+Alt+Shift+Esc`（仅会话期间注册）。
-  用户移动鼠标 / 键盘**不是**停止入口。
+- **停止入口**：Agent 的 `computer_stop` / 状态条按钮 / 托盘「停止 Computer Use」/
+  `Ctrl+Alt+Shift+Esc`（仅会话期间注册）。用户移动鼠标 / 键盘**不是**停止入口。
+  只有 Agent 主动退出会把主界面带到前台（显示 + 从最小化恢复 + 激活，并切回刚完成任务的
+  会话）；其余停止入口保持用户当前应用焦点不变。

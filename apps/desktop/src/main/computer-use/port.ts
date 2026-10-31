@@ -13,6 +13,7 @@ import type {
   ComputerKeyboardInput,
   ComputerMouseInput,
   ComputerScreenshotInput,
+  ComputerStartInput,
   ComputerStopInput,
   ComputerUiInput,
   ComputerUsePort,
@@ -572,6 +573,33 @@ export class DesktopComputerUsePort implements ComputerUsePort {
   }
 
   /**
+   * Agent 主动建立 Computer Use 授权（`computer_start`，v39 优化）。
+   *
+   * 与用户敲 `/computer` 走**同一条** `service.start()`：只建立内存授权，不建浮层、
+   * 不启动光标循环（「授权 ≠ 开始操作」）。真正的门控（总开关 / 平台 / 视觉 / 只读档 /
+   * 会话资格 / 同时一个会话）全部在 service 里，这里只转发 + 记审计理由。
+   */
+  async start(input: ComputerStartInput): Promise<ToolResult> {
+    await this.options.service.start(input.sessionId)
+    const reason = input.reason?.trim()
+    if (reason !== undefined && reason !== '') {
+      this.options.logger.info('Agent 主动请求 Computer Use 授权', {
+        sessionId: input.sessionId,
+        reason: reason.slice(0, 200),
+      })
+    }
+    return {
+      content: [
+        '已获得 Computer Use 授权（授权 ≠ 开始操作，浮层尚未显示）。',
+        '下一次请求开始可以使用 computer_screenshot / computer_mouse / computer_keyboard / computer_window / computer_ui / computer_wait。',
+        '请先 computer_screenshot 截图建立坐标空间；第一次动作调用才会显示顶部流光与过程面板。',
+        '任务完成后必须调用 computer_stop 退出（Aurora 会自动回到前台向用户汇报）。',
+      ].join('\n'),
+      summary: '已获得 Computer Use 授权',
+    }
+  }
+
+  /**
    * Agent 主动退出操作模式（`computer_stop`，2026-10-31）。
    *
    * 与用户点停止走**同一条** `service.stop()`：撤销授权、收起浮层与过程面板、清坐标空间。
@@ -582,9 +610,10 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     if (!this.options.service.isAuthorized(input.sessionId)) {
       return { content: '当前会话没有 Computer Use 授权，无需退出。', summary: '未在操作模式' }
     }
-    this.options.service.stop('agent')
+    this.options.service.stop('agent', input.sessionId)
     return {
-      content: '已退出 Computer Use 操作模式：授权已撤销，屏幕上的流光与过程面板已收起。',
+      content:
+        '已退出 Computer Use 操作模式：授权已撤销，屏幕上的流光与过程面板已收起；Aurora 已回到前台。',
       summary: '已退出操作模式',
     }
   }

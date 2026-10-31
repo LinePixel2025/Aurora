@@ -1995,6 +1995,24 @@ export class WindowManager {
   }
 
   /**
+   * 把窗口带回前台（显式抢焦点）：状态机显示 → 从最小化恢复 → 激活。
+   *
+   * 与 `focus()` 的分工：`focus()` 是「确保可见并请求焦点」，不还原最小化状态
+   * （Windows 下对最小化窗口调 `show()` 不会退出最小化）。任务完成要把结果送到用户
+   * 眼前，而用户很可能把主界面最小化在任务栏里，必须显式 `restore()`。
+   *
+   * 只给「Agent 主动退出 Computer Use」这类**用户明确期待被打断**的场景用；
+   * 小组件 / 提醒 / 普通推送仍走 `showInactive()`，不得抢焦点。
+   */
+  bringToFront(name: WindowName): WindowState {
+    const state = this.show(name)
+    const win = this.ensure(name)
+    if (win.isMinimized()) win.restore()
+    win.focus()
+    return state
+  }
+
+  /**
    * 窗口当前是否持有键盘焦点（未创建 / 已销毁 = false）。
    *
    * 与 `isVisible` 的区别：可见但被压在下层（用户点了别的应用）时它是 false ——

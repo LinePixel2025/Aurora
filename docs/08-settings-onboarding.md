@@ -300,7 +300,7 @@
     "durationMs": 6000, // v38：停留时长（2000–30000）
   },
   // v39 新增：Computer Use（docs/06 §28）。整组在 SETTINGS_READONLY_PREFIXES 里；
-  // 真正的会话授权在对话输入框用 /computer 斜杠命令逐会话确认，不写配置。
+  // 真正的会话授权由用户 /computer 或 Agent computer_start 逐会话建立，不写配置。
   "computerUse": {
     "enabled": false, // 默认关闭；仅 Windows + 多模态模型 + 非只读档时生效
     "showVirtualCursor": true, // 虚拟光标（光环 + 拖尾）；原生指针保留
@@ -650,8 +650,9 @@
 - `computerUse`（**v39 新增**，见 06 §28）：桌面操控总开关、视觉（虚拟光标 / 流光 / HUD）、
   节奏（移动时长 / 输入间隔 / 截图宽度）、限额（动作上限 / 闲置结束）与应用允许 / 禁止名单。
   整组在 `SETTINGS_READONLY_PREFIXES` 里 —— 允许 AI 截屏并合成输入是本机最高权限的授权边界，
-  AI 不得自行开启或放宽；只有用户在设置页能改。真正的「本会话是否授权」不写配置，
-  由对话输入框的 `/computer` 斜杠命令逐会话确认。`SettingsPatch` 新增可选 `computerUse` 字段（顶层浅合并）。
+  AI 不得自行开启或放宽；只有用户在设置页能改。真正的「本会话是否授权」不写配置：
+  用户可输入 `/computer`，Agent 也可在需要时调用 `computer_start`（confirm 档会弹确认卡）。
+  `SettingsPatch` 新增可选 `computerUse` 字段（顶层浅合并）。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）

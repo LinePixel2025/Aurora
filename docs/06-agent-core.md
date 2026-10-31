@@ -2791,35 +2791,44 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   端口（`packages/agent-core/src/tools/computer-use.ts`），PowerShell 输入宿主、截屏、坐标换算、
   应用策略与浮层全在主进程（`apps/desktop/src/main/computer-use/`）。
 
-- **工具表（7 个，`COMPUTER_USE_TOOL_NAMES`）**：
+- **工具表（8 个 = 入口 1 + 授权后 7）**：
 
-| 工具 | 动作 | sensitivity | 关键约束 |
+| 工具 | 状态 | sensitivity | 关键约束 |
 |---|---|---|---|
-| `computer_screenshot` | 截显示器 / 指定窗口，建立坐标空间 | safe | 默认取前台窗口所在屏；前台是受保护窗口时回落光标屏 |
-| `computer_mouse` | move / click / double_click / right_click / middle_click / drag / scroll / position | confirm | 坐标默认按最近截图图片像素；点击前做命中测试与指针回执 |
-| `computer_keyboard` | type / key | confirm | Unicode 输入 + 组合键；输入前校验前台窗口 |
-| `computer_window` | list / active / activate / move / resize / minimize / maximize / restore / close / launch | confirm | 窗口 id 来自 list；titleMatch 必须唯一；launch 只接受 .exe / .com |
-| `computer_ui` | tree / find / invoke / set_value / focus / expand / collapse / select | confirm | 基于 UI Automation；path 来自 tree / find，布局变化后失效 |
-| `computer_wait` | 等待 0–30 秒 | safe | 等待期间会话保持运行 |
-| `computer_stop` | 主动退出操作模式 | safe | 任务完成 / 用户要求停止时调用；撤销本会话授权并收起浮层（幂等） |
+| `computer_start` | **未授权时唯一可见** | confirm | Agent 自行建立授权；只授权不建浮层；受总开关 / 平台 / 视觉 / 只读档 / 会话资格门控 |
+| `computer_screenshot` | 已授权 | safe | 默认取前台窗口所在屏；前台是受保护窗口时回落光标屏 |
+| `computer_mouse` | 已授权 | confirm | 坐标默认按最近截图图片像素；点击前做命中测试与指针回执 |
+| `computer_keyboard` | 已授权 | confirm | Unicode 输入 + 组合键；输入前校验前台窗口 |
+| `computer_window` | 已授权 | confirm | 窗口 id 来自 list；titleMatch 必须唯一；launch 只接受 .exe / .com |
+| `computer_ui` | 已授权 | confirm | 基于 UI Automation；path 来自 tree / find，布局变化后失效 |
+| `computer_wait` | 已授权 | safe | 等待期间会话保持运行 |
+| `computer_stop` | 已授权 | safe | 任务完成 / 用户要求停止时调用；撤销本会话授权、收起浮层并把 Aurora 调回前台（幂等） |
 
 - **三层门控（缺一不可）**：
   1. **注册级**：`process.platform === 'win32'` + `computerUse.enabled` + 当前全局模型
-     `vision === true` + `agent.permissionMode !== 'readonly'`，否则 7 个工具一个都不注册；
-  2. **请求级**：`computerUseRunProfile` 对未授权会话返回 `hiddenTools`，模型在系统提示词、
-     `tools` 数组与循环里都看不到；会话级模型覆盖到非视觉模型时同样隐藏；
-  3. **执行级**：端口的 `ensureCallAllowed` 每次调用重查会话授权 / 总开关 / 模型视觉 / 权限档，
+     `vision === true` + `agent.permissionMode !== 'readonly'`，否则 8 个工具一个都不注册；
+  2. **请求级**：`computerUseRunProfile` 按会话状态给出可见子集：
+     - 未授权且会话合格 → 只留 `computer_start`；
+     - 已授权 → 6 个动作工具 + `computer_stop`（入口摘掉）；
+     - 非视觉 / 自动化 / 自感知 / 子代理等**不合格会话** → 整组摘掉
+       （唯一口径在 `main/computer-use/session-policy.ts`）；
+  3. **执行级**：`service.start()` 重查总开关 / 平台 / 视觉 / 只读档 / 会话资格 / 同时一个会话；
+     端口的 `ensureCallAllowed` 每次调用重查会话授权 / 总开关 / 模型视觉 / 权限档，
      防止「请求开始后授权被撤销」继续操作。只读档同样不注册（点击输入有外部副作用）。
 
-- **授权生命周期**：授权只在内存里、按会话保存；用户在输入框输入 `/computer`（可带任务，
-  如 `/computer 打开记事本输入今天的待办`）后 `computerUse:start` 建立，只允许同时一个会话。
-  **`/computer` 同时是显式指令**：客户端会把
+- **授权生命周期**：授权只在内存里、按会话保存；用户输入 `/computer`（可带任务）或 Agent 调用
+  `computer_start` 后建立，只允许同时一个会话。**`/computer` 同时是显式指令**：客户端会把
   「请使用 Computer Use 工具操作电脑，完成：」放进用户消息，运行档也要求模型优先调用
   `computer_*` 工具，而不是用 `run_command` / 内置浏览器替代。
   **授权与「开始操作」是两件事**：`start` 只建立授权，不建浮层、不启动光标循环；Agent 的第一次
   工具调用（截图 / 读窗口 / 动作）才进入操作态并显示浮层。`stop`、`computer_stop`（Agent 主动退出）、
-  关闭总开关、切只读档、锁屏 / 休眠、模型失去视觉、闲置超时、应用退出都会撤销。应用重启不恢复。Agent 没有开启入口，
-  `computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`，`set_setting` 改不动。
+  关闭总开关、切只读档、锁屏 / 休眠、模型失去视觉、闲置超时、应用退出都会撤销。应用重启不恢复。
+  Agent 能进入用户**已开启**的模式，但 `computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`：
+  总开关、动作限额、应用允许 / 禁止名单仍只由用户修改，`set_setting` 改不动。
+- **退出即回前台**：`computer_stop` → `service.stop('agent')` → `onStopped(sessionId, reason)`
+  → `WindowManager.bringToFront('chat')`（显示 + 从最小化恢复 + 激活），并向 chat 推送
+  `chat:remoteActivate` 切回**刚完成任务的那条会话**。只有 `agent` 这一种结束原因抢焦点；
+  用户自己停、设置页改配置、锁屏 / 休眠、应用退出都不打扰用户。
 
 - **坐标协议**：模型读的是**最近一张截图的图片像素**。主进程记录 `ScreenView`
   （displayId / 物理 origin / image 尺寸 / scaleX / scaleY / 目标窗口 pid）；动作层用
@@ -2862,7 +2871,8 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   持续在场、每个动作实时更新**（不再为截图隐藏）。两者 `showInactive()`；**不做
   `setContentProtection`**（远程桌面 / 屏幕共享下会完全看不到），代价是模型截图里会带上
   过程面板与虚拟光标。对话窗另有状态条与停止按钮。
-  停止入口：状态条、托盘、`Ctrl+Alt+Shift+Esc`，以及 **Agent 自己调用 `computer_stop`**。
+  停止入口：状态条、托盘、`Ctrl+Alt+Shift+Esc`，以及 **Agent 自己调用 `computer_stop`**
+  （这条会结束会话并把 Aurora 调回前台；其余入口保持用户当前应用焦点不变）。
 
 - **配置（v39，`computerUse`）**：
 

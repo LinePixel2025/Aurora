@@ -9,7 +9,10 @@
  * （`apps/desktop/src/main/computer-use/`）。
  *
  * 安全口径（内核侧只能做到这些，真正的系统边界在主进程端口）：
- * - 工具只会在**用户显式授权的会话**里出现（装配层 run profile 隐藏），内核不自行注册；
+ * - 动作工具只会在**已授权的会话**里出现（装配层 run profile 隐藏）；入口工具
+ *   `computer_start` 在未授权时可见，让 Agent 不必等用户去敲 `/computer`；
+ * - 入口是 `confirm`（用户选 confirm 档时逐次询问），退出 `computer_stop` 是 `safe`
+ *   （收回桌面授权不能被确认链卡住）；
  * - 非截图/等待类动作是 `confirm`，由统一确认链逐次判定（`auto` 档直接放行）；
  * - 动作串行（`parallel` 缺省 false）：桌面同一时刻只能有一个指针 / 焦点；
  * - 工具描述明确「先截图再动作、坐标基于最近截图、受保护应用不可操作、不要操作 Aurora 自身」。
@@ -28,6 +31,23 @@ export const COMPUTER_USE_TOOL_NAMES = [
   'computer_stop',
 ] as const
 export type ComputerUseToolName = (typeof COMPUTER_USE_TOOL_NAMES)[number]
+
+/**
+ * Agent 自入口（v39 优化）：**未授权时唯一可见**的 Computer Use 工具。
+ *
+ * 与 `computer_stop` 分开成常量：`COMPUTER_USE_TOOL_NAMES` 是「授权后才可见」的 7 个
+ * 工具（6 动作 + 退出），入口只在未授权时出现；`COMPUTER_USE_ALL_TOOL_NAMES` 是注册 /
+ * 卸载 / 日志用的全集。
+ *
+ * 入口只建立**授权**（与用户敲 `/computer` 同一条 `service.start()`），不显示浮层、不启动
+ * 光标循环；第一次动作工具调用才进入操作态（docs/06 §28「授权 ≠ 开始操作」）。
+ */
+export const COMPUTER_USE_START_TOOL_NAME = 'computer_start'
+export const COMPUTER_USE_ALL_TOOL_NAMES = [
+  COMPUTER_USE_START_TOOL_NAME,
+  ...COMPUTER_USE_TOOL_NAMES,
+] as const
+export type ComputerUseAllToolName = (typeof COMPUTER_USE_ALL_TOOL_NAMES)[number]
 
 /** 坐标空间：`image` = 最近一张截图的图片像素（默认）；`screen` = 物理虚拟屏幕像素。 */
 export type ComputerCoordinateSpace = 'image' | 'screen'
@@ -143,6 +163,14 @@ export interface ComputerWaitInput {
   signal?: AbortSignal
 }
 
+/** `computer_start`：Agent 主动建立 Computer Use 授权（只授权，不开始操作）。 */
+export interface ComputerStartInput {
+  sessionId: string
+  /** 给确认卡 / 审计日志看的一句话理由（不含密码等敏感信息）。 */
+  reason?: string
+  signal?: AbortSignal
+}
+
 /** `computer_stop`：Agent 主动退出操作模式（任务完成 / 用户要求停止 / 交还桌面）。 */
 export interface ComputerStopInput {
   sessionId: string
@@ -162,6 +190,8 @@ export interface ComputerUsePort {
   window(input: ComputerWindowInput): Promise<ToolResult>
   ui(input: ComputerUiInput): Promise<ToolResult>
   wait(input: ComputerWaitInput): Promise<ToolResult>
+  /** 建立本会话授权（与 `/computer` 同一条服务入口；不建浮层）。 */
+  start(input: ComputerStartInput): Promise<ToolResult>
   /** 退出操作模式：撤销本会话授权、收起浮层与过程面板（幂等）。 */
   stop(input: ComputerStopInput): Promise<ToolResult>
 }
@@ -211,6 +241,7 @@ export interface ComputerUseToolOptions {
 export function createComputerUseTools(options: ComputerUseToolOptions): ToolDefinition[] {
   const { port } = options
   return [
+    startTool(port),
     screenshotTool(port),
     mouseTool(port),
     keyboardTool(port),
@@ -219,6 +250,40 @@ export function createComputerUseTools(options: ComputerUseToolOptions): ToolDef
     waitTool(port),
     stopTool(port),
   ]
+}
+
+function startTool(port: ComputerUsePort): ToolDefinition {
+  return {
+    name: COMPUTER_USE_START_TOOL_NAME,
+    description:
+      '由 Agent 主动建立 Computer Use 授权（用户已在设置里开启总开关时可用）。' +
+      '仅在用户要求操作真实桌面 / 桌面应用、而结构化工具（文件 / 终端 / 内置浏览器）做不到时调用。' +
+      '授权本身不显示浮层；**下一次请求**才会出现 computer_* 动作工具，第一次动作调用才进入操作态。' +
+      '任务完成后必须调用 computer_stop 退出，把桌面还给用户。',
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description:
+            '给用户确认卡与审计日志看的一句话理由（不超过 200 字；不要写密码等敏感信息）',
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+    sensitivity: 'confirm',
+    execute: async (input, ctx) =>
+      guard(async () => {
+        const record = asRecord(input) ?? {}
+        const reason = optionalString(record['reason'], 'reason', 200)
+        return port.start({
+          sessionId: ctx.sessionId,
+          ...(reason === undefined ? {} : { reason }),
+          ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+        })
+      }),
+  }
 }
 
 function screenshotTool(port: ComputerUsePort): ToolDefinition {

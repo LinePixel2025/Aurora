@@ -2,30 +2,42 @@
  * Computer Use 运行档（docs/06 §5.2 / §28）。
  *
  * 工具是否注册是进程级的（总开关 / 平台 / vision / 权限档），而「这个会话能不能用」
- * 是请求级的：未授权的会话用 `hiddenTools` 把 6 个工具从工具面摘掉，模型在系统提示词、
- * `tools` 数组和循环里都看不到它们。
+ * 是请求级的。v39 优化后 Agent 有了自己的入口，因此请求级不再只是「藏工具」：
  *
- * 未授权但功能已启用时只给一句 `runContext`：告诉模型「用户还没授权，请让用户输入
- * `/computer`」，不产生任何调用能力。
+ * | 状态 | 可见工具 | 运行说明 |
+ * | --- | --- | --- |
+ * | 未授权、会话合格 | `computer_start` | 告诉模型可以直接进入，不必让用户敲 `/computer` |
+ * | 已授权 | 6 个动作工具 + `computer_stop` | 操作规范 + 任务完成必须退出 |
+ * | 非视觉 / 会话不合格 | 一个都不留 | 没有任何调用能力 |
+ *
+ * 「会话合格」的唯一口径在 `session-policy.ts`（自动化 / 自感知 / 子代理会话不合格），
+ * 这里只消费它，不在另一处再写一套前缀判断。
  */
-import { COMPUTER_USE_TOOL_NAMES, type RunProfile } from '@aurora/agent-core'
+import {
+  COMPUTER_USE_ALL_TOOL_NAMES,
+  COMPUTER_USE_START_TOOL_NAME,
+  COMPUTER_USE_TOOL_NAMES,
+  type RunProfile,
+} from '@aurora/agent-core'
 
 export const COMPUTER_USE_RUN_CONTEXT = [
   '## 本次运行：Computer Use',
-  '- 用户已在本会话显式授权你操作真实桌面（截屏 + 鼠标 + 键盘 + 窗口）。',
-  '- 用户通过 `/computer` 明确要求使用 Computer Use：需要操作图形界面时**必须优先调用 `computer_*` 工具**，' +
-    '不要用 `run_command` / 内置浏览器替代（除非用户明确说不要动桌面）。',
+  '- 本会话已获得 Computer Use 授权（用户 `/computer` 或你调用 `computer_start`）。',
+  '- 需要操作图形界面时**必须优先调用 `computer_*` 工具**，不要用 `run_command` / 内置浏览器替代' +
+    '（除非用户明确说不要动桌面）。',
   '- 先 `computer_screenshot` 看屏幕并建立坐标空间；坐标默认按最近截图的像素。',
   '- 优先用 `computer_ui` 的控件名 / 快捷键，不要盲点坐标；每次动作后复核界面。',
   '- 不得操作 Aurora 自身、终端、任务管理器、UAC / 锁屏等受保护窗口。',
   '- 用户手动移动鼠标或键盘时任务继续，不要因此停止或重复已成功的动作。',
-  '- 任务完成、用户要求停止或准备把桌面交还用户时，调用 `computer_stop` 退出操作模式。',
+  '- **任务完成（或用户要求停止）时必须调用 `computer_stop` 退出**：退出后 Aurora 会自动回到前台向用户汇报；不要一直占着桌面。',
 ].join('\n')
 
 export const COMPUTER_USE_UNAUTHORIZED_CONTEXT = [
-  '## 本次运行：Computer Use 未授权',
-  '- 用户在设置里启用了 Computer Use，但本会话尚未授权。',
-  '- 如果用户要求你操作电脑，请让用户在输入框输入 `/computer` 授权；不要假装已经操作。',
+  '## 本次运行：Computer Use 未进入',
+  '- 用户在设置里启用了 Computer Use，但本会话尚未获得授权。',
+  '- 如果用户要求你操作电脑（点击 / 输入 / 窗口 / 桌面应用），直接调用 `computer_start` 进入；不要要求用户去敲 `/computer`。',
+  '- 授权本身不显示浮层，**下一次请求**才会出现 `computer_*` 动作工具：先 `computer_screenshot` 截图，再动作。',
+  '- 结构化工具（文件 / 终端 / 内置浏览器）能做时优先用它们；Computer Use 只用于没有结构化接口的界面操作。',
 ].join('\n')
 
 export interface ComputerUseProfileInput {
@@ -35,13 +47,15 @@ export interface ComputerUseProfileInput {
   vision: boolean
   /** 该会话是否持有当前唯一的 Computer Use 授权 */
   authorized: boolean
+  /** 该会话能否持有授权（自动化 / 自感知 / 子代理会话不能） */
+  eligible: boolean
 }
 
 export function computerUseRunProfile(input: ComputerUseProfileInput): RunProfile | undefined {
   if (!input.enabled) return undefined
-  // 会话级模型覆盖到非视觉模型时，即使全局 vision 开着也要把工具从本次请求摘掉
-  if (!input.vision) {
-    return { hiddenTools: COMPUTER_USE_TOOL_NAMES }
+  // 会话级模型覆盖到非视觉模型、或本会话根本不能持有授权时，整组从请求面摘掉。
+  if (!input.vision || !input.eligible) {
+    return { hiddenTools: COMPUTER_USE_ALL_TOOL_NAMES }
   }
   if (!input.authorized) {
     return {
@@ -49,7 +63,11 @@ export function computerUseRunProfile(input: ComputerUseProfileInput): RunProfil
       runContext: COMPUTER_USE_UNAUTHORIZED_CONTEXT,
     }
   }
-  return { runContext: COMPUTER_USE_RUN_CONTEXT }
+  return {
+    // 已进入模式：入口工具没有意义，摘掉能省一次误调用；动作工具与退出工具必须留着。
+    hiddenTools: [COMPUTER_USE_START_TOOL_NAME],
+    runContext: COMPUTER_USE_RUN_CONTEXT,
+  }
 }
 
 /**

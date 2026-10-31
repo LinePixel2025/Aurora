@@ -216,8 +216,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **跑 Electron 前先清 `ELECTRON_RUN_AS_NODE`**；无 TTY 时用 `pnpm --config.verify-deps-before-run=false exec …` 绕过（别写进 `package.json`）。
 - **内置浏览器工具组**受 `agent.browser.enabled` 门控、**不受** `agent.tools.enabled`；`maxSessions` / `idleMinutes` 必须用 getter 现读，写成构造常量就是"改设置要重启"的死字段。
 - **webview guest 必须由渲染层上报 `webContentsId`**，主进程校验 `hostWebContents` 归属（chat 窗口）后才接管；不要按 URL / 标题猜 guest。
-- **Computer Use（v39，06 §28）三层门控缺一不可**：注册（Windows + `computerUse.enabled` + 模型 vision + 非只读档）、请求级（`computerUseRunProfile` 对未授权 / 非视觉会话 `hiddenTools`）、执行级（端口每次 `ensureCallAllowed`）。`computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`，AI 不得自行开启 / 放宽；授权只在内存、按会话、同时一个。**唯一开启入口是输入框 `/computer` 斜杠命令**（可带任务）；输入框工具行不得再加「操作电脑」开关。
+- **Computer Use（v39，06 §28）三层门控缺一不可**：注册（Windows + `computerUse.enabled` + 模型 vision + 非只读档，共 8 个工具）、请求级（`computerUseRunProfile`：未授权只留 `computer_start`、已授权留 6 动作 + `computer_stop`、非视觉 / 自动化 / 自感知 / 子代理会话整组摘掉）、执行级（`service.start()` 重查资格、端口每次 `ensureCallAllowed`）。`computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`：**Agent 能进入用户已开启的模式，但不得自行开启 / 放宽总开关、限额与应用名单**；授权只在内存、按会话、同时一个。用户入口是输入框 `/computer` 斜杠命令（可带任务），Agent 入口是 `computer_start`；输入框工具行不得再加「操作电脑」开关。
 - **Computer Use 授权 ≠ 开始操作**：`service.start()` 只建立授权，**不得**建浮层 / 启光标循环；第一次工具调用（截图 / 读窗口 / 动作）才经 `ensureOperating()` 显示浮层。`overlay.applyConfig()` 会直接显示窗口，只允许在已进入操作态时调用。
+- **Computer Use 退出即回前台**：Agent 调 `computer_stop` → `service.stop('agent')` → `onStopped(sessionId, reason)`；**只有 `reason === 'agent'`** 才 `bringToFront('chat')`（显示 + 最小化恢复 + 焦点）并 `chat:remoteActivate` 切回该会话。用户手动停止 / 设置页改配置 / 锁屏 / 退出都不得抢焦点。
 - **Computer Use 输入宿主是常驻 PowerShell（NDJSON）**：懒启动一次、串行队列、失败关闭；脚本写 `<userData>/computer-use/win-host.ps1` 用 `-File` 启动（**不要** `-EncodedCommand`，超 32K 命令行上限）；用户文字 / 按键只走 JSON 参数，不拼进脚本；启动时设 per-monitor DPI awareness。
 - **Computer Use 坐标以最近截图图片像素为准**：`physical = origin + image / scale`；没有截图 / 显示器变化要拒绝并让模型重新截图；点击前 `WindowFromPoint` 命中测试、移动后 `GetCursorPos` 回执、`SendInput` 返回 0 必须报错，绝不静默在错误位置点击。
 - **Computer Use 受保护目标不可配置**（Aurora 自身 / 终端 / 任务管理器 / UAC / 锁屏）；`allowedApps` 为空 = 除保护目标与 deny 外允许，deny 优先；`launch` 只接受 `.exe` / `.com`。

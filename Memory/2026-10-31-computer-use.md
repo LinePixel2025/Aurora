@@ -4,21 +4,29 @@
 
 ## 结论
 
-- 七工具（`computer_screenshot` / `mouse` / `keyboard` / `window` / `ui` / `wait` /
-  `computer_stop`）**三层门控**：
+- 八工具 = 6 动作（`computer_screenshot` / `mouse` / `keyboard` / `window` / `ui` / `wait`）
+  + `computer_stop`（退出）+ `computer_start`（Agent 入口）。**三层门控**：
   注册（win32 + `computerUse.enabled` + 模型 vision + 非只读档）、请求级
-  （`computerUseRunProfile` 对未授权 / 非视觉会话 `hiddenTools`）、执行级
-  （端口 `ensureCallAllowed`）。任何一层漏掉都会让「没授权的会话看到工具」。
+  （`computerUseRunProfile`：未授权只留 `computer_start`，已授权留 7 个，非视觉 / 不合格会话
+  整组摘掉）、执行级（`service.start()` 重查资格、端口 `ensureCallAllowed`）。任何一层漏掉
+  都会让「没授权的会话看到工具」。
 - `computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`；授权只在内存、按会话、同时一个。
-  **唯一开启入口 = 输入框斜杠命令 `/computer`**（可用 `/computer <任务>` 一次完成授权 + 发送；
-  Agent 没有开启工具）。2026-10-31 起输入框工具行的「操作电脑」开关与「开始操作」确认步骤已删除。
+  **用户入口 = 输入框斜杠命令 `/computer`**（可用 `/computer <任务>` 一次完成授权 + 发送）；
+  **Agent 入口 = `computer_start`**（2026-10-31 优化，sensitivity `confirm`：默认 auto 档静默，
+  confirm 档弹确认卡）。2026-10-31 起输入框工具行的「操作电脑」开关与「开始操作」确认步骤已删除。
   `/computer` 还会把「请使用 Computer Use 工具操作电脑，完成：」放进用户消息，运行档也要求模型
   优先调 `computer_*`，否则模型会「有权限但不用」。
 - **授权 ≠ 开始操作**：`computerUseService.start()` 只建立授权、不发 `started` 以外的副作用；
   浮层与光标循环由**第一次工具调用**（截图 / 读窗口 / 动作）经 `ensureCallAllowed → ensureOperating`
   懒启动。`stop()` 只在 `overlayShown` 时收起浮层，授权后未操作时屏幕上什么都没有。
-- **Agent 可主动退出**：`computer_stop`（sensitivity `safe`，无参数）→ 端口 `service.stop('agent')`，
-  与用户点停止走同一条撤销路径；未授权时幂等返回「未在操作模式」。停止原因新增 `'agent'`。
+  `computer_start` 走的也是 `service.start()`，所以 Agent 自行进入同样不会立刻弹浮层。
+- **Agent 可主动退出，且退出即回前台**：`computer_stop`（sensitivity `safe`，无参数）→ 端口
+  `service.stop('agent', sessionId)`，与用户点停止走同一条撤销路径；未授权时幂等返回「未在操作模式」。
+  停止原因新增 `'agent'`；`onStopped(sessionId, reason)` 只在 `reason === 'agent'` 时调
+  `WindowManager.bringToFront('chat')`（显示 + 最小化恢复 + 焦点）并推 `chat:remoteActivate`
+  切回该会话。用户手动停止 / 设置页 / 锁屏 / 退出都不抢焦点。
+- **会话资格唯一口径**：`main/computer-use/session-policy.ts` 的 `canHoldComputerUseSession`
+  （空串 / `auto-` / `awareness-` / `-sub` 不合格；`center-` 合格），service 与 run profile 共用。
 - Windows 输入走**常驻 PowerShell NDJSON 宿主**：脚本写 `<userData>/computer-use/win-host.ps1`
   用 `-File` 启动（`-EncodedCommand` 会超 32K 命令行）；`-Sta` 跑 UIAutomation；
   启动时 `Add-Type` + per-monitor DPI awareness。脚本只含 ASCII，用户文字只走 JSON。
@@ -104,3 +112,6 @@
 > 面板再精简为 560×116「安静的状态仪器」：状态行 / 当前步骤 / 最近 2 步，唯一装饰是贴顶
 > 1px 光谱细线；每一步带语义图标，连续相同操作合并 `×N`。实测：外部 GDI 截屏能看到
 > HUD / 光带 / 光标；capture 4/4 全绿。
+> 2026-10-31 二次修订（本分支）：新增 `computer_start` 让 Agent 自行进入（只授权、不建浮层），
+> 保留 `/computer` 作为用户入口；`computer_stop` 退出时把 Aurora 带回前台并切回该会话，
+> 只有 `agent` 结束原因抢焦点。

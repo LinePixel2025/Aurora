@@ -21,6 +21,7 @@ import type {
 } from '@aurora/shared'
 import type { Logger, PermissionMode } from '@aurora/shared'
 import type { Rect } from './coordinates.js'
+import { canHoldComputerUseSession } from './session-policy.js'
 
 export interface ComputerUseDisplay {
   id: number
@@ -56,8 +57,13 @@ export interface ComputerUseServiceOptions {
   /** 单测可注入定时器；缺省用全局。 */
   setInterval?: typeof setInterval
   clearInterval?: typeof clearInterval
-  /** 会话结束时清理端口侧坐标空间（下一会话必须重新截图）。 */
-  onStopped?: (sessionId: string) => void
+  /**
+   * 会话结束时清理端口侧坐标空间（下一会话必须重新截图）。
+   *
+   * 带上 `reason` 是为了让装配层区分「Agent 主动完成任务退出」（需要把 Aurora 调回前台）
+   * 与「用户 / 设置 / 锁屏 / 退出」等其它结束原因 —— 后者不该抢用户当前应用的焦点。
+   */
+  onStopped?: (sessionId: string, reason: ComputerUseStatusStopReason) => void
 }
 
 export interface ComputerUseActionMeta {
@@ -157,12 +163,7 @@ export class ComputerUseService {
     if (this.options.permissionMode() === 'readonly') {
       throw new ComputerUseError('E_CU_READONLY', '只读档下不能使用 Computer Use')
     }
-    if (
-      sessionId.trim() === '' ||
-      sessionId.startsWith('auto-') ||
-      sessionId.startsWith('awareness-') ||
-      sessionId.endsWith('-sub')
-    ) {
+    if (!canHoldComputerUseSession(sessionId)) {
       throw new ComputerUseError('E_CU_SESSION', '该会话不能开启 Computer Use')
     }
     if (this.sessionId !== undefined) {
@@ -196,8 +197,15 @@ export class ComputerUseService {
     return this.status()
   }
 
-  stop(reason: ComputerUseStatusStopReason = 'user'): ComputerUseStatus {
+  /**
+   * 结束当前会话。
+   *
+   * `onlySessionId` 给「Agent 自己退出」用：只有调用者就是当前持有者时才结束；
+   * 别的会话调 stop 必须是幂等的 no-op —— 否则一个会话就能把另一个会话的桌面操控夺走。
+   */
+  stop(reason: ComputerUseStatusStopReason = 'user', onlySessionId?: string): ComputerUseStatus {
     if (this.sessionId === undefined) return this.status()
+    if (onlySessionId !== undefined && this.sessionId !== onlySessionId) return this.status()
     const sessionId = this.sessionId
     const wasShown = this.overlayShown
     this.overlayShown = false
@@ -218,7 +226,7 @@ export class ComputerUseService {
         this.options.logger.warn('Computer Use 浮层收起失败', { error: String(error) })
       }
     }
-    this.options.onStopped?.(sessionId)
+    this.options.onStopped?.(sessionId, reason)
     this.emit({ type: 'ended', sessionId, reason })
     this.options.logger.info('Computer Use 会话已结束', { sessionId, reason })
     return this.status()
@@ -229,7 +237,7 @@ export class ComputerUseService {
     if (this.sessionId === undefined) {
       throw new ComputerUseError(
         'E_CU_NOT_ACTIVE',
-        'Computer Use 未授权，请先在输入框输入 /computer',
+        'Computer Use 未授权：请让用户输入 /computer，或由你调用 computer_start 进入',
       )
     }
     if (this.sessionId !== sessionId) {

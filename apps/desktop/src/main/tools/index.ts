@@ -63,7 +63,7 @@ import {
   createViewImageTool,
   createWebFetchTool,
   createComputerUseTools,
-  COMPUTER_USE_TOOL_NAMES,
+  COMPUTER_USE_ALL_TOOL_NAMES,
   TODO_WRITE_TOOL_NAME,
   createCenterSendFileTool,
   createCenterStatusTool,
@@ -861,7 +861,7 @@ export interface ComputerUseToolsDeps {
 export function registerComputerUseTools(deps: ComputerUseToolsDeps): { sync(): string[] } {
   return {
     sync(): string[] {
-      for (const name of COMPUTER_USE_TOOL_NAMES) deps.tools.unregister(name)
+      for (const name of COMPUTER_USE_ALL_TOOL_NAMES) deps.tools.unregister(name)
 
       if (
         !deps.enabled() ||
@@ -871,13 +871,13 @@ export function registerComputerUseTools(deps: ComputerUseToolsDeps): { sync(): 
       ) {
         deps.onDisabled()
         deps.logger.debug('Computer Use 工具不注册（开关 / 平台 / vision / 只读档）', {
-          names: [...COMPUTER_USE_TOOL_NAMES],
+          names: [...COMPUTER_USE_ALL_TOOL_NAMES],
         })
         return []
       }
 
       for (const tool of createComputerUseTools({ port: deps.port })) deps.tools.register(tool)
-      const names = COMPUTER_USE_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      const names = COMPUTER_USE_ALL_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步 Computer Use 工具', { names: [...names] })
       return [...names]
     },

@@ -19,6 +19,7 @@ function makeService(options: {
 }) {
   const events: string[] = []
   const showCalls: number[] = []
+  const stopped: Array<{ sessionId: string; reason: string }> = []
   const service = new ComputerUseService({
     settings: () => options.settings,
     logger: logger() as never,
@@ -38,8 +39,9 @@ function makeService(options: {
     cursorPoint: () => ({ x: 10, y: 10 }),
     setInterval: () => ({ unref: () => undefined }) as never,
     clearInterval: () => undefined,
+    onStopped: (sessionId, reason) => stopped.push({ sessionId, reason }),
   })
-  return { service, events, showCalls }
+  return { service, events, showCalls, stopped }
 }
 
 describe('ComputerUseService', () => {
@@ -122,6 +124,33 @@ describe('ComputerUseService', () => {
     expect(service.beginAction('main', 'mouse.move', '移动')).toEqual({ step: 1, maxSteps: 1 })
     expect(() => service.beginAction('main', 'mouse.click', '点击')).toThrow(ComputerUseError)
     expect(service.status().active).toBe(false)
+  })
+
+  it('Agent 主动退出：只结束本会话，并把 agent 原因交给装配层', async () => {
+    const settings = createDefaultSettings()
+    settings.computerUse.enabled = true
+    const { service, stopped } = makeService({ settings })
+    await service.start('main')
+    // 别的会话调用 stop 是幂等 no-op：不能把 main 的授权夺走
+    const other = service.stop('agent', 'other')
+    expect(other.active).toBe(true)
+    expect(other.sessionId).toBe('main')
+    expect(stopped).toHaveLength(0)
+
+    const ended = service.stop('agent', 'main')
+    expect(ended.active).toBe(false)
+    expect(stopped).toEqual([{ sessionId: 'main', reason: 'agent' }])
+  })
+
+  it('自动化 / 自感知 / 子代理会话不能开启', async () => {
+    const settings = createDefaultSettings()
+    settings.computerUse.enabled = true
+    const { service } = makeService({ settings })
+    for (const sessionId of ['auto-x', 'awareness-x', 'chat-1-sub', '   ']) {
+      await expect(service.start(sessionId)).rejects.toMatchObject({ code: 'E_CU_SESSION' })
+    }
+    // 普通 / quick / center 会话可以
+    await expect(service.start('center-abc')).resolves.toMatchObject({ active: true })
   })
 
   it('run context 常量存在（非视觉 / 未授权提示由 run profile 使用）', () => {

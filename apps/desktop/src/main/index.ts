@@ -239,6 +239,8 @@ import { ComputerUseService } from './computer-use/service.js'
 import { ComputerUseInputHost } from './computer-use/input-host.js'
 import { DesktopComputerUsePort } from './computer-use/port.js'
 import { composeRunProfiles, computerUseRunProfile } from './computer-use/run-profile.js'
+import { canHoldComputerUseSession } from './computer-use/session-policy.js'
+import { shouldBringAuroraToFront } from './computer-use/foreground.js'
 // 插件系统（docs/14）：贡献在清单里声明，运行在独立 utilityProcess（非 OS 沙箱）
 import { PluginManager } from './plugins/manager.js'
 import { readPluginPanelData } from './plugins/panel-data.js'
@@ -1715,7 +1717,26 @@ async function bootstrap(): Promise<void> {
           },
         })),
       cursorPoint: () => screen.getCursorScreenPoint(),
-      onStopped: (sessionId) => computerUsePort?.clearSession(sessionId),
+      onStopped: (sessionId, reason) => {
+        computerUsePort?.clearSession(sessionId)
+        // v39 优化（docs/06 §28）：Agent 主动退出 = 任务完成，把主界面带回前台。
+        // 只有 `agent` 抢焦点；用户自己停 / 设置页改配置 / 锁屏 / 退出都不打扰。
+        if (shouldBringAuroraToFront(reason)) {
+          const manager = windows
+          if (manager !== undefined) {
+            manager.bringToFront('chat')
+            // 用户可能已经切到别的会话在看别的东西；把主界面切回**刚完成任务**的这条，
+            // 否则「调前台」只是亮出一段不相干的对话。渲染层同 id 时是 early-return，
+            // 不会重载正在收尾的这次回复。
+            //
+            // 先等本次加载完成再推：主界面从未打开过时 `bringToFront()` 会现场建窗，
+            // 立刻 `sendTo()` 会推给还没挂载监听器的页面（与 `showWithPayload()` 同款坑）。
+            void manager.whenLoaded('chat').then(() => {
+              manager.sendTo('chat', IPC.chat.remoteActivate, { sessionId })
+            })
+          }
+        }
+      },
     })
     computerUseService = service
     computerUsePort = new DesktopComputerUsePort({
@@ -2174,7 +2195,8 @@ async function bootstrap(): Promise<void> {
     // （create / update / delete / run）——「自动化 → 会话 → 自动化」不得成为闭环。
     // 判据是 origin 或会话 id 前缀；普通会话返回 undefined，提示词与工具面与从前逐字一致。
     // 运行档（v0.2.8 / v39）：自动化换人设并摘写类工具；Computer Use 未授权时
-    // 把 6 个工具从本次请求的工具面摘掉（授权是请求级的，注册表仍是进程级）。
+    // 只留 `computer_start`（Agent 自行进入的入口），授权后换成「动作工具 + computer_stop」。
+    // 注册表仍是进程级的，这里只做请求级视图。
     runProfileFor: (context) =>
       composeRunProfiles(
         fileAwarenessRunProfile(context) ?? automationRunProfile(context),
@@ -2185,6 +2207,7 @@ async function bootstrap(): Promise<void> {
             sessions?.modelOverrideOf(context.sessionId),
           ),
           authorized: computerUseService?.isAuthorized(context.sessionId) === true,
+          eligible: canHoldComputerUseSession(context.sessionId),
         }),
       ),
   })
