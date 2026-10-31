@@ -228,28 +228,51 @@ function formatRelativeTime(iso: string): string {
 
 /*
  * 远程会话来源标签（center-*，docs/12 §5）：轻量药丸，弱于激活指示条。
- * `flex: 0 1 auto`（不是 0 0 auto）：空间不足时药丸**可以收缩**，否则它会把
- * 相对时间顶出行内容盒、压到归档钮底下（2026-10-18 用户实测的「文字重叠」）。
+ *
+ * 2026-10-31 补窄栏护栏（用户实测「Center 标识仍会随侧栏宽度溢出」）：
+ * - `overflow: hidden` + `text-overflow: ellipsis` + `nowrap`：任何情况下都不把
+ *   「Center」画到自己的药丸外面、压到时间和模型徽标上；
+ * - 与模型徽标同一行高（18px），两枚药丸在行内上下对齐，不再一枚 16 一枚 18；
+ * - Center 不参与收缩（`flex: 0 0 auto`），让位靠容器查询整枚收起（见文件末尾）。
  */
 .item-tag {
-  flex: 0 1 auto;
+  /* 不收缩：Center 是 5 个拉丁字符的短标签，一旦可收缩就会先被挤成「C…」；
+     它靠容器查询整枚让位，而不是靠裁字（见文件末尾的三个 @container）。 */
+  flex: 0 0 auto;
   min-width: 0;
+  max-width: 72px;
   padding: 0 5px;
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
   color: var(--accent-text);
-  line-height: 16px;
+  line-height: 18px;
   letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * 行内优先级（2026-10-18 口径）：标题 > 相对时间 > Center 药丸 > 模型徽标。
+ * Center 会话也可能单独覆盖过模型，两枚同时出现时**窄栏让模型徽标让位** ——
+ * 来源比覆盖信息更重要，且两枚并排会把标题与时间一起挤扁；宽栏下两枚都能放下，不隐藏。
+ */
+@container (max-width: 190px) {
+  .item-tag:not(.item-llm) ~ .item-llm {
+    display: none;
+  }
 }
 
 /*
  * 模型徽标：它只是「这个会话绑过模型」的提示 —— 完整值在行 `title` 与输入区下拉里
  * 都能看全（docs/07 §5.4：关键信息看全的路径要留在手边）。`max-width: 96px` 允许
  * 收缩并省略号；**窄栏时整枚让位**（见文件末尾 @container）—— 左栏 200px 夹取下限下
- * 行内容宽只剩 ~118px，标题（≥3em）+ 相对时间已吃掉大半，再塞 96px 徽标只会把标题
+ * 行内容宽只剩 ~120–130px，标题（≥3em）+ 相对时间已吃掉大半，再塞 96px 徽标只会把标题
  * 挤没、把时间顶到归档钮底下（2026-10-18 用户实测的「文字重叠」）。
  */
 .item-llm {
+  /* 模型名可长可短：允许收缩 + 省略号（Center 药丸已隐藏或不存在时才轮到它） */
+  flex: 0 1 auto;
   max-width: 96px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -257,15 +280,26 @@ function formatRelativeTime(iso: string): string {
 }
 
 /**
- * 窄栏让位顺序（2026-10-18）：会话行内优先级 = **标题 > 相对时间 > Center 药丸 > 模型徽标**。
+ * 窄栏让位顺序（2026-10-18，2026-10-31 补 Center 药丸）：会话行内优先级 =
+ * **标题 > 相对时间 > Center 药丸 > 模型徽标**。
  * `.nav-item` 是查询容器（文件顶部 `container-type: inline-size`），阈值按**行内容宽**取：
- * 左栏 200px（夹取下限）时内容宽 ~118px —— 徽标在这里没有可用空间，整枚隐藏；
- * 缺省 240px（内容宽 ~158px）起恢复显示（仍可收缩 + 省略号）。
+ * 左栏 200px（夹取下限）时内容宽 ~120–130px —— 两枚药丸在这里都没有可用空间，整枚隐藏；
+ * 缺省 240px（内容宽 ~168px）起恢复显示（仍可收缩 + 省略号）。
  * 探针 `CHAT_NAV_NARROW_CHECK`（场景 `chat-nav-narrow.png`）在左栏 200px 的现场量
- * 「徽标让位 + 标题不归零 + 相对时间不压归档钮」，`overflow: hidden` 只是最后一道兜底。
+ * 「Center / 模型徽标让位 + 标题不归零 + 相对时间不压归档钮」，
+ * `overflow: hidden` 只是最后一道兜底。
  */
 @container (max-width: 150px) {
   .item-llm {
+    display: none;
+  }
+}
+
+/* Center 药丸的让位阈值比模型徽标高 10px：它是不收缩的整枚，
+   161–190px 之间「标题下限 3em + 最长相对时间 + Center」仍放得下（≈153px），
+   再窄就整枚收起，而不是把相对时间顶出 item。 */
+@container (max-width: 160px) {
+  .item-tag:not(.item-llm) {
     display: none;
   }
 }

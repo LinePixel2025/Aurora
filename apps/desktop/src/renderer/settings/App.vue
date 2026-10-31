@@ -85,17 +85,16 @@ const nav: NavItem[] = [
 ]
 
 /**
- * 侧栏分组（两级）：基础（本机行为）/ 智能（AI 能力）/ 连接（外部服务）/ 系统（运维）。
- * 「提醒」属于本机行为（提醒方式与 AI 无关），放「基础」组最后一项。
- * Aurora Center 是独立的远程控制通道（docs/12），不属智能能力也不属本机运维，单独成组；
- * 插件既是外部来源的扩展又影响 Agent 能力，单列「扩展」组，避免被误读成普通系统设置。
+ * 侧栏分组（2026-10-31 收敛为三组）：本机（行为与界面）/ 智能（AI 能力）/ 系统（连接、扩展与运维）。
+ *
+ * 旧版是「基础 / 智能 / 连接 / 扩展 / 系统」五组 12 项：单个条目也占一行分组标题，
+ * 侧栏被切得很碎。连接与扩展各只有一项，合并进「系统」后分组标题从 5 个降到 3 个，
+ * 条目顺序不变（截图 / 探针按 DOM 顺序读，标签与原来一致）。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
-  { title: '基础', ids: ['general', 'sessions', 'modes', 'notifications'] },
+  { title: '本机', ids: ['general', 'sessions', 'modes', 'notifications'] },
   { title: '智能', ids: ['llm', 'voice', 'agent', 'computer-use', 'awareness'] },
-  { title: '连接', ids: ['center'] },
-  { title: '扩展', ids: ['plugins'] },
-  { title: '系统', ids: ['advanced'] },
+  { title: '系统', ids: ['center', 'plugins', 'advanced'] },
 ]
 
 /** 分组渲染用：分组标题 + 该组条目（条目与 `nav` 是同一批对象，避免两处维护文案） */
@@ -246,7 +245,7 @@ function select(id: PageId): void {
 <style scoped>
 .settings {
   display: grid;
-  grid-template-columns: 200px 1fr;
+  grid-template-columns: 208px 1fr;
   grid-template-rows: 32px minmax(0, 1fr);
   height: 100vh;
   background: transparent;
@@ -276,8 +275,8 @@ function select(id: PageId): void {
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: 0 var(--space-3) var(--space-4);
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-3);
   grid-column: 1;
   grid-row: 2;
 }
@@ -285,42 +284,47 @@ function select(id: PageId): void {
 .brand {
   display: flex;
   align-items: center;
-  /* 拖动条高度的下限（探针要求 ≥ 32px）：两行文案本身会把品牌行撑到约 39px */
-  min-height: 36px;
-  padding: 0 0 0 var(--space-3);
+  /* 拖动条高度的下限（探针要求 ≥ 32px）：两行文案本身会把品牌行撑到约 40px */
+  min-height: 40px;
+  padding: 0 var(--space-2);
 }
 
 .brand-text {
+  display: flex;
   flex: 1;
   min-width: 0;
+  align-items: baseline;
+  gap: var(--space-2);
 }
 
 .brand-text strong {
   display: block;
   font-family: var(--font-display);
-  font-size: var(--text-base);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-display);
 }
 
 .brand p {
   margin: 0;
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
 }
 
 nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
-/* 分组标题：小字号 + 弱色 + 字间距，只承担分层，不与可点条目抢注意力 */
+/* 分组标题：小字号 + 弱色 + 中文不做大写字距，只承担分层，不与可点条目抢注意力 */
 .nav-group {
-  margin: var(--space-3) 0 var(--space-1);
-  padding: 0 var(--space-3);
+  margin: var(--space-4) 0 var(--space-1);
+  padding: 0 var(--space-2);
   font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
+  font-weight: var(--weight-medium);
   color: var(--text-muted);
-  letter-spacing: var(--tracking-eyebrow);
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 nav > .nav-group:first-child {
@@ -328,8 +332,8 @@ nav > .nav-group:first-child {
 }
 
 /**
- * 侧栏条目（BetaV2）：背景 / 文字快速过渡 + 按下微缩（`.press` 的手动展开 ——
- * 这里不直接挂全局 `.press` 类，因为 transition 声明要与本条的 background / color 合并）。
+ * 侧栏条目：图标 + 单行文字；行高 34px、圆角收一档，条目之间不再各带一段空白。
+ * 按下微缩用 `.press` 的 0.97 + `--dur-press`（这里手动展开，为了与背景过渡合并）。
  */
 .nav-item {
   position: relative;
@@ -337,9 +341,10 @@ nav > .nav-group:first-child {
   flex-direction: row;
   align-items: center;
   gap: var(--space-2);
-  height: var(--control-h-sm);
-  padding: 0 var(--space-3);
+  height: 34px;
+  padding: 0 var(--space-2) 0 10px;
   border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   text-align: left;
   transition:
     background var(--transition-fast),
@@ -361,7 +366,7 @@ nav > .nav-group:first-child {
 }
 
 .nav-item:hover {
-  background: var(--fill-2);
+  background: var(--fill-1);
 }
 
 .nav-item:active {
@@ -370,7 +375,8 @@ nav > .nav-group:first-child {
 
 /* 当前项：分层填充 + 左侧强调色指示条（不靠纯色块区分，色觉障碍下也可辨） */
 .nav-item.active {
-  background: var(--fill-3);
+  background: var(--fill-2);
+  color: var(--text-primary);
 }
 
 .nav-item:focus-visible {
@@ -381,12 +387,12 @@ nav > .nav-group:first-child {
 .nav-item.active::before {
   content: '';
   position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
+  left: 3px;
+  top: 9px;
+  bottom: 9px;
   width: 2px;
   border-radius: var(--radius-pill);
-  background: var(--aurora-gradient);
+  background: var(--aurora-blue);
 }
 
 .nav-item .label {
@@ -398,11 +404,14 @@ nav > .nav-group:first-child {
 
 .foot {
   margin-top: auto;
-  padding: 0 var(--space-2);
+  padding: var(--space-2) var(--space-2) 0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .foot p {
   margin: 0;
+  font-size: var(--text-xs);
+  letter-spacing: 0.01em;
 }
 
 /**
@@ -413,7 +422,7 @@ nav > .nav-group:first-child {
   grid-column: 2;
   grid-row: 2;
   overflow-y: auto;
-  padding: var(--space-5);
+  padding: var(--space-6) var(--space-6) var(--space-7);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);

@@ -211,6 +211,7 @@ import {
   seedChatTtsHistory,
   seedMemoryFixture,
   seedJobFixture,
+  seedSnapshotFixture,
   seedClassIslandFixture,
   seedAutomationFixture,
   type CaptureTarget,
@@ -3420,6 +3421,14 @@ async function runCapture(dir: string): Promise<void> {
   // 而交互窗 onMounted 就会读一次，计划开始后再写文件已经晚了（见 defaultCapturePlan 注释）。
   // `app.getPath('userData')` 在隔离模式下就是那个临时目录（见文件头注释）。
   await seedChatTtsHistory(app.getPath('userData'))
+  /**
+   * 写前快照夹具（v14）：`FileSnapshotPort` 是**首读即缓存**（`ensureLoaded`），
+   * 设置页 Agent 页的「文件备份」列表在挂载时就会读一次。晚于首读再写 `backups/` 的
+   * 索引，运行中的端口不会重读 —— `settings-snapshot-list.png` 会拍到空态并假 FAIL
+   * （2026-10-31 全量设置页截图复现：单跑该场景通过、混在全量里偶发 rows:0）。
+   * 与 `seedChatTtsHistory` 同一条口径：必须在任何窗口首读之前把现场种好。
+   */
+  await seedSnapshotFixture(app.getPath('userData'))
   /**
    * 自感知工作台截图现场：状态、最近理解、队列和记忆数都要有真实内容。
    * state.json 必须在 FileAwarenessService 首次读取前落地；配置更新后再 init()

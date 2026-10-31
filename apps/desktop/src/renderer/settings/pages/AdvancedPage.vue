@@ -238,11 +238,7 @@ async function resetAll(): Promise<void> {
 </template>
 
 <style scoped>
-.page > .section-card {
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-hairline);
-}
-
+/* 区组圆角 / 投影统一由 settings.css 提供；这里只保留「最后一张卡是危险操作」的描边。 */
 .page > .section-card:last-of-type {
   border-color: var(--danger-border);
 }

@@ -475,27 +475,24 @@ function describeTest(result: NotificationTestResult): string {
 </template>
 
 <style scoped>
-.page > .section-card {
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-hairline);
-}
-
+/* 区组圆角 / 投影统一由 settings.css 提供。 */
 .channel-list {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
 
-/* 选项行：左侧圆点表示单选，选中时整行分层填充 + 强调色描边（不靠颜色深浅单独表达） */
+/* 选项行：左侧圆点表示单选。**未选中不画框**（4 个选项都描边就是一摞盒子），
+ * hover 用分层填充，选中态才浮出强调色描边 + 填充。 */
 .channel-option {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
   width: 100%;
   padding: var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--fill-1);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
   text-align: left;
   transition:
     background var(--transition-fast),
@@ -503,11 +500,11 @@ function describeTest(result: NotificationTestResult): string {
 }
 
 .channel-option:hover {
-  background: var(--fill-2);
+  background: var(--fill-1);
 }
 
 .channel-option.active {
-  background: var(--fill-3);
+  background: var(--fill-2);
   border-color: color-mix(in srgb, var(--aurora-blue) 46%, transparent);
 }
 

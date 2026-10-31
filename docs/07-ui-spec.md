@@ -975,16 +975,20 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   所以引导页建出来的 provider（落盘的是 `modelList: []`）也能就地配置它的模型级参数；
   落盘时 `modelList` 仍会被归一为「候选列表 ∪ {`model`}」。
   会话左栏行在**覆盖态**显示模型小徽标（跟随全局时不显示 —— 靠它看出「这个会话绑了模型」）。
-   **窄栏让位顺序（2026-10-18，用户实测「左栏拖到 200px 后文字重叠」）**：会话行内优先级
+   **窄栏让位顺序（2026-10-18，2026-10-31 补 Center 药丸）**：会话行内优先级
    = **标题 > 相对时间 > Center 药丸 > 模型徽标**。左栏夹取下限 200px（`NAV_WIDTH_MIN`）时
    行内容宽只剩 ~118px：`.item-title` 保 `3em` 下限（标题**永远不归零** —— 此前
    `flex: 1 1 0%` 会把它直接算成 0 宽，整条标题消失）、相对时间 `flex: 0 0 auto`
-   不收缩也不换行、药丸 `flex: 0 1 auto` 可收缩，`@container (max-width: 150px)` 把
-   `.item-llm` 整枚隐藏（96px 的徽标在这里没有可用空间）；`.nav-item` 另带
-   `overflow: hidden` 兜底 —— 行内容**任何情况下都不许画到右侧归档钮底下**
-   （修前相对时间溢出 18px，正好压在归档图标上，看起来就是「文字重叠」）。
+   不收缩也不换行、`.nav-item` 带 `overflow: hidden` 兜底 —— 行内容**任何情况下都不许画到
+   右侧归档钮底下**（修前相对时间溢出 18px，正好压在归档图标上，看起来就是「文字重叠」）。
+   **Center 药丸（`center-*` 会话）与模型徽标（2026-10-31）**：两枚药丸都是不换行的
+   `flex` 子项，统一 `line-height: 18px` 对齐；Center 药丸 `flex: 0 0 auto`（不收缩，
+   收缩会先被挤成「C…」），模型徽标 `flex: 0 1 auto` 允许收缩 + 省略号。
+   容器查询按「行内容宽」两级让位：`≤190px` 时若已有 Center 药丸则整枚隐藏模型徽标
+   （优先级低于来源标识）；`≤160px` 整枚隐藏 Center 药丸；`≤150px` 隐藏模型徽标。
    完整模型名在行 `title` 与输入区下拉里都能看全，不靠这枚徽标；护栏是
-   `chat-nav-narrow.png` 场景（左栏 200 现场 + 200 / 240 两点压测）。
+   `chat-nav-narrow.png` 场景（左栏 200 现场 + 200 / 240 两点压测，压测同时挂
+   Center + 模型两枚药丸，量「不出 item / 不压相对时间 / item 无横向溢出」）。
   无可用 provider 时**与思考等级一样**「不隐藏、只 `disabled`」，并给出同一句去设置页的提示。
 - **权限下拉的换行口径（本轮）**：菜单项的说明文字**允许换行** —— 长文案的实际容器
   `.perm-item-body` 必须有 `white-space: normal`（祖先 `.composer-bar` 的 `white-space: nowrap`
@@ -1394,14 +1398,26 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
 
 - 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字；v0.2.0 起新增
   **Aurora Center** 页；此后又增会话管理 / 文件自感知 / 插件 / **提醒**（v37）共 **11 页**）：
-  侧栏按五组排列 —— **基础**（常规 `general` / 会话管理 `sessions` / 模式 `modes` / 提醒 `notifications`）／
-  **智能**（AI 模型 `llm` / 语音 `voice` / Agent 设置 `agent` / 文件自感知 `awareness`）／
-  **连接**（Aurora Center `center`）／**扩展**（插件 `plugins`）／**系统**（高级 `advanced`）；
+  侧栏按**三组**排列（2026-10-31 收敛，原为五组）—— **本机**（常规 `general` / 会话管理 `sessions` /
+  模式 `modes` / 提醒 `notifications`）／**智能**（AI 模型 `llm` / 语音 `voice` / Agent 设置 `agent` /
+  Computer Use `computer-use` / 文件自感知 `awareness`）／**系统**（Aurora Center `center` / 插件 `plugins` /
+  高级 `advanced`）。连接与扩展各只有一项，合并进「系统」后分组标题从 5 个降到 3 个；
+  条目顺序与标签不变（截图探针按 DOM 顺序读标签）。
   `SETTINGS_PAGE_IDS = ['general','sessions','modes','notifications','llm','voice','agent','awareness','center','plugins','advanced']`
-  （数组顺序即截图出图顺序）。
+  （数组顺序即截图出图顺序；Computer Use 页由 `settings-computer-use.png` 单列场景拍）。
   当前项用分层填充 + 左侧**强调色**指示条（不再用品牌渐变）。合并口径：Skill 与 MCP 并入 `agent` 页、
   STT 并入 `voice` 页、生图模型并入 `llm` 页、勿扰时段并入 `general` 页（全局 + 提示条两组同区）；
   旧深链兼容映射：`?page=tts→voice`、`?page=skills|mcp→agent`。
+- **设置页视觉收敛（2026-10-31，用户反馈「设置页太冗杂」）**：一页只有**一个页头**
+  （`.page > header`：标题 22px + 一句说明 + 下缘发丝线），页面之间靠 `--space-5` 留白；
+  区组统一为「标题 / 一句说明 / 字段行列表」三层（`.section-title` 13.5px、`.section-desc` 12.5px 弱色），
+  字段行之间用**发丝线**分隔而不是每项一张小卡；静止卡片**只留 1px 描边**（`--radius-md`、
+  无 `shadow-hairline` / 内高光），页面不再各自覆盖圆角与投影。
+  侧栏 200 → 208px、条目标高 34px、分组标题中文不做大写字距、底部署名与内容区之间加发丝线。
+  空态与 `data-empty` 提示退成无框的弱色文案（不再虚线框 / 描边 —— 描边 + 填充会被读成输入框），
+  顶部常驻警示条退成「浅底 + 左侧 2px 语义色」。
+  会话管理页补回页头并改用 `.page` 骨架（此前是无页头的独立容器）——所有页从此共用同一骨架。
+  `data-field` / `data-empty` 锚点、`nav .nav-item` 的结构与标签都是截图契约，重构时不得改名。
 - **「通用」页「外观」区组（v21 起强调色、v32 起三件套、v33 起四件套）**：主题（`data-field="appearance.theme"`，
   三段式按钮「跟随系统 / 亮色 / 暗色」）→ 强调色（`data-field="appearance.accent"`，圆点色板）→
   毛玻璃（`data-field="appearance.glass"`，复选框）→ 流光特效（`data-field="appearance.awarenessGlow"`，

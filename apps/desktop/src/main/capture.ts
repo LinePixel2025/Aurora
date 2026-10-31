@@ -7473,7 +7473,7 @@ export const CHAT_COMPOSER_NARROW_CHECK = `(async () => {
  * 左栏会话行「窄栏文字重叠」护栏（2026-10-18，用户实测：左栏拖到 200px 后，
  * 带模型徽标的会话行里标题整条消失、时间「01:11」压在 hover 归档钮上）。
  *
- * 现场：左栏 200px 是夹取下限（`NAV_WIDTH_MIN`，App.vue），会话行内容宽只剩 ~118px。
+ * 现场：左栏 200px 是夹取下限（`NAV_WIDTH_MIN`，App.vue），会话行内容宽只剩 ~120–130px。
  * 修前 `.item-title` 是 `flex: 1 1 0%`（basis 0）—— 空间不足时标题**直接算成 0 宽**；
  * 96px 的模型徽标是 `flex: 0 0 auto` —— 相对时间被顶出行内容盒 18px，正好画在归档钮底下。
  * 修法（`SessionRow.vue`）：标题 `flex: 1 1 auto` + `min-width: 3em`；相对时间
@@ -7481,12 +7481,17 @@ export const CHAT_COMPOSER_NARROW_CHECK = `(async () => {
  * `.item-llm`；`.nav-item` 另带 `overflow: hidden` 兜底。
  *
  * act：把左栏把手从缺省 240 拖到 200（夹取下限），停在这个现场截图。
- * check：① 真实行扫描 —— 标题不归零 / 相对时间不出 item 右缘、不压归档钮；
+ * check：① 真实行扫描 —— 标题不归零 / 相对时间不出 item 右缘、不压归档钮 /
+ *        任何药丸（Center / 模型）都不画出 item；
  *        ② 压测行 —— 把标题换成长标题 + 临时挂一枚模型徽标（克隆同组件的 `data-v-*`
  *        scoped 属性，拿到真实的 scoped CSS 与 @container 规则）：200px 时徽标整枚让位、
  *        标题保住下限；再「双击复位到 240」做一次同款压测 —— 徽标必须回来且仍不压时间
- *        （修复不许把「覆盖态显示模型徽标」这条功能删掉）。压测节点量完立刻撤掉，
- *        不动会话数据、也不依赖夹具里恰好有覆盖态会话。
+ *        （修复不许把「覆盖态显示模型徽标」这条功能删掉）；
+ *        ③ Center 药丸（2026-10-31 用户实测「Center 标识仍会随侧栏宽度溢出」）：
+ *        同一行同时挂 Center + 模型两枚药丸 —— 200px 时两枚都让位，
+ *        240px 时 Center 必须在、模型让位（行内优先级 标题 > 时间 > Center > 模型），
+ *        且 Center 不画到 item 外、不压相对时间。压测节点量完立刻撤掉，
+ *        不动会话数据、也不依赖夹具里恰好有 center- 会话。
  * 收尾双击把手复位 240（与 `chat-composer-narrow` 同款，不给后续场景留脏宽度）。
  */
 export const CHAT_NAV_NARROW_ACT = `(async () => {
@@ -7522,12 +7527,21 @@ export const CHAT_NAV_NARROW_CHECK = `(async () => {
       const ir = item.getBoundingClientRect()
       const tr = time.getBoundingClientRect()
       const ar = action === null ? null : action.getBoundingClientRect()
+      // 药丸（Center / 模型）一起量：任何一枚画出 item 或压到相对时间都算坏
+      const tags = [...row.querySelectorAll('.item-tag')]
+        .filter((tag) => getComputedStyle(tag).display !== 'none')
+        .map((tag) => tag.getBoundingClientRect())
       return {
         titleW: round10(title.getBoundingClientRect().width),
         // 相对时间右缘越过 item 右缘 = 溢出（item 有 overflow: hidden，兜底会裁字）
         timeOverflow: round10(tr.right - ir.right),
         timeOnAction:
           ar === null ? 0 : round10(Math.min(tr.right, ar.right) - Math.max(tr.left, ar.left)),
+        tagOut: tags.filter((rect) => rect.right > ir.right + 0.5 || rect.left < ir.left - 0.5)
+          .length,
+        tagOnTime: tags.filter(
+          (rect) => Math.min(rect.right, tr.right) - Math.max(rect.left, tr.left) > 0.5,
+        ).length,
       }
     }
     const realRows = rows.map(geomOf).filter((geom) => geom !== null)
@@ -7536,19 +7550,24 @@ export const CHAT_NAV_NARROW_CHECK = `(async () => {
       titleGone: realRows.filter((geom) => geom.titleW < 8).length,
       timeOut: realRows.filter((geom) => geom.timeOverflow > 0.5).length,
       timeOnAction: realRows.filter((geom) => geom.timeOnAction > 0.5).length,
+      tagOut: realRows.reduce((sum, geom) => sum + geom.tagOut, 0),
+      tagOnTime: realRows.reduce((sum, geom) => sum + geom.tagOnTime, 0),
     }
     const rowScanOk =
       rowScan.count >= 1 &&
       rowScan.titleGone === 0 &&
       rowScan.timeOut === 0 &&
-      rowScan.timeOnAction === 0
+      rowScan.timeOnAction === 0 &&
+      rowScan.tagOut === 0 &&
+      rowScan.tagOnTime === 0
     // 压测行：优先选一条**有相对时间**的真实会话行（quick 固定首行没有时间，不算）
     const stressRow =
       rows.find(
         (row) =>
           row.querySelector('.item-title') !== null && row.querySelector('.item-time') !== null,
       ) ?? null
-    const stressAt = async () => {
+    // withCenter = 同时挂 Center + 模型两枚药丸（2026-10-31 的窄栏场景）
+    const stressAt = async (withCenter) => {
       if (stressRow === null) return null
       const item = stressRow.querySelector('.nav-item')
       const title = stressRow.querySelector('.item-title')
@@ -7564,16 +7583,40 @@ export const CHAT_NAV_NARROW_CHECK = `(async () => {
       badge.textContent = 'deepseek-flash'
       badge.title = '本会话模型：deepseek-flash'
       if (scopedAttr !== '') badge.setAttribute(scopedAttr, '')
+      const center = document.createElement('span')
+      center.className = 'item-tag tiny'
+      center.textContent = 'Center'
+      center.title = '来自 Aurora Center 网页端'
+      if (scopedAttr !== '') center.setAttribute(scopedAttr, '')
       const originalTitle = title === null ? '' : title.textContent
       try {
         if (title !== null) title.textContent = '窄栏会话行标题压测样本'
-        if (time !== null) time.before(badge)
+        if (withCenter) time.before(center)
+        time.before(badge)
         await wait(150)
         const geom = geomOf(stressRow)
+        const itemRect = item === null ? null : item.getBoundingClientRect()
+        const timeRect = time === null ? null : time.getBoundingClientRect()
+        const centerRect = withCenter ? center.getBoundingClientRect() : null
+        const badgeStyle = getComputedStyle(badge)
+        const centerStyle = getComputedStyle(center)
         return {
           scoped: scopedAttr !== '',
-          badgeDisplay: getComputedStyle(badge).display,
+          badgeDisplay: badgeStyle.display,
           badgeW: round10(badge.getBoundingClientRect().width),
+          centerDisplay: withCenter ? centerStyle.display : 'none',
+          centerW: centerRect === null ? 0 : round10(centerRect.width),
+          centerOut:
+            centerRect === null || itemRect === null
+              ? 0
+              : round10(centerRect.right - itemRect.right),
+          centerOnTime:
+            centerRect === null || timeRect === null
+              ? 0
+              : round10(
+                  Math.min(centerRect.right, timeRect.right) -
+                    Math.max(centerRect.left, timeRect.left),
+                ),
           titleW: geom === null ? 0 : geom.titleW,
           timeOverflow: geom === null ? 0 : geom.timeOverflow,
           timeOnAction: geom === null ? 0 : geom.timeOnAction,
@@ -7581,16 +7624,20 @@ export const CHAT_NAV_NARROW_CHECK = `(async () => {
         }
       } finally {
         badge.remove()
+        center.remove()
         if (title !== null) title.textContent = originalTitle
       }
     }
-    const narrow = await stressAt()
+    const narrow = await stressAt(true)
     const narrowOk =
       narrow !== null &&
       narrow.scoped === true &&
-      // 200px 左栏（行内容宽 ~118px）：模型徽标整枚让位，标题保住 3em 下限，时间不被顶出去
+      // 200px 左栏（行内容宽 ~120–130px）：Center / 模型两枚药丸都让位，标题保住 3em 下限，
+      // 时间不被顶出去，item 内没有任何横向溢出
       narrow.badgeDisplay === 'none' &&
       narrow.badgeW === 0 &&
+      narrow.centerDisplay === 'none' &&
+      narrow.centerW === 0 &&
       narrow.titleW >= 38 &&
       narrow.timeOverflow <= 0.5 &&
       narrow.timeOnAction <= 0.5 &&
@@ -7600,7 +7647,7 @@ export const CHAT_NAV_NARROW_CHECK = `(async () => {
     if (resizer !== null) resizer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
     await wait(450)
     const navAfter = navEl === null ? 0 : Math.round(navEl.getBoundingClientRect().width)
-    const wide = await stressAt()
+    const wide = await stressAt(false)
     const wideOk =
       wide !== null &&
       wide.badgeDisplay === 'block' &&
@@ -7608,6 +7655,19 @@ export const CHAT_NAV_NARROW_CHECK = `(async () => {
       wide.titleW >= 38 &&
       wide.timeOverflow <= 0.5 &&
       wide.timeOnAction <= 0.5
+    // Center 优先级：240px 时 Center 药丸必须在、模型徽标让位，两枚都不许溢出
+    const centerWide = await stressAt(true)
+    const centerWideOk =
+      centerWide !== null &&
+      centerWide.centerDisplay !== 'none' &&
+      centerWide.centerW >= 38 &&
+      centerWide.badgeDisplay === 'none' &&
+      centerWide.titleW >= 38 &&
+      centerWide.timeOverflow <= 0.5 &&
+      centerWide.timeOnAction <= 0.5 &&
+      centerWide.centerOut <= 0.5 &&
+      centerWide.centerOnTime <= 0.5 &&
+      centerWide.itemScroll <= 0.5
     return {
       navWidth,
       rowScan,
@@ -7617,6 +7677,8 @@ export const CHAT_NAV_NARROW_CHECK = `(async () => {
       navAfter,
       wide,
       wideOk,
+      centerWide,
+      centerWideOk,
       pass:
         // 拖到了夹取下限的现场（默认 240 → 200 附近；实测拖完取到 204，留 12px 取整余量，
         // 高于 212 说明这次拖动没生效 —— 那样 narrowOk 是恒真的假 PASS）
@@ -7626,7 +7688,8 @@ export const CHAT_NAV_NARROW_CHECK = `(async () => {
         narrowOk &&
         navAfter >= 238 &&
         navAfter <= 242 &&
-        wideOk,
+        wideOk &&
+        centerWideOk,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -14173,7 +14236,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: CHAT_COMPOSER_NARROW_CHECK,
     },
     // 左栏会话行几何护栏（2026-10-18 用户实测「左栏拖到 200px 后文字重叠」）：act 把左栏
-    // 拖到夹取下限 200（行内容宽 ~118px）并停在这个现场截图；check 量「标题不归零 /
+    // 拖到夹取下限 200（行内容宽 ~120–130px）并停在这个现场截图；check 量「标题不归零 /
     // 相对时间不出 item、不压归档钮」，再用临时注入的模型徽标做 200 / 240 两点压测。
     // 必须排在 chat-collapse 之前（窗口一被 hide，DOM 操作就没了）。
     {

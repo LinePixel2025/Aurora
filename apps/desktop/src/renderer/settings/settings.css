@@ -4,12 +4,18 @@
  * 只用设置窗加载（`settings/main.ts` 在 `theme.css` 之后 import），因此这里的类
  * 不会泄漏到其它窗口。选择这种"窗口局部样式表"而不是改 `theme.css` 的原因：
  * `theme.css` 是四个窗口共用的 SSOT，下面这些约束只对设置窗成立 ——
- * 比如「内容区 `.content` 已经给了 `--space-5` 内边距，页面不再自带 padding」，
+ * 比如「内容区 `.content` 已经给了内边距，页面不再自带 padding」，
  * 放进全局会让其它窗口的 `.page` 一起失去内边距。
  *
- * 复用关系：`.page` / `.page-title` / `.page-sub` 直接用全局类（step-03 已提供），
- * 这里只补全局缺少的 `.section-card` / `.section-title` / `.section-desc` / `.empty-state`
- * 与设置窗内的 `.page` 内边距覆盖、内联控件统一外观。
+ * 2026-10-31 视觉收敛（用户反馈「设置页太冗杂」）：
+ * - 一页只有一个页头（标题 + 一句说明 + 发丝线），页面之间靠大留白而不是堆卡片；
+ * - 区组统一成"标题 / 一句说明 / 行列表"三层，字段之间用发丝线分隔，不再每项一张小卡；
+ * - 说明文字统一 12.5px 弱色，标题用 13.5/22 两级，信息密度靠层级而不是靠加框；
+ * - 空态 / 临时表单块去掉虚线框与大字按钮，退成安静的浅填充块。
+ *
+ * 复用关系：`.page` / `.page-title` / `.page-sub` 直接用全局类（theme.css），
+ * 这里补全局缺少的 `.section-card` / `.section-title` / `.section-desc` / `.empty-state`
+ * 与设置窗内的 `.page` 覆盖、内联控件统一外观。
  */
 
 /**
@@ -21,33 +27,58 @@
  * 定高 flex 滚动容器 —— 不禁收缩的话页面会被压到视口高度（`.content` 永不滚动），
  * 超高卡片再被孙级 `.group` 的 `overflow: hidden` 裁掉内容（v0.0.1
  * 「智能与工具」页实测踩过：警示条与技能目录行被拦腰截断）。
+ *
+ * 列宽上限 + 居中：窗口拖到最大时正文不再一路铺到右缘（长行难读、观感廉价）。
  */
 .settings .page {
+  width: 100%;
+  max-width: 780px;
+  margin-inline: auto;
   padding: 0;
   padding-bottom: var(--space-6);
   height: auto;
-  max-width: 860px;
   flex: none;
+  gap: var(--space-5);
+}
+
+/* ───────── 页头（每页一处：标题 + 一句说明 + 发丝线） ───────── */
+
+.settings .page > header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .settings .page-title {
+  font-size: var(--text-xl);
   letter-spacing: var(--tracking-display);
   line-height: var(--leading-tight);
 }
 
+.settings .page-sub {
+  max-width: 62ch;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
 /* ───────── 分组卡片 ───────── */
 
+/**
+ * 静止态只靠 1px 描边区分层次（Apple 风：边界先于阴影）：
+ * 去掉内高光与发丝投影，圆角收一档，卡片不再像一块浮起来的玻璃。
+ */
 .section-card {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-4);
-  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  border-radius: var(--radius-md);
   border: 1px solid var(--glass-border-soft);
   background: var(--glass-surface);
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    var(--shadow-hairline);
+  box-shadow: none;
 }
 
 /* 当前生效 / 默认对象（当前模式卡片、默认 provider）的强调描边 */
@@ -57,10 +88,10 @@
 
 .section-title {
   margin: 0;
-  font-size: var(--text-lg);
+  font-size: var(--text-base);
   font-weight: var(--weight-semibold);
   line-height: var(--leading-tight);
-  letter-spacing: var(--tracking-display);
+  letter-spacing: -0.005em;
 }
 
 .section-desc {
@@ -70,25 +101,48 @@
   line-height: var(--leading-normal);
 }
 
+.section-desc strong {
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+}
+
+/* 字段之间的发丝线：一行一个设置项，读起来是列表而不是「一坨表单」 */
+.settings .section-card > .field + .field,
+.settings .group-body > .field + .field {
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle) 58%, transparent);
+}
+
+/* 标签列略宽一档（200 → 220）：中文 hint 少折一行，行高更稳。
+ * 只作用于设置页，引导页 / 插件配置窗沿用 SettingField 的原值。 */
+.settings .page .field {
+  grid-template-columns: minmax(150px, 220px) 1fr;
+  padding: 10px 0;
+}
+
 /* ───────── 空状态（无 provider / 无 MCP / 无技能 / 占位模式） ───────── */
 
 .empty-state {
-  gap: var(--space-3);
-  padding: var(--space-7) var(--space-6);
-  border-style: dashed;
-  border-color: var(--border-subtle);
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-4);
+  border-style: solid;
+  border-color: var(--glass-border-soft);
+  background: var(--fill-1);
   align-items: flex-start;
+}
+
+.settings .page > .empty-state {
+  padding-block: var(--space-5);
 }
 
 /* ───────── 统一内联控件（拆出的 classroom 子组件与各页共用） ───────── */
 
 .settings .input {
   width: 100%;
-  min-height: 36px;
+  min-height: 34px;
   padding: 0 var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border-soft);
-  background: var(--glass-surface);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
   color: var(--text-primary);
   outline: none;
   transition:
@@ -132,6 +186,7 @@
   border-radius: var(--radius-xs);
   background: var(--fill-2);
   font-family: var(--font-mono);
+  font-size: 0.94em;
 }
 
 /* ───────── 折叠分组（BetaV2 区组共用，ClassroomSection 同款结构） ─────────
@@ -150,14 +205,14 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: var(--control-h-lg);
+  min-height: 48px;
   padding: var(--space-3) var(--space-4);
   text-align: left;
   transition: background var(--transition-fast);
 }
 
 .group-head:hover {
-  background: var(--fill-2);
+  background: var(--fill-1);
 }
 
 .chevron {
@@ -182,20 +237,30 @@
 .group-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4) var(--space-4);
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-4) var(--space-4);
   border-top: 1px solid var(--border-subtle);
 }
 
-/* 区组内的内联空态：一句话说清 + 虚线框，不再用整张 empty-state 卡（避免卡中卡） */
+/* 区组内的内联空态：一句话说清，**不画框**（描边 + 填充会被读成一个输入框） */
 .empty-inline {
   margin: 0;
-  padding: var(--space-3);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
+  padding: var(--space-1) 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
+}
+
+/* 页面内联的 `data-empty` 提示（尚未添加 / 未配置）：与 empty-inline 同一套安静样式。
+ * 整张空态卡（.section-card.empty-state）由上面的 empty-state 规则接管，这里排除掉。 */
+.settings .page [data-empty]:not(.section-card) {
+  padding: var(--space-1) 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
 }
 
 /* ───────── 「智能与工具」页（AgentPage，.page-agent）专属 ─────────
@@ -208,25 +273,39 @@
   max-height: 400vh;
 }
 
-/* 区组内的添加 / 新建表单块：虚线框标示「尚未保存的临时输入」 */
+/* 区组内的添加 / 新建表单块：浅填充块标示「尚未保存的临时输入」 */
 .form-block {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
 }
 
-/* ───────── 按钮按下微缩（theme.css `.press` 的设置窗全局版） ─────────
- * AppButton 自带 `.interactive`（悬停上浮 + active 0.98）；这里把按下反馈统一成
- * `.press` 的 0.97 + --dur-press，免得每个按钮实例单独挂类。选择器带 .settings 提权。 */
+/* ───────── 按钮（设置窗内的尺度收紧） ─────────
+ * 页面里大多是「添加 / 检查 / 清空」这类次级动作，按钮比全局小一档，
+ * 主动作仍靠 primary 色与页内唯一性区分。AppButton 自带 scoped 样式，
+ * 这里用三选择器提权，不依赖样式表注入顺序。 */
 .settings .aurora-button {
+  font-size: var(--text-sm);
   transition:
     transform var(--dur-press) var(--ease-standard),
     box-shadow var(--transition-fast),
     background var(--transition-fast),
     border-color var(--transition-fast);
+}
+
+.settings .aurora-button.s-md {
+  min-height: 36px;
+  padding: 0 var(--space-4);
+}
+
+.settings .aurora-button.s-lg {
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-4);
+  font-size: var(--text-base);
 }
 
 /* 按钮悬停只换色，不位移：避免指针停在边缘时按钮在光标下进出而产生误悬停 / 误按观感。 */
@@ -240,4 +319,20 @@
 
 .settings .aurora-button:disabled:active {
   transform: none;
+}
+
+/**
+ * 顶部提示条（未配置模型 / 安全存储不可用）：设置页里它只是常驻提醒，
+ * 不该比页面标题更抢眼。退成「浅底 + 左侧 2px 语义色」的安静提示，
+ * 文字回到次级色，语义仍由左侧色条承担。
+ */
+.settings .content > .banner {
+  padding: 8px 12px 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--status-unread);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+  box-shadow: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
 }

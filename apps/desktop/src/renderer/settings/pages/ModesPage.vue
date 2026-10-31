@@ -195,11 +195,6 @@ async function markDone(id: ModeId): Promise<void> {
 </template>
 
 <style scoped>
-.page > .section-card {
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-hairline);
-}
-
 .page > .empty-state {
   padding-block: var(--space-6);
 }
@@ -215,10 +210,9 @@ async function markDone(id: ModeId): Promise<void> {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
-  box-shadow: var(--shadow-hairline);
   transition:
     border-color var(--transition-fast),
     background var(--transition-fast);
@@ -323,7 +317,9 @@ async function markDone(id: ModeId): Promise<void> {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--surface-1);
+  /* 原来写的是不存在的 `--surface-1`（令牌清单里没有这个名字），滑块透明 → 开关看起来
+     像一条没有圆点的蓝色胶囊。滑块在两种明暗档都应是强调色上的前景白。 */
+  background: var(--on-accent);
   box-shadow: var(--shadow-hairline);
   transition: transform var(--transition-fast);
 }

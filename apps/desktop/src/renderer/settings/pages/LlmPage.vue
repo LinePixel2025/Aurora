@@ -1404,11 +1404,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 </template>
 
 <style scoped>
-.page > .section-card,
-.page > .provider-list .section-card {
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-hairline);
-}
+/* 区组圆角 / 投影统一由 settings.css 提供，页面不再覆盖。 */
 
 .page > .empty-state {
   padding-block: var(--space-6);

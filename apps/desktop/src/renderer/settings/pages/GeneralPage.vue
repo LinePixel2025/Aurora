@@ -327,7 +327,7 @@ async function toggleEdgeBar(): Promise<void> {
             ? '读取注册状态…'
             : hotkeyStatus.registered
               ? `已在系统注册（${hotkeyStatus.hotkey}），按下即可显示 / 收起交互窗`
-              : (hotkeyStatus.message ?? '未注册')
+              : '未注册成功：请换一个组合，原因见下方提示'
         "
       >
         <div class="column grow">
@@ -622,11 +622,7 @@ async function toggleEdgeBar(): Promise<void> {
 </template>
 
 <style scoped>
-/* 页面骨架由设置窗口提供；页面卡片沿用同一半径和静止边界。 */
-.page > .section-card {
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-hairline);
-}
+/* 页面骨架与区组样式由设置窗统一提供（settings.css），页面不再各写一套圆角 / 投影。 */
 
 /* 主题三档（外观，v32）：分段控件，与 Agent 页「网页打开方式」同一套形状与状态色 */
 .theme-row {

@@ -251,7 +251,12 @@ watch(
 </script>
 
 <template>
-  <div class="sessions-page">
+  <section class="page sessions-page">
+    <header>
+      <h1 class="page-title">会话管理</h1>
+      <p class="page-sub">项目登记、会话归档与删除；项目根同时决定 AGENTS.md 注入与权限边界。</p>
+    </header>
+
     <!-- 项目机制（v13，docs/06 §5.1）：项目根同时决定注入的 AGENTS.md 与权限边界 -->
     <section class="section-card">
       <h2 class="section-title">项目</h2>
@@ -343,7 +348,7 @@ watch(
     <section class="section-card" data-field="sessions.section">
       <h2 class="section-title">会话</h2>
       <p class="section-desc">
-        归档只把会话移出左栏主列表（可取消）；删除会移除会话文件与其历史，**不可恢复**。
+        归档只把会话移出左栏主列表（可取消）；删除会移除会话文件与其历史，<strong>不可恢复</strong>。
       </p>
 
       <p v-if="sessionGroups.length === 0" class="section-desc" data-empty="sessions.list">
@@ -404,7 +409,7 @@ watch(
       <AppToast v-if="saved !== null" tone="ok">{{ saved }}</AppToast>
       <AppToast v-if="error !== null" tone="error">{{ error }}</AppToast>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped>
