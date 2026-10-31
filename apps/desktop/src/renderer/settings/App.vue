@@ -188,7 +188,11 @@ function select(id: PageId): void {
     <aside class="sidebar glass-shell rail-surface anim-shell-left">
       <div class="brand" :class="dragClass">
         <div class="brand-text">
-          <strong>Aurora</strong>
+          <div class="brand-head">
+            <strong>Aurora</strong>
+            <!-- 发行线路小徽标（2026-11）：品牌名右侧，纯标识、不可交互（品牌行整体是拖动区） -->
+            <span class="brand-badge">Line Production</span>
+          </div>
           <p class="tiny muted">设置</p>
         </div>
       </div>
@@ -289,20 +293,47 @@ function select(id: PageId): void {
   padding: 0 var(--space-2);
 }
 
+/**
+ * 品牌区两行：`Aurora` + 发行线路徽标 / `设置`。
+ * 徽标必须与品牌名分到独立的一行结构 —— 208px 侧栏里「Aurora + 设置 + Line Production」
+ * 一行放不下；两行总高约 40px，仍满足拖动区 ≥ 32px 的探针下限（`.brand` 本身是拖动区）。
+ */
 .brand-text {
   display: flex;
   flex: 1;
   min-width: 0;
-  align-items: baseline;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: 2px;
 }
 
-.brand-text strong {
+.brand-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.brand-head strong {
   display: block;
   font-family: var(--font-display);
   font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-display);
+}
+
+/* 发行线路徽标：9.5px 小字 + 胶囊描边，只做标识，不与品牌名抢层级 */
+.brand-badge {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--aurora-blue) 26%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--aurora-blue) 10%, transparent);
+  color: var(--aurora-blue);
+  font-size: 9.5px;
+  font-weight: var(--weight-medium);
+  line-height: 15px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .brand p {
