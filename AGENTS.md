@@ -72,10 +72,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、266 条断言应当全绿（2026-10-30 实测 `SUMMARY 266/266 passed`；
+  **全量约 40 秒、271 条断言应当全绿（2026-10-31 实测 `SUMMARY 270/271 passed`；唯一红项是
+  worktree 环境里 OfficeCLI 临时文件 ENOENT，主工作区复跑应为 271/271；
   v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
   v36 插件系统 +24、小组件与推送 +4、v37 小组件层级 / 材质 +4、插件配置窗口 +1、
-  流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1、小组件不可激活 / 固定 +3 条断言）**——
+  流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1、小组件不可激活 / 固定 +3、
+  v39 Computer Use +5 条断言）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **提交前仍必须跑全量**。
@@ -96,10 +98,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **张数与构成以 `report.json` 为准；「截了没有」只看日志 count 与报告，退出码 0 不等于截到了**；
   ⚠️ 筛选跑会产生假 FAIL（看到 FAIL 先问"是不是筛选跑的"，再用全量确认）。userData 自动隔离。规则见 docs/07 §5.3。
   当前基线（2026-10-24 实测；2026-10-25 提醒页新增 `settings-notifications-schedule` 场景后
-  单轮 103 → 104、全量 112 → 113，定向实测全绿、待全量复核）：**全量 113 条 checks** ——
-  本机全量单轮 104 条（四窗 98 + 插件配置窗口 1 +
-  流光提醒 2：`banner-card` / `banner-glow` + 提醒设置页 3：`settings-notifications` /
-  `settings-notifications-style` / `settings-notifications-schedule`）
+  单轮 103 → 104、全量 112 → 113，定向实测全绿、待全量复核；v39 Computer Use 新增
+  浮层 / 顶部过程面板 / 设置页 / `/computer` 斜杠入口 4 个场景）：**全量 117 条 checks** ——
+  本机全量单轮 108 条（四窗 98 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
+  提醒设置页 3）
   + onboarding 6 + memory/awareness-glow 3。
   四窗 98 含 v36 插件场景 `chat-plugin-panel` /
   `chat-plugin-page` / `settings-plugins-installed` / `settings-plugins-detail`（设置列表 + 配置入口）/
@@ -108,9 +110,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   桌面 widget 窗口不在 `WindowName` 里，走 `captureWindows` 的 `widgetWindow` 现取。
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 113 条：
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 117 条：
   `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config,banner-card,banner-glow'`
-  （104 checks，仅
+  （108 checks，仅
   `chat-model-picker` 红）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
   （3 checks 全绿）；这是 capture 环境问题，不是子代理改动的回归。
@@ -149,7 +151,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **绝不允许裸 `v-html` 模型原文**；链接 scheme 走 markdown-it `validateLink`（`javascript:` 拒绝）；
   外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接（生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件 / 命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 38`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 39`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 - **界面文案口径**（用户连续两轮点名「冗杂」）：区组说明段 **≤45 汉字**、字段 hint **≤40 汉字**，各只写 1 句；
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。
@@ -214,6 +216,13 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **跑 Electron 前先清 `ELECTRON_RUN_AS_NODE`**；无 TTY 时用 `pnpm --config.verify-deps-before-run=false exec …` 绕过（别写进 `package.json`）。
 - **内置浏览器工具组**受 `agent.browser.enabled` 门控、**不受** `agent.tools.enabled`；`maxSessions` / `idleMinutes` 必须用 getter 现读，写成构造常量就是"改设置要重启"的死字段。
 - **webview guest 必须由渲染层上报 `webContentsId`**，主进程校验 `hostWebContents` 归属（chat 窗口）后才接管；不要按 URL / 标题猜 guest。
+- **Computer Use（v39，06 §28）三层门控缺一不可**：注册（Windows + `computerUse.enabled` + 模型 vision + 非只读档，共 8 个工具）、请求级（`computerUseRunProfile`：未授权只留 `computer_start`、已授权留 6 动作 + `computer_stop`、非视觉 / 自动化 / 自感知 / 子代理会话整组摘掉）、执行级（`service.start()` 重查资格、端口每次 `ensureCallAllowed`）。`computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`：**Agent 能进入用户已开启的模式，但不得自行开启 / 放宽总开关、限额与应用名单**；授权只在内存、按会话、同时一个。用户入口是输入框 `/computer` 斜杠命令（可带任务），Agent 入口是 `computer_start`；输入框工具行不得再加「操作电脑」开关。
+- **Computer Use 授权 ≠ 开始操作**：`service.start()` 只建立授权，**不得**建浮层 / 启光标循环；第一次工具调用（截图 / 读窗口 / 动作）才经 `ensureOperating()` 显示浮层。`overlay.applyConfig()` 会直接显示窗口，只允许在已进入操作态时调用。
+- **Computer Use 退出即回前台**：Agent 调 `computer_stop` → `service.stop('agent')` → `onStopped(sessionId, reason)`；**只有 `reason === 'agent'`** 才 `bringToFront('chat')`（显示 + 最小化恢复 + 焦点）并 `chat:remoteActivate` 切回该会话。用户手动停止 / 设置页改配置 / 锁屏 / 退出都不得抢焦点。
+- **Computer Use 输入宿主是常驻 PowerShell（NDJSON）**：懒启动一次、串行队列、失败关闭；脚本写 `<userData>/computer-use/win-host.ps1` 用 `-File` 启动（**不要** `-EncodedCommand`，超 32K 命令行上限）；用户文字 / 按键只走 JSON 参数，不拼进脚本；启动时设 per-monitor DPI awareness。
+- **Computer Use 坐标以最近截图图片像素为准**：`physical = origin + image / scale`；没有截图 / 显示器变化要拒绝并让模型重新截图；点击前 `WindowFromPoint` 命中测试、移动后 `GetCursorPos` 回执、`SendInput` 返回 0 必须报错，绝不静默在错误位置点击。
+- **Computer Use 受保护目标不可配置**（Aurora 自身 / 终端 / 任务管理器 / UAC / 锁屏）；`allowedApps` 为空 = 除保护目标与 deny 外允许，deny 优先；`launch` 只接受 `.exe` / `.com`。
+- **Computer Use 浮层**：每显示器一扇透明窗（虚拟光标 + **顶部光谱流光带**，与「流光提醒」同款）+ **顶部操作过程面板**（560×116、`y = display.bounds.y + 20`），必须 `focusable:false`、鼠标穿透、`showInactive()`；**禁止 `setContentProtection`**（RustDesk / 远程桌面 / 屏幕共享会完全看不到）。进入操作模式后**持续在场、每个动作实时更新**，不要为截图隐藏（模型截图会带上浮层，这是「一直在场」的取舍）。用户手动移动鼠标 / 键盘**不得**自动暂停或停止；停止入口 = 状态条 / 托盘 / 快捷键 / 配置变化 / 锁屏 / 退出 / Agent 调 `computer_stop`。面板只显示「正在做什么」与步数，**不显示运行时长 / 坐标 / 矩形 / 尺寸 / 输入文字**。每一步带语义图标（图标只在 `packages/shared/src/browser/icons.ts` 登记），**连续的同一 `action + summary` 合并成 `×N`**（`ComputerUseStatus.recentActions` 是 `{action,summary,count}[]`，状态条按 `lastActionKind` 显示图标）。
 - **`agent.browser` 整组在 `SETTINGS_READONLY_PREFIXES`**，AI 不得改；关闭能力（或切只读档）时必须结束全部 Agent 浏览器会话，别留下 Agent 徽章。
 - **插件贡献必须写在 `manifest.json`**（工具 / Skill / 命令 / 自动化 / 面板 / 主题 / 配置），
   运行期不得动态注册；工具最终名必须 `plugin.<id>.<name>`（≤ 64），默认 `confirm`，

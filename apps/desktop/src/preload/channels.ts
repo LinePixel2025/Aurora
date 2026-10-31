@@ -190,6 +190,15 @@ const CHANNELS = {
   notifications: {
     test: 'notifications:test',
   },
+  // Computer Use（v39，docs/06 §28）：与 shared 契约同构，编译期双向断言会兜住
+  computerUse: {
+    status: 'computerUse:status',
+    start: 'computerUse:start',
+    stop: 'computerUse:stop',
+    event: 'computerUse:event',
+    apps: 'computerUse:apps',
+    diagnose: 'computerUse:diagnose',
+  },
   mcp: {
     status: 'mcp:status',
     statusChanged: 'mcp:statusChanged',

@@ -7,6 +7,13 @@
 
 ## 当前实现状态
 
+**开发中：Computer Use（配置 Schema v39）**——让 Agent 在用户显式授权后截屏并操控真实
+鼠标 / 键盘 / 窗口 / UI Automation：常驻 PowerShell 输入宿主、虚拟光标与顶部光谱流光浮层、
+顶部操作过程面板 / 对话状态条、`/computer` 用户入口与 `computer_start` Agent 入口、独立设置页、
+按多模态模型与会话授权三层门控；Agent 任务完成调用 `computer_stop` 退出并把 Aurora 调回前台。
+设计见 [06 §28](./06-agent-core.md)、[07](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)。
+未发布前不改变上一版安装包。
+
 **当前发布 v0.5.8：Center 页面型插件面板参数修复 + 页面断流**（配置 Schema 仍为
 **v38**，无迁移）——修复页面型面板在 Center 上调用参数被多包一层导致的「切视图无效 /
 输入内容不生效」；Center 允许改桌面视图（共享插件 `ui` 状态）的口径写进文档；页面请求
@@ -26,8 +33,9 @@ Center）且只允许设备属主访问；「提醒」页新增「定时提醒�
 [`release-notes/`](./release-notes/) 与 [04-roadmap.md](./04-roadmap.md) 的「实现说明」；
 本文只保留最近两次发布，避免与发布说明重复增长。
 
-鼠标键盘模拟、录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
-**仍属后续范围**（**截图已由 `screenshot` 工具落地**，受模型 vision 门控，见 [06 §25](./06-agent-core.md)）。
+**鼠标键盘模拟已由 Computer Use 落地**（v39 开发中，用户显式授权 + 多模态模型门控，
+见 [06 §28](./06-agent-core.md)）；录屏、持久交互式 shell、命令黑名单、Anthropic 等
+非 OpenAI 兼容协议**仍属后续范围**（截图另由 `screenshot` 工具承接，见 [06 §25](./06-agent-core.md)）。
 
 仍待做：**OS 级沙箱**（三档权限与项目根 realpath 前缀校验**不是**沙箱 —— 没有作业对象 / 容器 /
 受限令牌，`run_command` 仍是当前用户权限）、Code Mode 功能实现（Work 已于 0.0.1 初步实装）、

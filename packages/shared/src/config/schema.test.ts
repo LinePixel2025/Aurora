@@ -868,6 +868,16 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(canWriteSettingPath('agent.tools.enabled')).toBe(true)
   })
 
+  it('Computer Use 整组不可由 AI 修改（本机操控授权边界，v39）', () => {
+    expect(canWriteSettingPath('computerUse.enabled')).toBe(false)
+    expect(canWriteSettingPath('computerUse.maxActions')).toBe(false)
+    const reason = settingsReadonlyReason('computerUse.enabled')
+    expect(reason).toContain('Computer Use')
+    expect(reason).not.toBe('未知配置路径')
+    // 相邻的普通设置仍可写
+    expect(canWriteSettingPath('agent.tools.enabled')).toBe(true)
+  })
+
   it('文件检索（grep / glob）的开关与上限对 AI 开放（v12）', () => {
     expect(canWriteSettingPath('agent.tools.search.enabled')).toBe(true)
     expect(settingsReadonlyReason('agent.tools.search.enabled')).toBeUndefined()

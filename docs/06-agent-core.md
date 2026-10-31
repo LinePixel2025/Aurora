@@ -1071,7 +1071,9 @@ DOCX / XLSX / PPTX 的读取、创建、元素级编辑、校验与渲染默认�
 
 ### 11.3 非目标（P6++ 明确不做）
 
-- **鼠标 / 键盘模拟**：不做 `SendInput` / UI 自动化，Agent 不得代替用户点击、输入界面。
+- **鼠标 / 键盘模拟**：P6++ 阶段不做；**v39 起由 Computer Use（§28）承接** —— 仅在用户显式
+  开启并在对话里逐会话授权、且当前模型支持图片输入时提供，受受保护应用 / 动作上限 / 浮层与
+  停止入口约束。不开启时 Agent 仍不能代替用户点击、输入界面。
 - **录屏**：不做屏幕录制。**截屏不是非目标**：`screenshot` 工具（§25）按需截取当前屏幕像素并交给
   模型看，每次调用过确认卡片、受当前生效模型的 `vision` 门控；它是扩展工具、不在 `COMPUTER_TOOL_NAMES`
   里，不受 `agent.tools.enabled` 门控，也不是持续录屏。
@@ -2780,3 +2782,111 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 **宿主事件**（需清单 `events` + `events` 权限）：`settings.changed`、`message.user`、
 `message.assistant`、`tool.after`、`session.created`、`session.deleted`、`theme.changed`。
 只投给正在运行且声明了该事件的插件；投递失败只记 debug。
+
+## 28. Computer Use（v39）
+
+- **定位**：让 Agent 在用户**显式授权后**截屏并像人一样操作真实 Windows 桌面：移动 / 点击 /
+  拖拽 / 滚轮、Unicode 输入、窗口管理与启动应用、UI Automation 控件操作。它不是沙箱，
+  是「用户把本机最高权限临时借给 Agent」的受限通道。实现分层与 §27 相同：内核只定义工具与
+  端口（`packages/agent-core/src/tools/computer-use.ts`），PowerShell 输入宿主、截屏、坐标换算、
+  应用策略与浮层全在主进程（`apps/desktop/src/main/computer-use/`）。
+
+- **工具表（8 个 = 入口 1 + 授权后 7）**：
+
+| 工具 | 状态 | sensitivity | 关键约束 |
+|---|---|---|---|
+| `computer_start` | **未授权时唯一可见** | confirm | Agent 自行建立授权；只授权不建浮层；受总开关 / 平台 / 视觉 / 只读档 / 会话资格门控 |
+| `computer_screenshot` | 已授权 | safe | 默认取前台窗口所在屏；前台是受保护窗口时回落光标屏 |
+| `computer_mouse` | 已授权 | confirm | 坐标默认按最近截图图片像素；点击前做命中测试与指针回执 |
+| `computer_keyboard` | 已授权 | confirm | Unicode 输入 + 组合键；输入前校验前台窗口 |
+| `computer_window` | 已授权 | confirm | 窗口 id 来自 list；titleMatch 必须唯一；launch 只接受 .exe / .com |
+| `computer_ui` | 已授权 | confirm | 基于 UI Automation；path 来自 tree / find，布局变化后失效 |
+| `computer_wait` | 已授权 | safe | 等待期间会话保持运行 |
+| `computer_stop` | 已授权 | safe | 任务完成 / 用户要求停止时调用；撤销本会话授权、收起浮层并把 Aurora 调回前台（幂等） |
+
+- **三层门控（缺一不可）**：
+  1. **注册级**：`process.platform === 'win32'` + `computerUse.enabled` + 当前全局模型
+     `vision === true` + `agent.permissionMode !== 'readonly'`，否则 8 个工具一个都不注册；
+  2. **请求级**：`computerUseRunProfile` 按会话状态给出可见子集：
+     - 未授权且会话合格 → 只留 `computer_start`；
+     - 已授权 → 6 个动作工具 + `computer_stop`（入口摘掉）；
+     - 非视觉 / 自动化 / 自感知 / 子代理等**不合格会话** → 整组摘掉
+       （唯一口径在 `main/computer-use/session-policy.ts`）；
+  3. **执行级**：`service.start()` 重查总开关 / 平台 / 视觉 / 只读档 / 会话资格 / 同时一个会话；
+     端口的 `ensureCallAllowed` 每次调用重查会话授权 / 总开关 / 模型视觉 / 权限档，
+     防止「请求开始后授权被撤销」继续操作。只读档同样不注册（点击输入有外部副作用）。
+
+- **授权生命周期**：授权只在内存里、按会话保存；用户输入 `/computer`（可带任务）或 Agent 调用
+  `computer_start` 后建立，只允许同时一个会话。**`/computer` 同时是显式指令**：客户端会把
+  「请使用 Computer Use 工具操作电脑，完成：」放进用户消息，运行档也要求模型优先调用
+  `computer_*` 工具，而不是用 `run_command` / 内置浏览器替代。
+  **授权与「开始操作」是两件事**：`start` 只建立授权，不建浮层、不启动光标循环；Agent 的第一次
+  工具调用（截图 / 读窗口 / 动作）才进入操作态并显示浮层。`stop`、`computer_stop`（Agent 主动退出）、
+  关闭总开关、切只读档、锁屏 / 休眠、模型失去视觉、闲置超时、应用退出都会撤销。应用重启不恢复。
+  Agent 能进入用户**已开启**的模式，但 `computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`：
+  总开关、动作限额、应用允许 / 禁止名单仍只由用户修改，`set_setting` 改不动。
+- **退出即回前台**：`computer_stop` → `service.stop('agent')` → `onStopped(sessionId, reason)`
+  → `WindowManager.bringToFront('chat')`（显示 + 从最小化恢复 + 激活），并向 chat 推送
+  `chat:remoteActivate` 切回**刚完成任务的那条会话**。只有 `agent` 这一种结束原因抢焦点；
+  用户自己停、设置页改配置、锁屏 / 休眠、应用退出都不打扰用户。
+
+- **坐标协议**：模型读的是**最近一张截图的图片像素**。主进程记录 `ScreenView`
+  （displayId / 物理 origin / image 尺寸 / scaleX / scaleY / 目标窗口 pid）；动作层用
+  `physical = origin + image / scale` 换算。没有截图却传坐标 → `E_CU_NO_VIEW`；显示器几何
+  变化 → 要求重新截图。`computer_screenshot` 结果固定给出物理尺寸、图片尺寸、换算关系、
+  前台窗口与光标坐标（物理 + 图片），模型不需要自己做除法。
+
+- **输入宿主**：常驻 PowerShell（懒启动，NDJSON 经 stdin/stdout，串行队列），启动时
+  `Add-Type` 编译 C# P/Invoke 一次并设置 per-monitor DPI awareness；脚本写入
+  `<userData>/computer-use/win-host.ps1` 后用 `-File` 启动（不用 `-EncodedCommand`，避免
+  32K 命令行上限）。鼠标用 `SendInput` / `SetCursorPos`，键盘用 `KEYEVENTF_UNICODE`，
+  窗口用 `EnumWindows` / `SetWindowPos` / `WM_CLOSE`，UI Automation 走
+  `UIAutomationClient`。宿主崩溃 / 超时 / 握手失败 → 失败关闭当前会话，不假装成功。
+
+- **安全边界**：
+  - 受保护目标（不可配置）：Aurora 自身、终端 / shell 宿主、任务管理器、UAC / 锁屏 /
+    登录界面；点击前 `WindowFromPoint`、键盘前校验前台、窗口操作校验 pid，命中即拒绝。
+  - 用户 `allowedApps` / `deniedApps` 按 exe basename 匹配，deny 优先；`allowedApps` 为空 =
+    除保护目标与禁止项外全部允许。
+  - 指针回执：`GetCursorPos` 校验落点，失败用 `SetCursorPos` 重试一次，仍失败 →
+    `E_CU_POINTER_NOT_LANDED`，绝不在错误位置点击。
+  - 目标校验：截图记录的目标窗口被换掉 → `E_CU_TARGET_CHANGED`，单次动作取消但不结束会话。
+  - `SendInput` 返回 0（UIPI / 管理员窗口）→ `E_CU_INPUT_BLOCKED`，明确失败。
+  - 不暴露 `mouse_down/up`、`key_down/up` 给模型；点击 / 拖拽 / 组合键在一条命令内完成，
+    宿主退出前 `release_all`。
+  - 限额：`maxActions` 只计有副作用动作，`idleStopMinutes` 从最后一次调用起算；都热生效。
+  - 日志与事件摘要不含坐标、输入文字、剪贴板或截图内容；过程面板只显示动作描述与步数。
+
+- **用户干扰**：用户移动鼠标 / 敲键盘**不会**暂停、隐藏浮层或撤销授权；光标循环持续跟随
+  真实指针，下一动作重新定位。只有「目标被换掉 / 受保护应用」会让**单次动作**失败并要求
+  重新截图，会话继续。
+
+- **浮层**：每块显示器一扇透明置顶窗（鼠标穿透、不可聚焦）画虚拟光标 + **顶部光谱流光带**
+  （与「流光提醒」同款：品红 → 紫罗兰 → 强调色 → 青 → 琥珀，大半径模糊 + 呼吸 / 流转）；
+  另有一扇**顶部操作过程面板**（同样穿透 / 不可聚焦），逐条显示
+  「正在查看屏幕 / 正在点击『保存』/ 正在输入文字（12 个字符）」这类**动作描述**，
+  不显示坐标、尺寸、输入文字或截图内容。每一步带机器可读 `action`，面板与对话状态条据此显示
+  语义图标；**连续的同一 `action + summary` 合并为 `×N`**，`ComputerUseStatus.recentActions`
+  是 `{ action, summary, count }[]`（新 → 旧）。浮层在**第一次工具调用**时出现，**进入操作模式后
+  持续在场、每个动作实时更新**（不再为截图隐藏）。两者 `showInactive()`；**不做
+  `setContentProtection`**（远程桌面 / 屏幕共享下会完全看不到），代价是模型截图里会带上
+  过程面板与虚拟光标。对话窗另有状态条与停止按钮。
+  停止入口：状态条、托盘、`Ctrl+Alt+Shift+Esc`，以及 **Agent 自己调用 `computer_stop`**
+  （这条会结束会话并把 Aurora 调回前台；其余入口保持用户当前应用焦点不变）。
+
+- **配置（v39，`computerUse`）**：
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `enabled` | `false` | 总开关；默认关闭 |
+| `showVirtualCursor` / `glow` / `showHud` | `true` | 虚拟光标 / 屏幕流光 / 顶部操作过程面板 |
+| `moveDurationMs` | `160` | 鼠标平滑移动时长（0–1000） |
+| `typingDelayMs` | `10` | 逐字符间隔（0–200） |
+| `screenshotMaxWidth` | `1280` | 截图最长边（640–2560） |
+| `maxActions` | `300` | 单会话有副作用动作上限（10–2000） |
+| `idleStopMinutes` | `10` | 无调用后自动结束（1–60） |
+| `allowedApps` / `deniedApps` | `[]` | 允许 / 禁止的应用（deny 优先） |
+
+- **已知边界**：UIPI 下无法驱动提权窗口；UAC 安全桌面 / 锁屏不可见；独占全屏与部分反作弊
+  游戏可能吞输入并遮住浮层；多屏不同 DPI 跨屏移动窗口后需重新截图；原生系统指针始终保留
+  （虚拟光标是光环 + 拖尾，不替换系统光标）；截图会发送给模型，可能包含敏感屏幕内容。

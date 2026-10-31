@@ -289,6 +289,10 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
   if (patch.notifications !== undefined) {
     Object.assign(draft.notifications, patch.notifications)
   }
+  // Computer Use（v39，docs/06 §28）：顶层浅合并；设置页回传完整分组。
+  if (patch.computerUse !== undefined) {
+    Object.assign(draft.computerUse, patch.computerUse)
+  }
 
   return cleared
 }

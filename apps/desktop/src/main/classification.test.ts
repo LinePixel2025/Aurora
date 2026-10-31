@@ -217,6 +217,20 @@ function settingsWith(overrides: {
       size: 'standard',
       durationMs: 6000,
     },
+    // v39：Computer Use（本用例不涉及，取出厂默认关闭）
+    computerUse: {
+      enabled: false,
+      showVirtualCursor: true,
+      glow: true,
+      showHud: true,
+      moveDurationMs: 160,
+      typingDelayMs: 10,
+      screenshotMaxWidth: 1280,
+      maxActions: 300,
+      idleStopMinutes: 10,
+      allowedApps: [],
+      deniedApps: [],
+    },
   }
 }
 

@@ -60,6 +60,14 @@ export {
   // 输入框工具行（2026-09 输入框重做）：权限模式 / 上下文详解 / 斜杠命令
   ShieldCheck,
   ShieldOff,
+  // Computer Use（v39）：设置页导航 / 斜杠命令入口 / 操作过程面板的步骤图标
+  MousePointer2,
+  MousePointerClick,
+  Keyboard,
+  AppWindow,
+  Scan,
+  Focus,
+  ChevronUp,
   Paperclip,
   Gauge,
   Command,

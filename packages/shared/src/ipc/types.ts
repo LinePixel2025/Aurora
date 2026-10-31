@@ -20,6 +20,7 @@ import type {
   WindowName,
 } from '../config/schema.js'
 import type { CenterOfficialModelCatalog } from '../center/protocol.js'
+import type { PermissionMode } from '../config/permission.js'
 import type { PluginPermission } from '../plugin/permissions.js'
 import type {
   PluginConfigField,
@@ -211,6 +212,11 @@ export interface SettingsPatch {
    * 默认提醒方式（v37，docs/07 §4）：顶层浅合并，只传 `{ channel }` 即可。
    */
   notifications?: Partial<Settings['notifications']>
+  /**
+   * Computer Use（v39，docs/06 §28）：顶层浅合并；设置页回传完整分组。
+   * 整组在 `SETTINGS_READONLY_PREFIXES` 里，AI 的 `set_setting` 改不动。
+   */
+  computerUse?: Partial<Settings['computerUse']>
 }
 
 /** 敏感字段路径 → 明文值；由主进程加密后落盘（docs/08 §2）。 */
@@ -1271,6 +1277,161 @@ export interface BannerDiagnostics {
   glowVisible: boolean
   /** 卡片窗当前宽度（CSS 像素；自测据此断言「弹窗大小」真的生效） */
   cardWidth?: number
+}
+
+// ───────────────────────── Computer Use（v39，docs/06 §28） ─────────────────────────
+
+/** 会话结束原因（用户停止 / Agent 主动退出 / 配置变化 / 限额 / 错误 / 系统事件）。 */
+export type ComputerUseStopReason =
+  | 'user'
+  | 'agent'
+  | 'settings'
+  | 'model'
+  | 'permission'
+  | 'idle'
+  | 'budget'
+  | 'error'
+  | 'system'
+  | 'quit'
+
+/**
+ * 过程面板的一步（`recentActions` 的元素）。
+ *
+ * `action` 是机器可读动作名（决定图标），`summary` 是给人看的「正在…」描述；
+ * 连续的同一动作会被主进程合并成一条并把 `count` 累加。
+ */
+export interface ComputerUseStep {
+  action: string
+  summary: string
+  count: number
+}
+
+/**
+ * Computer Use 运行态（状态条、设置页、过程面板共用）。
+ *
+ * `active` 是**全局**状态：同一时间只允许一个会话操控桌面；`sessionId` 是持有者。
+ * 渲染层据 `sessionId !== 当前会话` 显示「另一会话正在操作」，而不是把授权画成自己的激活态。
+ * 注意 `active` 只表示**已授权**，不表示已经开始操作：浮层在第一次工具调用时才出现。
+ */
+export interface ComputerUseStatus {
+  /** 用户在设置页打开的总开关 */
+  enabled: boolean
+  /** 当前平台与宿主是否可用（Windows + PowerShell） */
+  available: boolean
+  platformSupported: boolean
+  /** 当前生效模型是否支持图片输入（全局档；会话覆盖另行判定） */
+  vision: boolean
+  permissionMode: PermissionMode
+  /** 当前是否已经有一个会话持有授权（不代表正在操作） */
+  active: boolean
+  sessionId?: string
+  startedAt?: string
+  /** 本会话已执行的有副作用动作数 */
+  actions: number
+  maxActions: number
+  lastAction?: string
+  /** 最近一步的机器可读动作名（状态条据此显示语义图标） */
+  lastActionKind?: string
+  lastActionAt?: string
+  /**
+   * 最近的操作过程（新 → 旧，最多 6 条，**只有动作描述、没有坐标 / 输入文字**）。
+   * 过程面板挂载时从这里补齐历史，避免漏掉「窗口还没加载完」时发生的前几步。
+   */
+  recentActions?: ComputerUseStep[]
+  overlay: {
+    visible: boolean
+    displays: number
+  }
+  /** 全局停止快捷键是否注册成功；失败时界面提示用别的停止入口 */
+  stopHotkeyAvailable: boolean
+  /** 为什么当前不能开始（设置页提示用） */
+  disabledReason?: string
+}
+
+/** 渲染层 → 主进程：为某个会话申请桌面操控授权。 */
+export interface ComputerUseStartRequest {
+  sessionId: string
+}
+
+/** 渲染层 → 主进程：停止当前会话（`sessionId` 不匹配时只做幂等检查）。 */
+export interface ComputerUseStopRequest {
+  sessionId?: string
+  reason?: ComputerUseStopReason
+}
+
+/**
+ * 主进程 → 渲染层的实时事件（on/off 成对）。
+ *
+ * `cursor` 只发给浮层（30fps）；`action` / `started` / `ended` / `notice` 发给对话窗与浮层。
+ * 动作摘要**绝不包含**输入的文字、剪贴板内容或截图内容。
+ */
+export type ComputerUseEvent =
+  | {
+      type: 'started'
+      sessionId: string
+      startedAt: string
+      displayIds: number[]
+    }
+  | {
+      /** 虚拟光标在浮层窗口内的 DIP 坐标（只发给浮层） */
+      type: 'cursor'
+      displayId: number
+      x: number
+      y: number
+      visible: boolean
+    }
+  | {
+      type: 'action'
+      sessionId: string
+      /** 机器可读动作名（如 `mouse.click` / `keyboard.type` / `window.move`） */
+      action: string
+      /** 人类可读摘要（不含敏感内容） */
+      summary: string
+      displayId?: number
+      x?: number
+      y?: number
+      step: number
+      maxSteps: number
+      at: string
+    }
+  | {
+      /** 点击 / 拖拽 / 滚轮的涟漪（浮层用；`displayId` 定位） */
+      type: 'click'
+      displayId: number
+      x: number
+      y: number
+      button: 'left' | 'right' | 'middle'
+    }
+  | {
+      type: 'notice'
+      tone: 'info' | 'warn'
+      text: string
+    }
+  | {
+      type: 'ended'
+      sessionId: string
+      reason: ComputerUseStopReason
+    }
+
+/** 设置页「从当前窗口添加应用」的一行。 */
+export interface ComputerUseAppInfo {
+  windowId: string
+  title: string
+  exe: string
+  pid: number
+  foreground: boolean
+  operable: boolean
+}
+
+/** 设置页环境检查结果（P1；启动宿主但不移动鼠标）。 */
+export interface ComputerUseDiagnostics {
+  platformSupported: boolean
+  helperReady: boolean
+  powershellVersion?: string
+  uiaAvailable: boolean
+  displayCount: number
+  protectedApps: string[]
+  error?: string
 }
 
 // ───────────────────────── 默认提醒方式（v37，docs/07 §4） ─────────────────────────
@@ -2761,6 +2922,23 @@ export interface AuroraApi {
    */
   notifications: {
     test(): Promise<Result<NotificationTestResult>>
+  }
+  /**
+   * Computer Use（v39，docs/06 §28）。
+   *
+   * `start` / `stop` 是**用户授权**入口：`start` 由输入框的 `/computer` 斜杠命令触发，
+   * `stop` 由对话状态条 / 托盘 / 全局快捷键触发；Agent 没有开启通道（工具本身也要求会话已授权）。
+   */
+  computerUse: {
+    status(): Promise<Result<ComputerUseStatus>>
+    start(request: ComputerUseStartRequest): Promise<Result<ComputerUseStatus>>
+    stop(request?: ComputerUseStopRequest): Promise<Result<ComputerUseStatus>>
+    /** 实时事件（动作 / 光标 / 开始 / 结束 / 提示），on/off 成对 */
+    onEvent(listener: (event: ComputerUseEvent) => void): () => void
+    /** P1：列出当前可操作窗口（设置页「从当前窗口添加应用」） */
+    apps(): Promise<Result<ComputerUseAppInfo[]>>
+    /** P1：环境检查（启动宿主但不合成输入） */
+    diagnose(): Promise<Result<ComputerUseDiagnostics>>
   }
   mcp: {
     status(): Promise<Result<McpServerStatus[]>>

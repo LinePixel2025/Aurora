@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { createDefaultSettings, type Settings } from '@aurora/shared'
-import { visionEnabled } from './vision.js'
+import { visionEnabled, visionEnabledForSession } from './vision.js'
 
 function settingsWith(options: { active?: string; vision?: boolean; model?: string }): Settings {
   const settings = createDefaultSettings()
@@ -49,5 +49,32 @@ describe('visionEnabled', () => {
   it('当前模型在 modelParams 里没有条目：按默认关处理', () => {
     const settings = settingsWith({ vision: true, model: 'gpt-new' })
     expect(visionEnabled(settings)).toBe(false)
+  })
+})
+
+describe('visionEnabledForSession（Computer Use）', () => {
+  it('会话覆盖优先：覆盖到非视觉模型时按关处理', () => {
+    const settings = settingsWith({ vision: true })
+    settings.llm.providers['p2'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.example.com/v1',
+      apiKeyEnc: '',
+      model: 'text-only',
+      modelList: ['text-only'],
+      modelParams: {
+        'text-only': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+      },
+    }
+    expect(visionEnabledForSession(settings, { providerId: 'p2', model: 'text-only' })).toBe(false)
+    expect(visionEnabledForSession(settings, { providerId: 'p1', model: 'gpt-x' })).toBe(true)
+    expect(visionEnabledForSession(settings, undefined)).toBe(true)
+  })
+
+  it('覆盖失效（provider 已删）回落全局，不抛错', () => {
+    const settings = settingsWith({ vision: true })
+    expect(visionEnabledForSession(settings, { providerId: 'gone', model: 'x' })).toBe(true)
+    expect(
+      visionEnabledForSession(createDefaultSettings(), { providerId: 'gone', model: 'x' }),
+    ).toBe(false)
   })
 })

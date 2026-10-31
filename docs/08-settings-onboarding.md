@@ -299,6 +299,21 @@
     "size": "standard", // v38：compact 360 | standard 420 | large 480（只改卡片宽度）
     "durationMs": 6000, // v38：停留时长（2000–30000）
   },
+  // v39 新增：Computer Use（docs/06 §28）。整组在 SETTINGS_READONLY_PREFIXES 里；
+  // 真正的会话授权由用户 /computer 或 Agent computer_start 逐会话建立，不写配置。
+  "computerUse": {
+    "enabled": false, // 默认关闭；仅 Windows + 多模态模型 + 非只读档时生效
+    "showVirtualCursor": true, // 虚拟光标（光环 + 拖尾）；原生指针保留
+    "glow": true, // 操作期间屏幕顶部的光谱流光（与「流光提醒」同款）
+    "showHud": true, // 屏幕顶部操作过程面板（当前步骤 + 最近 3 步）
+    "moveDurationMs": 160, // 鼠标平滑移动（0–1000）
+    "typingDelayMs": 10, // 逐字符间隔（0–200）
+    "screenshotMaxWidth": 1280, // 截图最长边（640–2560）
+    "maxActions": 300, // 单会话有副作用动作上限（10–2000）
+    "idleStopMinutes": 10, // 无调用后自动结束（1–60）
+    "allowedApps": [], // exe basename；空 = 除禁止/保护目标外全部允许
+    "deniedApps": [], // 优先于 allowedApps
+  },
 }
 ```
 
@@ -632,6 +647,12 @@
   不受 `channel` 影响（但仍受两个总闸约束）。`SettingsPatch` 新增可选 `notifications` 字段（顶层浅合并）；
   路径登记在 `WRITABLE_PATH_OVERRIDES` 的 `notifications.*`（AI 可以照用户要求切换打扰方式），
   **不在** `SETTINGS_READONLY_PREFIXES`。
+- `computerUse`（**v39 新增**，见 06 §28）：桌面操控总开关、视觉（虚拟光标 / 流光 / HUD）、
+  节奏（移动时长 / 输入间隔 / 截图宽度）、限额（动作上限 / 闲置结束）与应用允许 / 禁止名单。
+  整组在 `SETTINGS_READONLY_PREFIXES` 里 —— 允许 AI 截屏并合成输入是本机最高权限的授权边界，
+  AI 不得自行开启或放宽；只有用户在设置页能改。真正的「本会话是否授权」不写配置：
+  用户可输入 `/computer`，Agent 也可在需要时调用 `computer_start`（confirm 档会弹确认卡）。
+  `SettingsPatch` 新增可选 `computerUse` 字段（顶层浅合并）。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -735,7 +756,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 38`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 39`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -843,12 +864,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `{ channel: 'system' }` —— 与 v37 之前的行为一字不差）、
   `v37 → v38`（**提醒细节**，见 §1 的 `notifications`：为已有 `notifications` 补
   `sound: true` / `volume: 60` / `speak: true` / `size: 'standard'` / `durationMs: 6000`，
-  用户已选的 `channel` 原样保留 —— 补出来的值等于 v38 之前写死在代码里的行为）。
-  三十八条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  用户已选的 `channel` 原样保留 —— 补出来的值等于 v38 之前写死在代码里的行为）、
+  `v38 → v39`（**Computer Use**，见 §1 的 `computerUse` 与 06 §28：缺 `computerUse` 时补
+  `{ enabled: false, ... }` 默认值 —— 升级本身不会打开任何桌面操控能力；已有对象在上，
+  用户已写的值原样保留）。
+  三十九条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **38** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **39** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -990,8 +1014,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - **页面骨架**：所有页面统一「标题 + 一句话说明 + 分组卡片」（`theme.css` 的
   `.page` / `.page-title` / `.page-sub` + `settings/settings.css` 的 `.section-card` /
   `.section-title` / `.section-desc` / `.empty-state`）；侧栏按「基础 / AI 能力 / 系统」三组排列。
-- **页面结构（v37 起 11 页）**：`SETTINGS_PAGE_IDS = ['general', 'sessions', 'modes', 'notifications',
-  'llm', 'voice', 'agent', 'awareness', 'center', 'plugins', 'advanced']`（数组顺序即截图出图顺序），
+- **页面结构（v39 起 12 页）**：`SETTINGS_PAGE_IDS = ['general', 'sessions', 'modes', 'notifications',
+  'llm', 'voice', 'agent', 'computer-use', 'awareness', 'center', 'plugins', 'advanced']`（数组顺序即截图出图顺序），
   侧栏按「基础 / 智能 / 连接 / 扩展 / 系统」五组排列：
   - **基础**：`general` 通用（启动与快捷键 / 外观 / 提示条 / 勿扰时段 / 关于与更新）、
     **`sessions` 会话管理（2026-09-30 新增）**：
@@ -1009,6 +1033,12 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
     `voice` 语音（TTS 区组 + STT 区组）、
     `agent` Agent 设置（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠；2026-10 前称「智能与工具」）、
+    **`computer-use` Computer Use（v39 新增，06 §28）**：总开关与前提（平台 / 模型 vision / 权限档）、
+    视觉（`showVirtualCursor` / `glow` / `showHud`，其中 `showHud` = 顶部操作过程面板）、
+    节奏（`moveDurationMs` / `typingDelayMs` /
+    `screenshotMaxWidth`）、安全限额（`maxActions` / `idleStopMinutes` / `allowedApps` /
+    `deniedApps`）与使用说明；锚点前缀 `computer-use.*`，截图场景 `settings-computer-use.png`。
+    整组在 `SETTINGS_READONLY_PREFIXES`，AI 不可改。
     `awareness` 文件自感知（见 06 §26）；
   - **连接**：`center` Aurora Center；
   - **扩展**：`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；

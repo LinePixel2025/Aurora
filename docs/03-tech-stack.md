@@ -117,8 +117,21 @@
 - **代价**：两套面板 API；webview 的协议处理器必须逐 session 注册（自定义 partition），
   页面拿不到宿主令牌（需自行配色）。
 
-## 3. 依赖风险清单
+### ADR-013 Computer Use：常驻 PowerShell + SendInput / UIAutomation（v39）
 
+- **决策**：Windows 桌面操控不引入 robotjs / nut.js / ffi 等原生模块，而是一个**懒启动的常驻
+  PowerShell 宿主**：启动时 `Add-Type` 编译 C# P/Invoke（`SendInput` / `SetCursorPos` /
+  `EnumWindows` / `SetWindowPos` / `WM_CLOSE`）并加载 `UIAutomationClient`，之后通过
+  NDJSON（stdin/stdout）逐条执行命令；脚本写入 `<userData>/computer-use/win-host.ps1` 后用
+  `-File` 启动。
+- **理由**：原生模块要参与 electron-builder 重建 / ABI 对齐 / 签名，升级 Electron 时成本高；
+  PowerShell 5.1/7 是 Windows 自带能力，宿主只启动一次，点击延迟毫秒级，且崩溃 / 超时可
+  失败关闭。`-EncodedCommand` 会超过 32K 命令行上限，因此落盘 + `-File`。
+- **代价**：依赖 PowerShell 与执行策略（组策略可能拦截，错误如实回传）；脚本内含 C# 代码，
+  需要 `-Sta` 跑 UIAutomation；宿主以当前用户（通常已提权）运行，UIPI 下仍无法驱动更高
+  完整性窗口。
+
+## 3. 依赖风险清单
 | 依赖 | 风险 | 缓解 |
 |---|---|---|
 | officeparser（v7.8.0，锁主版本） | 体积较大（含 pdfjs-dist / tesseract.js / `@napi-rs/canvas` 预编译二进制），原文抽取质量受文件影响，可能被杀软误报 | 只在 `utilityProcess` 内 `import()` 懒加载（用户不放文档就不付成本）；提取失败一律降级为「文件名证据」，分类管线不受影响；OCR 默认不启用（其 postinstall 仅赞助请求，已在 `pnpm-workspace.yaml` 显式放行 false 避免联网）；当前 Electron 44 内置 Node 24.18.1 已满足 v8 的 engines 要求，但 v8 仍待在真实文档夹具上单独验证，验证前保持 v7.8.0 |

@@ -24,6 +24,8 @@ import {
   hideWindow as hideInState,
   showWindow as showInState,
   type BannerShowPayload,
+  type ComputerUseEvent,
+  type ComputerUseSettings,
   type Logger,
   type SettingsStore,
   type WindowName,
@@ -94,7 +96,7 @@ export interface BannerWindowDiagnostics {
 }
 
 /** 内部窗口名：不属于 `WINDOW_NAMES`，没有窗口状态机，只由业务直接驱动。 */
-type InternalWindowName = 'awareness-glow' | 'banner'
+type InternalWindowName = 'awareness-glow' | 'banner' | 'computer-use'
 
 /**
  * 流光提醒卡片窗的几何（docs/07 §2.2.3）。
@@ -360,6 +362,24 @@ export class WindowManager {
   private bannerGlowMousePassthrough = false
   private bannerCardWindow: BrowserWindow | undefined
   private bannerCardLoad: Promise<void> | undefined
+  /**
+   * Computer Use 浮层（v39，docs/06 §28）：每块显示器一扇透明置顶窗 + 一扇 HUD。
+   * 都不在 `WINDOW_NAMES` 里、不写几何、不占任务栏；**不做内容保护**（远程桌面会看不到），
+   * 进入操作模式后持续显示、实时更新（模型截图里会带上浮层，这是持续可见的取舍）。
+   */
+  private readonly computerUseOverlays = new Map<
+    number,
+    {
+      win: BrowserWindow
+      load: Promise<void>
+      mousePassthrough: boolean
+      contentProtected: boolean
+    }
+  >()
+  private computerUseHudWindow: BrowserWindow | undefined
+  private computerUseHudLoad: Promise<void> | undefined
+  private computerUseHudMousePassthrough = false
+  private computerUseDisplayListener: (() => void) | undefined
   /** 已成功启用原生材质的窗口；失败时同步回到不透明回退。 */
   private readonly nativeGlassWindows = new Set<WindowName>()
   private themeListenerActive = true
@@ -1311,6 +1331,414 @@ export class WindowManager {
    * 只对已创建的窗口生效；窗口尚未创建时跳过（创建时会在 `ensure()` 里按当前值设置），
    * 因此这里不需要「记住待应用值」——`index.ts` 在每次设置变更与启动时都会调用一次。
    */
+  // ───────────────────────── Computer Use 浮层（v39，docs/06 §28） ─────────────────────────
+
+  /**
+   * 显示 Computer Use 浮层：每块显示器一扇透明窗 + 一块**顶部**操作过程面板。
+   *
+   * 三条硬口径：`showInactive()`（绝不抢用户当前应用的焦点）、
+   * `setIgnoreMouseEvents(true, { forward: true })`（透明 ≠ 穿透，必须显式开）、
+   * **不用内容保护**（远程桌面 / 屏幕共享下会完全不可见）；进入操作模式后一直显示，
+   * 用户要求「特效与提示框一直在场、实时更新」，因此不再在截屏时隐藏它们。
+   */
+  async showComputerUseOverlays(
+    displays: ReadonlyArray<{ id: number; bounds: WindowBounds }>,
+  ): Promise<void> {
+    const cfg = this.options.settings.get().computerUse
+    const loads: Promise<void>[] = []
+    const wanted = new Set(displays.map((display) => display.id))
+    if (cfg.showVirtualCursor || cfg.glow) {
+      for (const display of displays) {
+        const entry = this.ensureComputerUseOverlay(display.id, display.bounds)
+        loads.push(entry.load)
+      }
+      for (const [id, entry] of this.computerUseOverlays) {
+        if (wanted.has(id)) continue
+        if (!entry.win.isDestroyed()) entry.win.hide()
+      }
+    }
+    if (cfg.showHud) {
+      const hud = this.ensureComputerUseHud()
+      loads.push(this.computerUseHudLoad ?? Promise.resolve())
+      if (!hud.isDestroyed()) {
+        hud.setBounds(this.computerUseHudBounds())
+      }
+    } else {
+      this.hideComputerUseHud()
+    }
+    await Promise.all(loads)
+    if (cfg.showVirtualCursor || cfg.glow) {
+      for (const display of displays) {
+        const entry = this.computerUseOverlays.get(display.id)
+        if (entry === undefined || entry.win.isDestroyed()) continue
+        if (!entry.win.isVisible()) {
+          this.reassertComputerUseTopmost(entry.win)
+          entry.win.showInactive()
+        }
+      }
+    }
+    if (cfg.showHud) {
+      const hud = this.computerUseHudWindow
+      if (hud !== undefined && !hud.isDestroyed() && !hud.isVisible()) {
+        this.reassertComputerUseTopmost(hud)
+        hud.showInactive()
+      }
+    }
+    this.installComputerUseDisplayListener()
+    this.options.logger.debug('Computer Use 浮层已显示', {
+      displays: displays.map((display) => display.id),
+      hud: cfg.showHud,
+      cursor: cfg.showVirtualCursor,
+      glow: cfg.glow,
+    })
+  }
+
+  hideComputerUseOverlays(): void {
+    for (const entry of this.computerUseOverlays.values()) {
+      if (!entry.win.isDestroyed()) entry.win.hide()
+    }
+    this.hideComputerUseHud()
+    this.removeComputerUseDisplayListener()
+  }
+
+  /** 把 Computer Use 事件推给需要的窗口；光标事件只发浮层（避免 30fps 打醒对话窗）。 */
+  emitComputerUse(event: ComputerUseEvent): void {
+    if (event.type === 'cursor') {
+      for (const entry of this.computerUseOverlays.values()) {
+        if (!entry.win.isDestroyed()) entry.win.webContents.send(IPC.computerUse.event, event)
+      }
+      return
+    }
+    this.broadcast(IPC.computerUse.event, event)
+  }
+
+  applyComputerUseConfig(config: ComputerUseSettings): void {
+    if (!config.showHud) this.hideComputerUseHud()
+    if (!config.showVirtualCursor && !config.glow) {
+      for (const entry of this.computerUseOverlays.values()) {
+        if (!entry.win.isDestroyed()) entry.win.hide()
+      }
+      if (!config.showHud) return
+    }
+    const displays = screen.getAllDisplays().map((display) => ({
+      id: display.id,
+      bounds: {
+        x: display.bounds.x,
+        y: display.bounds.y,
+        width: display.bounds.width,
+        height: display.bounds.height,
+      },
+    }))
+    void this.showComputerUseOverlays(displays)
+  }
+
+  getComputerUseDiagnostics(): {
+    visible: boolean
+    displays: number
+    overlays: Array<{
+      displayId: number
+      visible: boolean
+      alwaysOnTop: boolean
+      focusable: boolean
+      contentProtected: boolean
+      mousePassthrough: boolean
+      bounds?: WindowBounds
+    }>
+    hud: {
+      exists: boolean
+      visible: boolean
+      focusable: boolean
+      contentProtected: boolean
+      mousePassthrough: boolean
+      bounds?: WindowBounds
+    }
+  } {
+    const overlays = [...this.computerUseOverlays.entries()].map(([displayId, entry]) => ({
+      displayId,
+      visible: !entry.win.isDestroyed() && entry.win.isVisible(),
+      alwaysOnTop: !entry.win.isDestroyed() && entry.win.isAlwaysOnTop(),
+      focusable: !entry.win.isDestroyed() && entry.win.isFocusable(),
+      contentProtected: entry.contentProtected,
+      mousePassthrough: entry.mousePassthrough,
+      ...(entry.win.isDestroyed() ? {} : { bounds: entry.win.getBounds() }),
+    }))
+    const hud = this.computerUseHudWindow
+    return {
+      visible:
+        overlays.some((item) => item.visible) ||
+        (hud !== undefined && !hud.isDestroyed() && hud.isVisible()),
+      displays: overlays.length,
+      overlays,
+      hud:
+        hud === undefined || hud.isDestroyed()
+          ? {
+              exists: false,
+              visible: false,
+              focusable: false,
+              contentProtected: false,
+              mousePassthrough: this.computerUseHudMousePassthrough,
+            }
+          : {
+              exists: true,
+              visible: hud.isVisible(),
+              focusable: hud.isFocusable(),
+              contentProtected: this.computerUseHudContentProtected,
+              mousePassthrough: this.computerUseHudMousePassthrough,
+              bounds: hud.getBounds(),
+            },
+    }
+  }
+
+  /** 截图核对：取主显示器浮层 / HUD。 */
+  ensureComputerUseForCapture(kind: 'overlay' | 'hud'): BrowserWindow {
+    if (kind === 'hud') return this.ensureComputerUseHud()
+    const display = this.edgeBarDisplay()
+    return this.ensureComputerUseOverlay(display.id, display.bounds).win
+  }
+
+  async whenComputerUseLoaded(kind: 'overlay' | 'hud'): Promise<void> {
+    if (kind === 'hud') {
+      await this.computerUseHudLoad
+      return
+    }
+    const display = this.edgeBarDisplay()
+    const entry = this.computerUseOverlays.get(display.id)
+    await entry?.load
+  }
+
+  async reloadComputerUseForCapture(
+    kind: 'overlay' | 'hud',
+    query: Record<string, string>,
+  ): Promise<void> {
+    if (kind === 'hud') {
+      const win = this.ensureComputerUseHud()
+      const task = this.load(win, 'computer-use', { layer: 'hud', ...query })
+      this.computerUseHudLoad = task
+      await task
+      return
+    }
+    const display = this.edgeBarDisplay()
+    const entry = this.ensureComputerUseOverlay(display.id, display.bounds)
+    const task = this.load(entry.win, 'computer-use', {
+      layer: 'overlay',
+      displayId: String(display.id),
+      ...query,
+    })
+    entry.load = task
+    await task
+  }
+
+  showComputerUseForCapture(kind: 'overlay' | 'hud'): void {
+    const win = this.ensureComputerUseForCapture(kind)
+    if (win.isDestroyed()) return
+    if (kind === 'overlay') {
+      const display = this.edgeBarDisplay()
+      if (!sameBounds(win.getBounds(), display.bounds)) win.setBounds(display.bounds)
+    } else {
+      win.setBounds(this.computerUseHudBounds())
+    }
+    this.reassertComputerUseTopmost(win)
+    if (!win.isVisible()) win.showInactive()
+  }
+
+  private computerUseHudContentProtected = false
+
+  private ensureComputerUseOverlay(
+    displayId: number,
+    bounds: WindowBounds,
+  ): {
+    win: BrowserWindow
+    load: Promise<void>
+    mousePassthrough: boolean
+    contentProtected: boolean
+  } {
+    const existing = this.computerUseOverlays.get(displayId)
+    if (existing !== undefined && !existing.win.isDestroyed()) {
+      if (!sameBounds(existing.win.getBounds(), bounds)) existing.win.setBounds(bounds)
+      return existing
+    }
+    const win = new BrowserWindow({
+      ...bounds,
+      show: false,
+      frame: false,
+      resizable: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      hasShadow: false,
+      thickFrame: false,
+      backgroundColor: '#00000000',
+      title: 'Aurora Computer Use',
+      webPreferences: {
+        preload: this.options.preloadPath,
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        devTools: this.options.isDev,
+        backgroundThrottling: false,
+      },
+    })
+    win.setMenuBarVisibility(false)
+    let mousePassthrough = false
+    try {
+      win.setIgnoreMouseEvents(true, { forward: true })
+      mousePassthrough = true
+    } catch (error) {
+      this.options.logger.warn('Computer Use 浮层鼠标穿透不可用', { error: String(error) })
+    }
+    // 不再使用 `setContentProtection(true)`：WDA_EXCLUDEFROMCAPTURE 会让窗口在远程桌面 /
+    // 屏幕共享（本机实测 RustDesk）里直接不可见，用户就看不到光标、流光与过程面板。
+    // 浮层在操作期间**持续显示**，不再为截图隐藏。
+    const contentProtected = false
+    this.reassertComputerUseTopmost(win)
+    win.on('always-on-top-changed', (_event, isAlwaysOnTop) => {
+      if (isAlwaysOnTop) return
+      setImmediate(() => this.reassertComputerUseTopmost(win))
+    })
+    win.on('closed', () => {
+      this.computerUseOverlays.delete(displayId)
+    })
+    win.webContents.on('render-process-gone', (_event, details) => {
+      this.options.logger.error('Computer Use 浮层渲染进程异常退出', { reason: details.reason })
+      if (!win.isDestroyed()) win.destroy()
+    })
+    const entry = {
+      win,
+      load: this.load(win, 'computer-use', {
+        layer: 'overlay',
+        displayId: String(displayId),
+      }),
+      mousePassthrough,
+      contentProtected,
+    }
+    this.computerUseOverlays.set(displayId, entry)
+    this.options.logger.debug('Computer Use 浮层窗口已创建', { displayId, bounds })
+    return entry
+  }
+
+  private ensureComputerUseHud(): BrowserWindow {
+    const existing = this.computerUseHudWindow
+    if (existing !== undefined && !existing.isDestroyed()) return existing
+    const bounds = this.computerUseHudBounds()
+    const win = new BrowserWindow({
+      ...bounds,
+      show: false,
+      frame: false,
+      resizable: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      hasShadow: false,
+      thickFrame: false,
+      backgroundColor: '#00000000',
+      title: 'Aurora Computer Use HUD',
+      webPreferences: {
+        preload: this.options.preloadPath,
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        devTools: this.options.isDev,
+        backgroundThrottling: false,
+      },
+    })
+    win.setMenuBarVisibility(false)
+    try {
+      win.setIgnoreMouseEvents(true, { forward: true })
+      this.computerUseHudMousePassthrough = true
+    } catch (error) {
+      this.computerUseHudMousePassthrough = false
+      this.options.logger.warn('Computer Use HUD 鼠标穿透不可用', { error: String(error) })
+    }
+    // 同浮层：内容保护会让远程桌面看不到过程面板；改由截图前临时隐藏来保证不进截图。
+    this.computerUseHudContentProtected = false
+    this.reassertComputerUseTopmost(win)
+    win.on('closed', () => {
+      if (this.computerUseHudWindow === win) {
+        this.computerUseHudWindow = undefined
+        this.computerUseHudLoad = undefined
+      }
+    })
+    win.webContents.on('render-process-gone', (_event, details) => {
+      this.options.logger.error('Computer Use HUD 渲染进程异常退出', { reason: details.reason })
+      if (!win.isDestroyed()) win.destroy()
+    })
+    this.computerUseHudWindow = win
+    this.computerUseHudLoad = this.load(win, 'computer-use', { layer: 'hud' })
+    return win
+  }
+
+  private hideComputerUseHud(): void {
+    const win = this.computerUseHudWindow
+    if (win !== undefined && !win.isDestroyed()) win.hide()
+  }
+
+  private computerUseHudBounds(): WindowBounds {
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    // 置顶操作过程面板：贴在目标显示器顶部居中（不是底部）。窗口 = 卡片，透明区不拦截鼠标。
+    const width = 560
+    const height = 116
+    return {
+      x: Math.round(display.bounds.x + (display.bounds.width - width) / 2),
+      y: Math.round(display.bounds.y + 20),
+      width,
+      height,
+    }
+  }
+
+  private reassertComputerUseTopmost(win: BrowserWindow): void {
+    if (win.isDestroyed()) return
+    try {
+      win.setAlwaysOnTop(true, 'screen-saver')
+    } catch (error) {
+      this.options.logger.warn('恢复 Computer Use 浮层置顶失败', { error: String(error) })
+    }
+  }
+
+  private installComputerUseDisplayListener(): void {
+    if (this.computerUseDisplayListener !== undefined) return
+    const rebuild = (): void => {
+      if (this.computerUseOverlays.size === 0) return
+      const displays = screen.getAllDisplays().map((display) => ({
+        id: display.id,
+        bounds: {
+          x: display.bounds.x,
+          y: display.bounds.y,
+          width: display.bounds.width,
+          height: display.bounds.height,
+        },
+      }))
+      void this.showComputerUseOverlays(displays)
+    }
+    screen.on('display-added', rebuild)
+    screen.on('display-removed', rebuild)
+    screen.on('display-metrics-changed', rebuild)
+    this.computerUseDisplayListener = rebuild
+  }
+
+  private removeComputerUseDisplayListener(): void {
+    const listener = this.computerUseDisplayListener
+    if (listener === undefined) return
+    screen.off('display-added', listener)
+    screen.off('display-removed', listener)
+    screen.off('display-metrics-changed', listener)
+    this.computerUseDisplayListener = undefined
+  }
+
+  /** 全窗口广播（Computer Use 状态条 / 设置页 / 插件面板都能收到）。 */
+  broadcast(channel: string, payload: unknown): void {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload)
+    }
+  }
+
   applyEdgeBarOpacity(opacity: number): void {
     const win = this.windows.get('edge-bar')
     if (win === undefined || win.isDestroyed()) return
@@ -1567,6 +1995,24 @@ export class WindowManager {
   }
 
   /**
+   * 把窗口带回前台（显式抢焦点）：状态机显示 → 从最小化恢复 → 激活。
+   *
+   * 与 `focus()` 的分工：`focus()` 是「确保可见并请求焦点」，不还原最小化状态
+   * （Windows 下对最小化窗口调 `show()` 不会退出最小化）。任务完成要把结果送到用户
+   * 眼前，而用户很可能把主界面最小化在任务栏里，必须显式 `restore()`。
+   *
+   * 只给「Agent 主动退出 Computer Use」这类**用户明确期待被打断**的场景用；
+   * 小组件 / 提醒 / 普通推送仍走 `showInactive()`，不得抢焦点。
+   */
+  bringToFront(name: WindowName): WindowState {
+    const state = this.show(name)
+    const win = this.ensure(name)
+    if (win.isMinimized()) win.restore()
+    win.focus()
+    return state
+  }
+
+  /**
    * 窗口当前是否持有键盘焦点（未创建 / 已销毁 = false）。
    *
    * 与 `isVisible` 的区别：可见但被压在下层（用户点了别的应用）时它是 false ——
@@ -1641,6 +2087,16 @@ export class WindowManager {
     this.bannerGlowMousePassthrough = false
     this.bannerCardWindow = undefined
     this.bannerCardLoad = undefined
+    this.removeComputerUseDisplayListener()
+    for (const entry of this.computerUseOverlays.values()) {
+      if (!entry.win.isDestroyed()) entry.win.destroy()
+    }
+    this.computerUseOverlays.clear()
+    if (this.computerUseHudWindow !== undefined && !this.computerUseHudWindow.isDestroyed()) {
+      this.computerUseHudWindow.destroy()
+    }
+    this.computerUseHudWindow = undefined
+    this.computerUseHudLoad = undefined
     for (const win of this.windows.values()) {
       if (!win.isDestroyed()) win.destroy()
     }

@@ -147,6 +147,11 @@ import {
   type AutomationListResult,
   type AutomationRun,
   type AutomationWindowRequest,
+  type ComputerUseAppInfo,
+  type ComputerUseDiagnostics,
+  type ComputerUseStartRequest,
+  type ComputerUseStatus,
+  type ComputerUseStopRequest,
 } from '@aurora/shared'
 import type {
   AgentHost,
@@ -211,6 +216,31 @@ const previewReadPort: ImageReadPort = {
 export interface BrowserAgentIpcLike {
   report(request: BrowserAgentReportRequest): void
   stop(sessionId: string, reason: string): boolean
+}
+
+/** Computer Use（v39，docs/06 §28）的 IPC 切片；start/stop 只接受渲染层用户操作。 */
+export interface ComputerUseIpcLike {
+  status(): ComputerUseStatus
+  start(request: ComputerUseStartRequest): Promise<ComputerUseStatus>
+  stop(request?: ComputerUseStopRequest): ComputerUseStatus
+  apps(): Promise<ComputerUseAppInfo[]>
+  diagnose(): Promise<ComputerUseDiagnostics>
+}
+
+function unavailableComputerUseStatus(): ComputerUseStatus {
+  return {
+    enabled: false,
+    available: false,
+    platformSupported: process.platform === 'win32',
+    vision: false,
+    permissionMode: 'confirm',
+    active: false,
+    actions: 0,
+    maxActions: 0,
+    overlay: { visible: false, displays: 0 },
+    stopHotkeyAvailable: false,
+    disabledReason: 'Computer Use 尚未装配',
+  }
 }
 
 export interface DesktopDeps {
@@ -300,6 +330,11 @@ export interface DesktopDeps {
    * 未装配时两条回执通道按 E_INVALID_STATE 如实报错（不静默成功）。
    */
   browserAgent?: BrowserAgentIpcLike
+  /**
+   * Computer Use（computerUse:*，v39，docs/06 §28）。
+   * 未装配时 status 返回关闭态，start 如实报 E_INVALID_STATE（不静默成功）。
+   */
+  computerUse?: ComputerUseIpcLike
   /** Job 存储（chat:jobs / resumeJob / cancelJob，docs/06 §4.1，v15） */
   jobs?: JobStore
   /** 删除会话时级联清理任务清单（docs/06 §18）。未注入时保留旧的单删会话行为。 */
@@ -1559,6 +1594,45 @@ export function registerIpc(deps: DesktopDeps): () => void {
       return err('E_INVALID_ARGUMENT', 'action 只能是 show / dismiss')
     }
     return ok(deps.smokeBanner(action))
+  })
+
+  // ───────────────────────── Computer Use（v39，docs/06 §28） ─────────────────────────
+
+  handle<ComputerUseStatus>(IPC.computerUse.status, () =>
+    ok(deps.computerUse?.status() ?? unavailableComputerUseStatus()),
+  )
+  handle<ComputerUseStatus>(IPC.computerUse.start, async (request: ComputerUseStartRequest) => {
+    if (deps.computerUse === undefined) {
+      return err('E_INVALID_STATE', 'Computer Use 尚未装配')
+    }
+    if (request === null || typeof request !== 'object' || typeof request.sessionId !== 'string') {
+      return err('E_INVALID_ARGUMENT', 'sessionId 必填')
+    }
+    try {
+      return ok(await deps.computerUse.start(request))
+    } catch (error) {
+      return err('E_INVALID_STATE', error instanceof Error ? error.message : String(error))
+    }
+  })
+  handle<ComputerUseStatus>(IPC.computerUse.stop, (request?: ComputerUseStopRequest) => {
+    if (deps.computerUse === undefined) return ok(unavailableComputerUseStatus())
+    return ok(deps.computerUse.stop(request))
+  })
+  handle<ComputerUseAppInfo[]>(IPC.computerUse.apps, async () => {
+    if (deps.computerUse === undefined) return err('E_INVALID_STATE', 'Computer Use 尚未装配')
+    try {
+      return ok(await deps.computerUse.apps())
+    } catch (error) {
+      return err('E_INVALID_STATE', error instanceof Error ? error.message : String(error))
+    }
+  })
+  handle<ComputerUseDiagnostics>(IPC.computerUse.diagnose, async () => {
+    if (deps.computerUse === undefined) return err('E_INVALID_STATE', 'Computer Use 尚未装配')
+    try {
+      return ok(await deps.computerUse.diagnose())
+    } catch (error) {
+      return err('E_INVALID_STATE', error instanceof Error ? error.message : String(error))
+    }
   })
 
   // ───────────────────────── 默认提醒方式（v37，docs/07 §4） ─────────────────────────

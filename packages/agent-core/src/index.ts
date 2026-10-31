@@ -69,6 +69,8 @@ export * from './tools/banner-notify.js'
 export * from './tools/preview.js'
 // 内置浏览器工具组（v35，docs/06 §27）：网页测试；Electron webview 驱动由主进程端口注入。
 export * from './tools/browser.js'
+// Computer Use（v39，docs/06 §28）：真实桌面操控；PowerShell 宿主与坐标换算在主进程。
+export * from './tools/computer-use.js'
 export * from './tools/image-display.js'
 export * from './tools/center.js'
 export * from './tools/imagegen.js'

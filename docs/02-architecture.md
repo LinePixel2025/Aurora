@@ -49,6 +49,7 @@
 | 流光提醒（banner-glow / banner-card） | WindowManager.showBanner | 各 1     | 两扇内部窗口：整屏穿透光带 + 可点卡片；统一走 `BannerService`，不进 `WINDOW_NAMES`、不写几何持久化                                                |
 | 桌面小组件（widget） | `main/plugins/widgets.ts` | ≤ 8        | 插件贡献的无边框透明窗口；默认置顶、`focusable:false`、不占任务栏；布局写 `plugin-widget-layout.json`（不进 settings）                                  |
 | 自感知流光浮层       | WindowManager | 1                       | 内部透明置顶浮层；仅在文件分析进行中、提示条可见且 `appearance.awarenessGlow` 未关闭时**覆盖目标显示器整块矩形**（v33 起四边流光，渲染层只在四条边画光带）。鼠标穿透、不可聚焦、不进 `WINDOW_NAMES` / 任务栏 / 窗口状态 |
+| Computer Use 浮层（computer-use） | WindowManager | 每显示器 1 + 过程面板 1 | 首次操作时每块显示器一扇透明置顶窗（虚拟光标 + 顶部光谱流光）与顶部操作过程面板；鼠标穿透、不可聚焦、**不做内容保护**（远程桌面看不到），操作期间持续显示、实时更新；不进 `WINDOW_NAMES`、不写几何（v39，06 §28） |
 
 约定：**主界面、设置、记忆库、自动化详情窗口与插件配置窗口**显示任务栏图标（`skipTaskbar: false`）且可最小化 / 最大化（Windows 式标题栏按钮，2026-09 前端重构起）；提示条与引导窗口仍隐藏任务栏图标。所有窗口的「关闭」= 隐藏（仅托盘“退出”真正退出），托盘仍是统一管理入口。
 
@@ -63,7 +64,7 @@
 | 模块                                          | 职责                                                                                               |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `tray`                                        | 托盘图标、菜单、状态徽标                                                                           |
-| `window-manager`                              | 窗口创建 / 显隐 / 置顶 / 贴边 / 多显示器位置记忆                                                   |
+| `window-manager`                              | 窗口创建 / 显隐 / 置顶 / 贴边 / 多显示器位置记忆；Computer Use 浮层与 HUD（v39）                    |
 | `settings-store`                              | 配置读写、schema 校验、版本迁移、safeStorage 凭据                                                  |
 | `mode-manager`                                | 模式注册表、切换流程、引导状态（见 05）                                                            |
 | `file-watcher`                                | 智慧感知文件夹监听、稳定判定、抑制自触发（见 05 §3.1）                                             |
@@ -79,6 +80,7 @@
 | `agent-host`                                  | 装配 agent-core 与 modes，向渲染层暴露统一 API                                                     |
 | `browser-agent`                               | 内置浏览器 Agent 工具的主进程端口：会话登记、guest 归属校验、`loadURL` 导航与 CDP 驱动（见 06 §27） |
 | `browser-agent-sessions`                      | Agent 浏览器会话的并发槽位与空闲释放（electron-free，可单测；上限与空闲时长走 live getter）        |
+| `computer-use/*`                              | Computer Use（v39，06 §28）：常驻 PowerShell 输入宿主、坐标 / 应用策略 / 会话服务 / 截屏与浮层协调；工具与端口分层，纯逻辑可单测 |
 | `center/*`                                    | Aurora Center 连接器：出站 WS、重连、远程命令处理（会话 / 配置 / 模式），见 12                     |
 | `ipc`                                         | IPC 通道注册（契约见 §6）                                                                          |
 

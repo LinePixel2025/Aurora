@@ -2626,3 +2626,61 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   `settings-plugins-detail`（设置页列表 + 配置入口）/ `plugin-config` /
   `settings-plugins-marketplace` / `widget-desktop-plugin` / `edge-bar-plugin-widget` /
   `chat-plugin-panel-push`（另含设置页深链 `settings-plugins.png`）。
+
+## 7. Computer Use 浮层与操作过程（v39，06 §28）
+
+- **授权入口 = 斜杠命令**：输入框工具行**不再有**「操作电脑」开关；用户输入 `/computer`
+  （`chat.slash-computer`）唤起授权，也可直接写 `/computer <任务>` 让授权与任务在同一次发送里完成。
+  **命令会显式要求 Agent 使用 Computer Use**：输入框预填
+  「请使用 Computer Use 工具操作电脑，完成：」，带任务时把该前缀拼进消息。
+  命令只在 `computerUse.enabled && 当前模型 vision && 权限档非 readonly` 时出现在斜杠候选里；
+  授权失败（未开启 / 非视觉模型 / 只读档 / 另一会话占用）用左上提示条说明原因。
+  命令**不写配置**，只建立内存中的会话授权；重复执行是幂等的。
+- **Agent 入口（v39 优化）**：Agent 也可调用 `computer_start` 建立授权（走同一条
+  `computerUse:start` 服务状态机）。界面不新增任何锚点：渲染层收到 `started` 事件后
+  刷新状态，表现与用户手敲 `/computer` 完全一致；授权本身同样**不建浮层**，第一次动作
+  工具调用才显示。`computer_start` 是 `confirm` 敏感级，confirm 档会先弹确认卡。
+- **对话状态条**：composer 上方一条紧凑条（`chat.computer-use-status`），显示最近动作
+  （左侧按 `lastActionKind` 显示语义图标）、第 N / 上限步与停止按钮（`chat.computer-use-stop`）；
+  另一会话持有时显示「另一会话正在操作」。**不显示运行时长**（2026-10-31 删除计时）。
+  不改变 composer 既有探针锚点与三栏布局。
+- **浮层窗口**：每块显示器一扇内部窗口（不在 `WINDOW_NAMES`、不写几何、不占任务栏）：
+  - 透明、`alwaysOnTop('screen-saver')`、`focusable: false`、`showInactive()`；
+  - `setIgnoreMouseEvents(true, { forward: true })`（透明 ≠ 穿透）；
+  - **不做 `setContentProtection`**：WDA 会让 RustDesk / 远程桌面 / 屏幕共享完全看不到浮层；
+  - **进入操作模式后持续在场、实时更新**：不再在截屏时隐藏，模型截图会带上浮层；
+  - `backgroundThrottling: false`（光标 30fps 跟手）。
+  - **出现时机**：授权（`/computer`）本身不建浮层；第一次工具调用（截图 / 读窗口 / 动作）
+    才创建并显示；此后一直保持，直到用户停止 / Agent 调 `computer_stop` / 会话结束。
+- **视觉**：虚拟光标（`computer-use.cursor`）跟随真实指针，光环
+  `computer-use-cursor-pulse` + 拖尾；点击 / 拖拽 / 滚轮涟漪
+  `computer-use-click-ripple`；**顶部光谱流光带**（与「流光提醒」同款：
+  `.cu-glow-bloom` 呼吸 `computer-use-glow-breathe` + `.cu-glow-halo` / `.cu-glow-line`
+  流转 `computer-use-glow-spectrum`）在操作期间持续播放，每个动作再短暂增亮一档；
+  `prefers-reduced-motion` 下降级为静态。原生系统指针保留（虚拟光标是光环 + 拖尾，
+  不替换系统光标）。
+- **操作过程面板（顶部）**：屏幕顶部居中一扇穿透窗（`computer-use.hud`，560×116、`y = display.y + 20`），
+  `● 正在操作` + 第 N / 上限步，下面是**这一步在干什么**
+  （`computer-use.hud-text`，如「正在点击『保存』」）与最近 **2** 步历史
+  （`computer-use.hud-step`，第二行更淡）；每一步都带语义图标
+  （`.hud-current-icon` / `.hud-history-icon`：截图 = Scan、点击 = MousePointerClick、
+  移动 = MousePointer2、键盘 = Keyboard、窗口 = AppWindow、UI = 对应控件图标、等待 = Timer）。
+  **历史分组**：连续的同一 `action + summary` 合并为一条并在右侧显示 `×N`
+  （`.hud-repeat`），中间隔了别的步骤就保留为新的一条 —— 不刷屏、也不丢时间顺序。
+  心跳 `computer-use-hud-heartbeat`；空闲显示「等待下一步…」。
+  **不显示运行时长、坐标 / 矩形 / 输入文字 / 截图内容**。
+  视觉走「安静的状态仪器」：状态行 / 当前步骤 / 最近两步三层，无分隔线与色块；唯一装饰是贴顶
+  1px 光谱细线（`::before`）。底色用 `--bg-overlay` 跟随明暗档（浅色档白卡、深色档深卡），
+  不能用写死深色的 `--bg-elevated` fallback（浅色主题下会成为「黑板看不清」）。
+- **截图锚点**：`computer-use-overlay.png`（`?layer=overlay&preview=1`，
+  `computer-use.root` / `.glow` / `.glow-band` / `.cursor` / `.cursor-ring`、
+  `computer-use-glow-breathe` 与 `computer-use-glow-spectrum` 动画名）、
+  `computer-use-hud.png`（`?layer=hud&preview=1`，`computer-use.hud` / `.hud-title` /
+  `.hud-text` / `.hud-step` / `.hud-current-icon` / `.hud-history-icon` / `.hud-repeat`
+  与心跳动画名）、`settings-computer-use.png`（`?page=computer-use`，各 `computer-use.*`
+  字段锚点）。原生断言覆盖：可见、置顶、不可聚焦、鼠标穿透、**内容保护必须为 false**、
+  过程面板贴在显示器顶部（不是底部）。
+- **停止入口**：Agent 的 `computer_stop` / 状态条按钮 / 托盘「停止 Computer Use」/
+  `Ctrl+Alt+Shift+Esc`（仅会话期间注册）。用户移动鼠标 / 键盘**不是**停止入口。
+  只有 Agent 主动退出会把主界面带到前台（显示 + 从最小化恢复 + 激活，并切回刚完成任务的
+  会话）；其余停止入口保持用户当前应用焦点不变。

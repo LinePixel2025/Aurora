@@ -54,6 +54,7 @@ import WindowCaption from '../shared/components/WindowCaption.vue'
 import ComposerAttachments from './components/ComposerAttachments.vue'
 import ComposerContextBar from './components/ComposerContextBar.vue'
 import ComposerPermissionSelect from './components/ComposerPermissionSelect.vue'
+import ComputerUseStatusBar from './components/ComputerUseStatusBar.vue'
 import SlashCommandMenu from './components/SlashCommandMenu.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import JobPanel from './components/JobPanel.vue'
@@ -100,6 +101,7 @@ import { isTtsConfigured } from '../shared/tts-config.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
 import { ArrowUp, Mic, PanelLeft, Trash2 } from '@aurora/shared/browser'
+import type { ComputerUseEvent, ComputerUseStatus } from '@aurora/shared'
 
 const chat = useChat('chat', 'main')
 const { catalog: centerCatalog } = useCenterOfficialCatalog()
@@ -891,6 +893,9 @@ onMounted(() => {
   offPluginOpenPanel = window.aurora.plugins.onOpenPanel((event) => {
     openPluginPanelById(event.pluginId, event.panelId)
   })
+  // Computer Use（v39）：状态条 / 操作过程面板的实时状态与动作推送
+  offComputerUseEvent = window.aurora.computerUse.onEvent(onComputerUseEvent)
+  void refreshComputerUseStatus()
   document.addEventListener('pointerdown', onComposerPointerDown)
   document.addEventListener('keydown', onDocumentEscape)
   // 窗口缩放 → 重算两侧栏的生效宽度（宽度记忆是 px，主区下限靠 viewportWidth 兜）
@@ -921,6 +926,8 @@ onUnmounted(() => {
   offAgentStatus = null
   offPluginOpenPanel?.()
   offPluginOpenPanel = null
+  offComputerUseEvent?.()
+  offComputerUseEvent = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
   window.removeEventListener('resize', onViewportResize)
@@ -1692,8 +1699,38 @@ async function onPaste(event: ClipboardEvent): Promise<void> {
   keepComposerFocus()
 }
 
+/** `/computer` 注入的显式指令前缀：授权之外，还要求模型优先使用 Computer Use。 */
+const COMPUTER_USE_PROMPT = '请使用 Computer Use 工具操作电脑，完成：'
+
+/**
+ * 识别 `/computer` 命令前缀（可带任务）。
+ *
+ * 斜杠菜单选中走 `applySlash`；用户直接敲 Enter 时也必须识别 —— 否则半截命令会被当成
+ * 普通文本发给模型。返回 `null` 表示不是这条命令，空串表示只授权、不带任务。
+ */
+function computerUseTaskOf(text: string): string | null {
+  const prefix = '/computer'
+  if (!text.startsWith(prefix)) return null
+  const rest = text.slice(prefix.length)
+  if (rest !== '' && !/^\s/.test(rest)) return null
+  return rest.trim()
+}
+
 async function send(): Promise<void> {
-  const text = input.value.trim()
+  let text = input.value.trim()
+  const computerUseTask = computerUseTaskOf(text)
+  if (computerUseTask !== null) {
+    // 授权与任务一次完成；失败时保留输入内容，用户改完原因可以直接重发。
+    if (!(await startComputerUse())) return
+    if (computerUseTask === '') {
+      input.value = ''
+      void nextTick(autoGrow)
+      focusComposerWithComputerUsePrompt()
+      return
+    }
+    // 显式指令跟着任务一起发：/computer 不只是一次授权，而是「要求用 Computer Use 做这件事」。
+    text = `${COMPUTER_USE_PROMPT}${computerUseTask}`
+  }
   if (text === '' && attachments.value.length === 0) return
   // 发送是「这一句结束了」的动作：输入区四个浮层一并收起（别让菜单悬在刚清空的输入框上）
   openFlyout.value = null
@@ -1817,6 +1854,132 @@ async function setPermission(mode: PermissionMode): Promise<void> {
   if (!ok) chatError.value = settingsStore.error
 }
 
+// ── Computer Use（v39，docs/06 §28）：用户显式授权后才让 Agent 操作桌面 ──
+//
+// 入口 = 输入框斜杠命令 `/computer`（2026-10-31）。工具行的「操作电脑」开关与「开始操作」
+// 确认步骤都已删除：命令本身就是授权动作，授权后 Agent 第一次调用工具时浮层才出现。
+
+const computerUseStatus = ref<ComputerUseStatus | null>(null)
+let offComputerUseEvent: (() => void) | null = null
+
+/** 当前模型是否支持图片输入（Computer Use 的第二道前提）。 */
+const computerUseVision = computed(() => {
+  const settings = settingsStore.settings
+  if (settings === null) return false
+  const provider = settings.llm.providers[settings.llm.active]
+  return provider === undefined ? false : resolveModelParams(provider).vision === true
+})
+
+/** 命令是否可用：全局开启 + 多模态 + 非只读档。不可用时 `/computer` 不进候选。 */
+const computerUseEligible = computed(
+  () =>
+    settingsStore.settings?.computerUse.enabled === true &&
+    computerUseVision.value &&
+    permissionMode.value !== 'readonly',
+)
+
+async function refreshComputerUseStatus(): Promise<void> {
+  const result = await window.aurora.computerUse.status()
+  if (result.ok) computerUseStatus.value = result.value
+}
+
+/** 不可用的原因（`/computer` 的失败提示；可用时返回 null）。 */
+function computerUseUnavailableReason(): string | null {
+  if (settingsStore.settings?.computerUse.enabled !== true) {
+    return 'Computer Use 未启用：请先在设置页打开总开关'
+  }
+  if (!computerUseVision.value) {
+    return '当前模型未开启图片输入：请到「AI 模型」页勾选「支持图片输入」'
+  }
+  if (permissionMode.value === 'readonly') return '只读档下不能使用 Computer Use'
+  return null
+}
+
+/**
+ * 建立本会话授权；返回是否成功。
+ *
+ * 失败统一走左上提示条：输入框工具行已经没有入口卡片，错误不能只存在某个浮层里。
+ */
+async function startComputerUse(): Promise<boolean> {
+  const reason = computerUseUnavailableReason()
+  if (reason !== null) {
+    flashProjectNotice('error', reason)
+    return false
+  }
+  const result = await window.aurora.computerUse.start({ sessionId: sessionId.value })
+  if (!result.ok) {
+    flashProjectNotice('error', result.message)
+    return false
+  }
+  computerUseStatus.value = result.value
+  return true
+}
+
+/**
+ * 授权成功后要让用户明确「Agent 接下来会操作电脑」。
+ *
+ * 2026-10-31：`/computer` 不再只是「授权」——它会在输入框里放一句**显式指令**
+ * （见 `COMPUTER_USE_PROMPT`），让模型把 Computer Use 当作首选而不是「有权限但不用」。
+ */
+
+/** 授权成功后：提示 + 把显式指令预填进输入框并聚焦。 */
+function focusComposerWithComputerUsePrompt(): void {
+  input.value = COMPUTER_USE_PROMPT
+  flashProjectNotice('ok', '已授权操作电脑，请补充要完成的任务')
+  void nextTick(() => {
+    const el = textareaEl.value
+    if (el === null) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+    autoGrow()
+  })
+}
+
+/** 斜杠命令选中：授权并把显式指令放进输入框。 */
+async function activateComputerUse(): Promise<void> {
+  if (!(await startComputerUse())) return
+  focusComposerWithComputerUsePrompt()
+}
+
+async function stopComputerUse(): Promise<void> {
+  const result = await window.aurora.computerUse.stop({
+    sessionId: sessionId.value,
+    reason: 'user',
+  })
+  if (result.ok) computerUseStatus.value = result.value
+}
+
+function onComputerUseEvent(event: ComputerUseEvent): void {
+  if (event.type === 'started' || event.type === 'ended') {
+    void refreshComputerUseStatus()
+    return
+  }
+  if (event.type === 'action') {
+    const current = computerUseStatus.value
+    if (current === null) return
+    const recent = current.recentActions ?? []
+    const head = recent[0]
+    const nextRecent =
+      head !== undefined && head.action === event.action && head.summary === event.summary
+        ? [{ ...head, count: head.count + 1 }, ...recent.slice(1)]
+        : [{ action: event.action, summary: event.summary, count: 1 }, ...recent].slice(0, 6)
+    computerUseStatus.value = {
+      ...current,
+      actions: event.step,
+      maxActions: event.maxSteps,
+      lastAction: event.summary,
+      lastActionKind: event.action,
+      lastActionAt: event.at,
+      recentActions: nextRecent,
+    }
+  }
+}
+
+// 切换会话时刷新：授权是会话级的，另一条会话的状态条要显示「另一会话正在操作」
+watch(sessionId, () => {
+  void refreshComputerUseStatus()
+})
+
 // ── 斜杠命令（`/`） ──
 
 /** Skill 清单（`skills:list`，只显示 enabled 的；渲染层不缓存第二份） */
@@ -1841,7 +2004,9 @@ watch(
 const slashItems = computed<SlashItem[]>(() => {
   const query = slashQuery.value
   if (query === null || slashDismissed.value) return []
-  return filterSlashItems(query, slashSkills.value, streaming.value, pluginsStore.commands)
+  const items = filterSlashItems(query, slashSkills.value, streaming.value, pluginsStore.commands)
+  // `/computer` 只在满足三层前提时出现：条件不满足时列出来只会点了报错。
+  return computerUseEligible.value ? items : items.filter((item) => item.id !== 'command:computer')
 })
 
 const slashOpen = computed(() => slashQuery.value !== null && slashItems.value.length > 0)
@@ -1972,6 +2137,9 @@ function applySlash(item: SlashItem): void {
       break
     case 'settings':
       windowStore.show('settings')
+      break
+    case 'computer':
+      void activateComputerUse()
       break
     default:
       break
@@ -2247,6 +2415,12 @@ async function markGuideDone(): Promise<void> {
 
       <footer v-if="view === 'chat'" class="composer">
         <div class="composer-inner">
+          <!-- Computer Use 实时状态条（v39）：动作 / 步数 / 时长 / 停止 -->
+          <ComputerUseStatusBar
+            :status="computerUseStatus"
+            :session-id="sessionId"
+            @stop="stopComputerUse"
+          />
           <div ref="composerBoxEl" class="composer-box glass-surface-strong" :class="{ streaming }">
             <!--
               附件条（2026-10-18，docs/07 §2.3）：在**输入卡内部**、textarea 上方。

@@ -26,6 +26,7 @@ import {
   dialog,
   globalShortcut,
   nativeTheme,
+  powerMonitor,
   screen,
   session,
   shell,
@@ -233,6 +234,13 @@ import {
   type SettingsToolRegistry,
 } from './tools/index.js'
 import { registerBrowserTools } from './tools/index.js'
+import { registerComputerUseTools } from './tools/index.js'
+import { ComputerUseService } from './computer-use/service.js'
+import { ComputerUseInputHost } from './computer-use/input-host.js'
+import { DesktopComputerUsePort } from './computer-use/port.js'
+import { composeRunProfiles, computerUseRunProfile } from './computer-use/run-profile.js'
+import { canHoldComputerUseSession } from './computer-use/session-policy.js'
+import { shouldBringAuroraToFront } from './computer-use/foreground.js'
 // 插件系统（docs/14）：贡献在清单里声明，运行在独立 utilityProcess（非 OS 沙箱）
 import { PluginManager } from './plugins/manager.js'
 import { readPluginPanelData } from './plugins/panel-data.js'
@@ -264,7 +272,7 @@ import { createNodeImageIo, createViewImagePort } from './tools/image-read-port.
 import { OWNED_IMAGE_SUBDIRS } from './tools/image-read.js'
 import { createScreenshotPort } from './tools/screenshot-port.js'
 // 图片输入开关的**唯一判据**（docs/06 §3.1 / §25）：图像工具门控与附件降级共用同一份实现
-import { visionEnabled } from './vision.js'
+import { visionEnabled, visionEnabledForSession } from './vision.js'
 // 附件准备（docs/07 §2.3）：`chat:send` 与 Center 远程会话共用同一条链路
 import { prepareAttachments, type AttachmentDigest } from './attachment-prepare.js'
 import { selectExpiredFiles } from './tools/image-store.js'
@@ -440,6 +448,16 @@ let notifications: NotificationService | undefined
  * 排队与去重因此只有一份实现。
  */
 let bannerService: BannerService | undefined
+/**
+ * Computer Use（v39，docs/06 §28）：PowerShell 宿主 + 会话服务 + 端口 + 工具装配器。
+ * 只在用户显式开启且当前模型有视觉能力时才注册工具；会话授权见 ComputerUseService。
+ */
+let computerUseService: ComputerUseService | undefined
+let computerUseHost: ComputerUseInputHost | undefined
+let computerUsePort: DesktopComputerUsePort | undefined
+let computerUseTools: { sync(): string[] } | undefined
+/** 会话期间的全局停止快捷键是否已注册（失败时界面提示改用对话窗 / 托盘停止）。 */
+let computerUseStopRegistered = false
 let proactiveScheduler: ProactiveScheduler | undefined
 // 自动化引擎（docs/13）：定义与历史存 `<userData>/automations/`，内置课前提醒由引擎承接
 let automationStore: AutomationStore | undefined
@@ -1650,6 +1668,98 @@ async function bootstrap(): Promise<void> {
       logger: logger.child('tools'),
     }),
   })
+  // 7.1.3c Computer Use（v39，docs/06 §28）：真实桌面操控。
+  //     宿主是一个常驻 PowerShell（NDJSON），懒启动；窗口浮层由 WindowManager 创建。
+  //     工具注册条件 = Windows + computerUse.enabled + 当前模型 vision + 非只读档；
+  //     会话授权是请求级（computerUseRunProfile），不在这里。
+  {
+    const windowManager = windows
+    if (windowManager === undefined) throw new Error('WindowManager 尚未装配')
+    computerUseHost = new ComputerUseInputHost({
+      dir: join(userData, 'computer-use'),
+      logger: logger.child('computer-use'),
+      onCrash: (reason) => computerUseService?.fail(reason),
+    })
+    const service = new ComputerUseService({
+      settings: () => settings!.get(),
+      logger: logger.child('computer-use'),
+      overlay: {
+        show: (displays) => windowManager.showComputerUseOverlays(displays),
+        hide: () => windowManager.hideComputerUseOverlays(),
+        emit: (event) => {
+          windowManager.emitComputerUse(event)
+          if (event.type === 'started') {
+            registerComputerUseStopHotkey()
+            tray?.refresh()
+          } else if (event.type === 'ended') {
+            unregisterComputerUseStopHotkey()
+            tray?.refresh()
+          }
+        },
+        applyConfig: (config) => windowManager.applyComputerUseConfig(config),
+        diagnostics: () => {
+          const diagnostics = windowManager.getComputerUseDiagnostics()
+          return { visible: diagnostics.visible, displays: diagnostics.displays }
+        },
+      },
+      visionForSession: (sessionId) =>
+        visionEnabledForSession(settings!.get(), sessions?.modelOverrideOf(sessionId)),
+      visionEnabled: () => visionEnabled(centerSettings.get()),
+      permissionMode: () => resolvePermissionMode(centerSettings.get()),
+      displays: () =>
+        screen.getAllDisplays().map((display) => ({
+          id: display.id,
+          bounds: {
+            x: display.bounds.x,
+            y: display.bounds.y,
+            width: display.bounds.width,
+            height: display.bounds.height,
+          },
+        })),
+      cursorPoint: () => screen.getCursorScreenPoint(),
+      onStopped: (sessionId, reason) => {
+        computerUsePort?.clearSession(sessionId)
+        // v39 优化（docs/06 §28）：Agent 主动退出 = 任务完成，把主界面带回前台。
+        // 只有 `agent` 抢焦点；用户自己停 / 设置页改配置 / 锁屏 / 退出都不打扰。
+        if (shouldBringAuroraToFront(reason)) {
+          const manager = windows
+          if (manager !== undefined) {
+            manager.bringToFront('chat')
+            // 用户可能已经切到别的会话在看别的东西；把主界面切回**刚完成任务**的这条，
+            // 否则「调前台」只是亮出一段不相干的对话。渲染层同 id 时是 early-return，
+            // 不会重载正在收尾的这次回复。
+            //
+            // 先等本次加载完成再推：主界面从未打开过时 `bringToFront()` 会现场建窗，
+            // 立刻 `sendTo()` 会推给还没挂载监听器的页面（与 `showWithPayload()` 同款坑）。
+            void manager.whenLoaded('chat').then(() => {
+              manager.sendTo('chat', IPC.chat.remoteActivate, { sessionId })
+            })
+          }
+        }
+      },
+    })
+    computerUseService = service
+    computerUsePort = new DesktopComputerUsePort({
+      settings: () => settings!.get(),
+      service,
+      host: computerUseHost!,
+      logger: logger.child('computer-use'),
+      screenshotDir: join(userData, 'screenshots'),
+    })
+    computerUseTools = registerComputerUseTools({
+      tools,
+      logger: logger.child('tools'),
+      port: computerUsePort,
+      enabled: () => settings!.get().computerUse.enabled,
+      available: () => process.platform === 'win32',
+      visionEnabled: () => visionEnabled(centerSettings.get()),
+      permissionMode: () => resolvePermissionMode(centerSettings.get()),
+      onDisabled: () => computerUseService?.stop('settings'),
+    })
+    // 锁屏 / 休眠：桌面不可见，失败关闭（用户输入干扰不触发这里）。
+    powerMonitor.on('lock-screen', () => computerUseService?.stop('system'))
+    powerMonitor.on('suspend', () => computerUseService?.stop('system'))
+  }
   // 7.1.4 Agent 内核自带工具（docs/06 §18/§19）：todo_write / todo_read / task。
   //     与 set_setting / 扩展工具七件套同级——不受 `agent.tools.enabled` 门控
   //     （todo / task 是 Agent 自身能力，不是电脑操控）。
@@ -2084,7 +2194,22 @@ async function bootstrap(): Promise<void> {
     // （无人值守：不反问、自己决定、做完汇报）并摘掉写类自动化工具
     // （create / update / delete / run）——「自动化 → 会话 → 自动化」不得成为闭环。
     // 判据是 origin 或会话 id 前缀；普通会话返回 undefined，提示词与工具面与从前逐字一致。
-    runProfileFor: (context) => fileAwarenessRunProfile(context) ?? automationRunProfile(context),
+    // 运行档（v0.2.8 / v39）：自动化换人设并摘写类工具；Computer Use 未授权时
+    // 只留 `computer_start`（Agent 自行进入的入口），授权后换成「动作工具 + computer_stop」。
+    // 注册表仍是进程级的，这里只做请求级视图。
+    runProfileFor: (context) =>
+      composeRunProfiles(
+        fileAwarenessRunProfile(context) ?? automationRunProfile(context),
+        computerUseRunProfile({
+          enabled: settings!.get().computerUse.enabled,
+          vision: visionEnabledForSession(
+            settings!.get(),
+            sessions?.modelOverrideOf(context.sessionId),
+          ),
+          authorized: computerUseService?.isAuthorized(context.sessionId) === true,
+          eligible: canHoldComputerUseSession(context.sessionId),
+        }),
+      ),
   })
   agent = new DesktopAgentHost({
     settings,
@@ -3104,6 +3229,8 @@ async function bootstrap(): Promise<void> {
       // 电脑操控工具（docs/06 §11）+ `set_setting`（docs/06 §12）：开关 / 超时 / 上限改完立即生效
       // ——重建工具实例，工具表变化会进下一次请求的系统提示词，无需重启。
       syncToolRegistries()
+      // Computer Use（v39）：关闭总开关 / 切只读档立即结束会话；视觉设置热更新
+      computerUseService?.reconfigure(next)
       tray?.refresh()
       // 感知文件夹 / 科目 / 阈值变更后，让分类管线按新配置重新武装
       syncClassification()
@@ -3121,6 +3248,44 @@ async function bootstrap(): Promise<void> {
   deps.terminal = terminalService
   // 内置浏览器的两条回执通道（browser:agentReport / agentStop）：管理器在 7.1.2b 已建好
   if (browserAgent !== undefined) deps.browserAgent = browserAgent
+  // Computer Use（v39）：start/stop 只由 `/computer` 斜杠命令 / 状态条经 IPC 调用
+  if (
+    computerUseService !== undefined &&
+    computerUsePort !== undefined &&
+    computerUseHost !== undefined
+  ) {
+    const service = computerUseService
+    const port = computerUsePort
+    const host = computerUseHost
+    deps.computerUse = {
+      status: () => service.status(),
+      start: (request) => service.start(request.sessionId),
+      stop: (request) => service.stop(request?.reason ?? 'user'),
+      apps: () => port.apps(),
+      diagnose: async () => {
+        try {
+          const info = await host.diagnose()
+          return {
+            platformSupported: process.platform === 'win32',
+            helperReady: true,
+            powershellVersion: info.powershell,
+            uiaAvailable: info.uia,
+            displayCount: screen.getAllDisplays().length,
+            protectedApps: [],
+          }
+        } catch (error) {
+          return {
+            platformSupported: process.platform === 'win32',
+            helperReady: false,
+            uiaAvailable: false,
+            displayCount: screen.getAllDisplays().length,
+            protectedApps: [],
+            error: error instanceof Error ? error.message : String(error),
+          }
+        }
+      },
+    }
+  }
   desktopDeps = deps
   disposeIpc = registerIpc(deps)
   // IPC handler 已注册：现在才允许创建桌面小组件窗口（docs/14 §2.1，2026-10-24）。
@@ -3314,7 +3479,7 @@ async function runCapture(dir: string): Promise<void> {
   const useCaptureStub = async (): Promise<void> => {
     captureStub ??= await startStubLlmServer(logger?.child('capture-llm'))
     // `llm.providers` 是 record：给新 id 是「新增」，既有的 capture provider 不受影响
-    settings?.update({
+    await settings?.update({
       llm: {
         active: 'capture-stub',
         providers: {
@@ -3391,6 +3556,47 @@ async function runCapture(dir: string): Promise<void> {
     act: chatAutoTitleAct('请帮我整理高数错题'),
     check: CHAT_AUTO_TITLE_CHECK,
   }
+
+  const chatComputerUseTarget: CaptureTarget = {
+    // Computer Use 授权入口（v39，2026-10-31 改为斜杠命令）：先打开总开关 + 当前模型 vision，
+    // 再在输入框敲 `/computer` 唤起候选。只验证入口与候选，不真的 start（start 会占用会话）。
+    name: 'chat',
+    file: 'chat-computer-use.png',
+    prepare: async () => {
+      await useCaptureStub()
+      const snapshot = settings?.get()
+      if (snapshot === undefined) return
+      const provider = snapshot.llm.providers[snapshot.llm.active]
+      if (provider === undefined) return
+      const model = provider.model
+      await settings?.update({
+        computerUse: { ...snapshot.computerUse, enabled: true },
+        llm: {
+          ...snapshot.llm,
+          providers: {
+            ...snapshot.llm.providers,
+            [snapshot.llm.active]: {
+              ...provider,
+              modelParams: {
+                ...(provider.modelParams ?? {}),
+                [model]: {
+                  ...(provider.modelParams?.[model] ?? {
+                    reasoningEffort: 'auto',
+                    contextWindow: 0,
+                  }),
+                  vision: true,
+                },
+              },
+            },
+          },
+        },
+      })
+    },
+    act: '(async () => { const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); await wait(350); const el = document.querySelector("textarea.composer-input"); if (el === null) return false; const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set; setter.call(el, "/computer"); el.dispatchEvent(new Event("input", { bubbles: true })); await wait(260); return true; })()',
+    check:
+      "(() => { const item = document.querySelector('[data-field=\"chat.slash-computer\"]'); const toggle = document.querySelector('[data-field=\"chat.computer-use\"]'); const start = document.querySelector('[data-field=\"chat.computer-use-start\"]'); const text = item === null ? '' : item.textContent || ''; return { pass: item !== null && text.indexOf('/computer') !== -1 && toggle === null && start === null, text, item: item !== null, toggle: toggle !== null, start: start !== null }; })()",
+  }
+
   // 场景级过滤：`AURORA_CAPTURE_ONLY=<文件名子串, ...>`；特殊值 `failed` = 只重跑上次
   // `report.json` 里没过的那几张（修完一轮只重验红的，不必全量重跑五六十张）。
   // ⚠️ `failed` 落在"上次全绿"时得到的是**空数组**，那表示"没有要重验的"，
@@ -3415,6 +3621,7 @@ async function runCapture(dir: string): Promise<void> {
       chatTraceFoldTarget,
       chatBurstTarget,
       chatAutoTitleTarget,
+      chatComputerUseTarget,
       // 记忆库独立窗口放在性能场景之后：多一个可见渲染窗口会污染 burst 的帧间隔读数。
       {
         name: 'memory',
@@ -3572,6 +3779,64 @@ async function runCapture(dir: string): Promise<void> {
             ...state,
           }
         },
+      },
+      // Computer Use（v39，docs/06 §28）：虚拟光标 + 流光浮层、顶部操作过程面板、设置页。
+      {
+        name: 'computer-use-overlay',
+        file: 'computer-use-overlay.png',
+        query: { layer: 'overlay', preview: '1' },
+        check:
+          "(() => { const root = document.querySelector('[data-field=\"computer-use.root\"]'); const glow = document.querySelector('[data-field=\"computer-use.glow\"]'); const band = document.querySelector('[data-field=\"computer-use.glow-band\"]'); const bloom = document.querySelector('.cu-glow-bloom'); const halo = document.querySelector('.cu-glow-halo'); const line = document.querySelector('.cu-glow-line'); const bloomStyle = bloom === null ? null : getComputedStyle(bloom); const lineStyle = line === null ? null : getComputedStyle(line); const cursor = document.querySelector('[data-field=\"computer-use.cursor\"]'); const ring = document.querySelector('[data-field=\"computer-use.cursor-ring\"]'); return { pass: root !== null && glow !== null && band !== null && bloom !== null && halo !== null && line !== null && bloomStyle !== null && bloomStyle.animationName.indexOf('computer-use-glow-breathe') !== -1 && lineStyle !== null && lineStyle.animationName.indexOf('computer-use-glow-spectrum') !== -1 && cursor !== null && ring !== null, bloomAnimation: bloomStyle === null ? '' : bloomStyle.animationName, lineAnimation: lineStyle === null ? '' : lineStyle.animationName, cursor: cursor !== null, ring: ring !== null }; })()",
+        nativeCheck: () => {
+          const diagnostics = manager.getComputerUseDiagnostics()
+          const overlay = diagnostics.overlays[0]
+          return {
+            pass:
+              overlay !== undefined &&
+              overlay.visible &&
+              overlay.alwaysOnTop &&
+              overlay.focusable === false &&
+              overlay.mousePassthrough &&
+              // 回归护栏：内容保护会让远程桌面看不到浮层，必须是 false（改用截屏前隐藏）
+              overlay.contentProtected === false,
+            ...diagnostics,
+          }
+        },
+      },
+      {
+        name: 'computer-use-hud',
+        file: 'computer-use-hud.png',
+        query: { layer: 'hud', preview: '1' },
+        check:
+          "(() => { const hud = document.querySelector('[data-field=\"computer-use.hud\"]'); const title = document.querySelector('[data-field=\"computer-use.hud-title\"]'); const text = document.querySelector('[data-field=\"computer-use.hud-text\"]'); const items = document.querySelectorAll('[data-field=\"computer-use.hud-step\"]'); const currentIcon = document.querySelector('.hud-current-icon'); const historyIcons = document.querySelectorAll('.hud-history-icon'); const repeats = document.querySelectorAll('.hud-repeat'); const timer = document.querySelector('.hud-time'); const dot = document.querySelector('.hud-dot'); const style = dot === null ? null : getComputedStyle(dot); const titleText = title === null ? '' : title.textContent || ''; const stepText = text === null ? '' : text.textContent || ''; return { pass: hud !== null && title !== null && titleText.indexOf('正在操作') !== -1 && text !== null && stepText.indexOf('正在') !== -1 && stepText.indexOf('(') === -1 && items.length >= 2 && currentIcon !== null && historyIcons.length >= 2 && repeats.length >= 1 && timer === null && style !== null && style.animationName.indexOf('computer-use-hud-heartbeat') !== -1, title: titleText, text: stepText, history: items.length, historyIcons: historyIcons.length, repeats: repeats.length, hasTimer: timer !== null, animation: style === null ? '' : style.animationName }; })()",
+        nativeCheck: () => {
+          const hud = manager.getComputerUseDiagnostics().hud
+          const display =
+            hud.bounds === undefined ? undefined : screen.getDisplayMatching(hud.bounds)
+          // 「置顶显示操作过程」：窗口必须贴在显示器**顶部**（旧底部 HUD 会在这里变红）。
+          const topPinned =
+            hud.bounds !== undefined &&
+            display !== undefined &&
+            hud.bounds.y - display.bounds.y <= 200
+          return {
+            pass:
+              hud.exists &&
+              hud.visible &&
+              hud.focusable === false &&
+              hud.mousePassthrough &&
+              hud.contentProtected === false &&
+              topPinned,
+            topPinned,
+            ...hud,
+          }
+        },
+      },
+      {
+        name: 'settings',
+        file: 'settings-computer-use.png',
+        query: { page: 'computer-use' },
+        check:
+          "(() => { const fields = ['computer-use.enabled', 'computer-use.showVirtualCursor', 'computer-use.glow', 'computer-use.showHud', 'computer-use.moveDurationMs', 'computer-use.typingDelayMs', 'computer-use.screenshotMaxWidth', 'computer-use.maxActions', 'computer-use.idleStopMinutes', 'computer-use.allowedApps', 'computer-use.deniedApps']; const missing = fields.filter((name) => document.querySelector('[data-field=\"' + name + '\"]') === null); return { pass: missing.length === 0, missing, title: (document.querySelector('.page-title') || {}).textContent || '' }; })()",
       },
     ],
     process.env['AURORA_CAPTURE_WINDOWS'],
@@ -6296,6 +6561,10 @@ function createSummarizer(
 async function shutdown(): Promise<void> {
   logger?.info('Aurora 退出中')
   disposeIpc?.()
+  // Computer Use 先停：隐藏浮层、释放合成输入、结束会话（宿主 kill 前会 release_all）
+  unregisterComputerUseStopHotkey()
+  computerUseService?.dispose()
+  void computerUseHost?.stop()
   // 内置浏览器会话要先收掉：detach 调试器、停空闲计时器、推 released（标签交给用户）
   browserAgent?.dispose()
   // PTY shell 先收掉：孤儿 conpty 进程会一直挂着，比任何落盘失败都难看
@@ -6637,6 +6906,34 @@ async function startCenterDeviceLogin(
   return ok({ started: true, verifyUrl: started.verifyUrl })
 }
 
+function registerComputerUseStopHotkey(): void {
+  if (computerUseStopRegistered) return
+  try {
+    computerUseStopRegistered = globalShortcut.register('Control+Alt+Shift+Esc', () => {
+      logger?.info('Computer Use 全局停止快捷键触发')
+      computerUseService?.stop('user')
+    })
+  } catch (error) {
+    logger?.warn('Computer Use 停止快捷键注册失败', { error: String(error) })
+    computerUseStopRegistered = false
+  }
+  computerUseService?.setStopHotkeyAvailable(computerUseStopRegistered)
+  if (!computerUseStopRegistered) {
+    logger?.warn('Computer Use 停止快捷键不可用：请用对话窗状态条 / 托盘停止')
+  }
+}
+
+function unregisterComputerUseStopHotkey(): void {
+  if (!computerUseStopRegistered) return
+  try {
+    globalShortcut.unregister('Control+Alt+Shift+Esc')
+  } catch {
+    // 退出路径忽略
+  }
+  computerUseStopRegistered = false
+  computerUseService?.setStopHotkeyAvailable(false)
+}
+
 function syncToolRegistries(): void {
   computerTools?.sync()
   settingsTool?.sync()
@@ -6645,6 +6942,8 @@ function syncToolRegistries(): void {
   browserTools?.sync()
   // 图像工具（docs/06 §25）：换模型 / 改「支持图片输入」开关后即时注册或摘除
   imageTools?.sync()
+  // Computer Use（v39，docs/06 §28）：开关 / 平台 / vision / 权限档变化即时生效
+  computerUseTools?.sync()
   agentCoreTools?.sync()
   // ClassIsland 提醒工具（v3）：端点填了 / 改了就即时注册或摘除（无需重启）
   classIslandTools?.sync()

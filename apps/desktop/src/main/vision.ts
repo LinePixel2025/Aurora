@@ -11,7 +11,12 @@
  * 纯函数、不 import electron：`ipc.ts`（要弹文件对话框）与工具装配器都能用它，
  * 也便于单测直接喂配置。
  */
-import { resolveModelParams, type Settings } from '@aurora/shared'
+import {
+  resolveModelParams,
+  resolveSessionModel,
+  type SessionModelOverrideLike,
+  type Settings,
+} from '@aurora/shared'
 
 /**
  * 取值口径：`resolveModelParams(llm.providers[llm.active]).vision`（v23 起下沉到
@@ -26,6 +31,26 @@ export function visionEnabled(settings: Settings): boolean {
     const provider = llm.providers[llm.active]
     if (provider === undefined) return false
     return resolveModelParams(provider).vision === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 会话生效模型是否支持图片输入（Computer Use v39 用）。
+ *
+ * 会话级模型覆盖优先于全局档：`resolveSessionModel` 是唯一解析口径，覆盖失效时
+ * 静默回落全局；读不到 provider 一律按关处理（与 `visionEnabled` 同款保守口径）。
+ */
+export function visionEnabledForSession(
+  settings: Settings,
+  override: SessionModelOverrideLike | null | undefined,
+): boolean {
+  try {
+    const effective = resolveSessionModel(settings.llm, override ?? undefined)
+    const provider = settings.llm.providers[effective.providerId]
+    if (provider === undefined) return false
+    return resolveModelParams(provider, effective.model).vision === true
   } catch {
     return false
   }
