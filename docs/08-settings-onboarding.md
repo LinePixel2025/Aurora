@@ -303,10 +303,10 @@
   // 真正的会话授权由用户 /computer 或 Agent computer_start 逐会话建立，不写配置。
   "computerUse": {
     "enabled": false, // 默认关闭；仅 Windows + 多模态模型 + 非只读档时生效
-    "showVirtualCursor": true, // 虚拟光标（光环 + 拖尾）；原生指针保留
+    "showVirtualCursor": true, // 虚拟光标（光环 + 拖尾，只跟 Agent 动作走）；原生指针保留
     "glow": true, // 操作期间屏幕顶部的光谱流光（与「流光提醒」同款）
     "showHud": true, // 屏幕顶部操作过程面板（当前步骤 + 最近 3 步）
-    "moveDurationMs": 160, // 鼠标平滑移动（0–1000）
+    "moveDurationMs": 160, // 鼠标平滑移动（0–1000）；也是点击前「先滑过去」的时长
     "typingDelayMs": 10, // 逐字符间隔（0–200）
     "screenshotMaxWidth": 1280, // 截图最长边（640–2560）
     "maxActions": 300, // 单会话有副作用动作上限（10–2000）

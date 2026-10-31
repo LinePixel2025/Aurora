@@ -45,7 +45,20 @@ import {
   normalizeExeName,
 } from './policy.js'
 import type { ComputerUseService } from './service.js'
-import { captureDisplay, listDisplayGeometries, primaryDisplayId } from './screenshots.js'
+import {
+  captureDisplay,
+  listDisplayGeometries,
+  physicalToDip,
+  primaryDisplayId,
+} from './screenshots.js'
+
+/**
+ * 光标到位后到合成点击之间的停顿（毫秒）。
+ *
+ * 浮层光标的 CSS 过渡约 42ms，这一步留出「看得见光标停住」的一拍，用户才会把
+ * 「移动」和「点击」看成一个先后动作，而不是一次跳变。
+ */
+const CURSOR_SETTLE_MS = 60
 
 interface WindowInfo {
   windowId: string
@@ -140,6 +153,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         `图片 ${captured.imageWidth}×${captured.imageHeight}（坐标空间 = 图片像素）。`,
       targetText,
       `鼠标：物理 (${Math.round(cursor.x)}, ${Math.round(cursor.y)}) → 图片 (${Math.round(cursorImage.x)}, ${Math.round(cursorImage.y)})。`,
+      '浮层上的光环是 Agent 自己的虚拟光标（上次落点），可能与真实指针不同；动作仍按你给的坐标执行。',
       `换算：physical = origin(${view.origin.x}, ${view.origin.y}) + 图片像素 / scale(${view.scaleX.toFixed(4)}, ${view.scaleY.toFixed(4)})。` +
         ' computer_mouse 默认按图片像素给坐标。',
       `截图路径：${captured.path}`,
@@ -191,10 +205,10 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         describeMouseAction({ action: 'move' }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
-      const landed = await this.movePointer(
-        start,
-        this.options.settings().computerUse.moveDurationMs,
-      )
+      const [landed] = await Promise.all([
+        this.movePointer(start, this.options.settings().computerUse.moveDurationMs),
+        this.glideCursor(start, this.options.settings().computerUse.moveDurationMs),
+      ])
       return {
         content: `已移动到物理 (${Math.round(landed.x)}, ${Math.round(landed.y)})。`,
         summary: '鼠标已移动',
@@ -222,7 +236,14 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         describeMouseAction({ action: input.action, button }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
-      await this.movePointer(start, 0)
+      // **先移动光标，再点击**（2026-10-31）：虚拟光标滑到落点、系统指针同步平滑移动，
+      // 两者都到位并停一拍后才合成点击 —— 屏幕上是「光环滑过去 → 涟漪亮起」。
+      const moveMs = this.options.settings().computerUse.moveDurationMs
+      const [, dip] = await Promise.all([
+        this.movePointer(start, moveMs),
+        this.glideCursor(start, moveMs),
+      ])
+      await sleep(CURSOR_SETTLE_MS, undefined)
       await this.withModifiers(input.modifiers, async () => {
         const response = await this.options.host.request<CursorPoint>('mouse_click', {
           button,
@@ -230,13 +251,10 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         })
         if (response === undefined) throw new Error('点击没有回执')
       })
-      if (view !== undefined) {
-        this.options.service.noteClick({
-          displayId: view.displayId,
-          x: input.x ?? 0,
-          y: input.y ?? 0,
-          button,
-        })
+      // 涟漪按**显示器内 DIP** 发（浮层是 DIP 坐标）：直接拿图片像素会在缩放屏上偏移。
+      const ripple = dip ?? this.dipOf(start)
+      if (ripple !== undefined) {
+        this.options.service.noteClick({ ...ripple, button })
       }
       return {
         content: `已${buttonLabel(button)}${count > 1 ? '双击' : '单击'}；指针落点物理 (${Math.round(start.x)}, ${Math.round(start.y)})。`,
@@ -253,15 +271,23 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         describeMouseAction({ action: 'drag', button: input.button }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
+      const moveMs = this.options.settings().computerUse.moveDurationMs
+      // 先把光标移到起点（看得见「去抓东西」），再按住拖动
+      await Promise.all([this.movePointer(start, moveMs), this.glideCursor(start, moveMs)])
+      await sleep(CURSOR_SETTLE_MS, undefined)
+      const dragMs = moveMs * 2
       await this.withModifiers(input.modifiers, async () => {
-        await this.options.host.request('mouse_drag', {
+        const drag = this.options.host.request('mouse_drag', {
           x: Math.round(start.x),
           y: Math.round(start.y),
           toX: Math.round(end.x),
           toY: Math.round(end.y),
           button: input.button ?? 'left',
-          durationMs: this.options.settings().computerUse.moveDurationMs * 2,
+          durationMs: dragMs,
         })
+        // 拖拽轨迹由宿主合成；虚拟光标按同一时长跟到终点（两条视线同步，不各走各的）
+        const follow = this.glideCursor(end, dragMs > 0 ? dragMs + 30 : 0)
+        await Promise.all([drag, follow])
       })
       return {
         content: `已从物理 (${Math.round(start.x)}, ${Math.round(start.y)}) 拖到 (${Math.round(end.x)}, ${Math.round(end.y)})。`,
@@ -278,7 +304,11 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         describeMouseAction({ action: 'scroll' }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
-      if (start !== undefined) await this.movePointer(start, 0)
+      if (start !== undefined) {
+        const moveMs = this.options.settings().computerUse.moveDurationMs
+        await Promise.all([this.movePointer(start, moveMs), this.glideCursor(start, moveMs)])
+        await sleep(CURSOR_SETTLE_MS, undefined)
+      }
       await this.withModifiers(input.modifiers, async () => {
         await this.options.host.request('mouse_scroll', {
           dx: input.dx ?? 0,
@@ -576,7 +606,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
    * Agent 主动建立 Computer Use 授权（`computer_start`，v39 优化）。
    *
    * 与用户敲 `/computer` 走**同一条** `service.start()`：只建立内存授权，不建浮层、
-   * 不启动光标循环（「授权 ≠ 开始操作」）。真正的门控（总开关 / 平台 / 视觉 / 只读档 /
+   * 不播光标动画（「授权 ≠ 开始操作」）。真正的门控（总开关 / 平台 / 视觉 / 只读档 /
    * 会话资格 / 同时一个会话）全部在 service 里，这里只转发 + 记审计理由。
    */
   async start(input: ComputerStartInput): Promise<ToolResult> {
@@ -730,6 +760,35 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     if (space === 'screen') return value
     if (view === undefined) throw new Error('尚未截图；窗口尺寸请先截图，或显式 space:"screen"')
     return axis === 'x' ? value / view.scaleX : value / view.scaleY
+  }
+
+  /**
+   * 把**虚拟光标**滑到物理点对应的显示器内 DIP 落点（「先移动光标，再点击」的下半句）。
+   *
+   * 物理 → DIP 走 `screen.screenToDipPoint`（多屏不同缩放下也准）；找不到显示器就返回
+   * `undefined`，调用方据此不画涟漪 —— 宁可少一圈特效，也不在错误位置画。
+   */
+  private async glideCursor(
+    physical: Point,
+    durationMs: number,
+  ): Promise<{ displayId: number; x: number; y: number } | undefined> {
+    const dip = this.dipOf(physical)
+    if (dip === undefined) return undefined
+    await this.options.service.moveCursor({ ...dip, durationMs })
+    return dip
+  }
+
+  /** 物理点 → 所在显示器的 id + 显示器内 DIP 坐标（浮层窗口的坐标空间）。 */
+  private dipOf(physical: Point): { displayId: number; x: number; y: number } | undefined {
+    let dip: Point
+    try {
+      dip = physicalToDip(physical)
+    } catch {
+      return undefined
+    }
+    const display = listDisplayGeometries().find((item) => rectContains(item.bounds, dip))
+    if (display === undefined) return undefined
+    return { displayId: display.id, x: dip.x - display.bounds.x, y: dip.y - display.bounds.y }
   }
 
   private async movePointer(point: Point, durationMs: number): Promise<Point> {

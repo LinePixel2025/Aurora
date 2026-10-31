@@ -40,7 +40,7 @@ export type ComputerUseToolName = (typeof COMPUTER_USE_TOOL_NAMES)[number]
  * 卸载 / 日志用的全集。
  *
  * 入口只建立**授权**（与用户敲 `/computer` 同一条 `service.start()`），不显示浮层、不启动
- * 光标循环；第一次动作工具调用才进入操作态（docs/06 §28「授权 ≠ 开始操作」）。
+ * 光标动画；第一次动作工具调用才进入操作态（docs/06 §28「授权 ≠ 开始操作」）。
  */
 export const COMPUTER_USE_START_TOOL_NAME = 'computer_start'
 export const COMPUTER_USE_ALL_TOOL_NAMES = [

@@ -8,6 +8,8 @@
  * - 同一时间只允许一个会话操控桌面（桌面只有一个指针与焦点）；
  * - 动作上限只计有副作用的调用；截图 / 等待不计；
  * - 事件同时驱动浮层过程面板与对话状态条，摘要只描述「正在做什么」，不含坐标 / 输入文字。
+ * - **虚拟光标是 Agent 自己的光标**（2026-10-31）：位置只由动作层驱动（`moveCursor()`），
+ *   不再轮询真实指针；用户自己晃鼠标时光环停在原地。真实指针只在动作需要时由端口移动。
  *
  * 依赖全部注入（settings / vision / overlay / 光标点 / 显示器），便于单测；
  * Electron 的 `screen` 与窗口创建留在装配层。
@@ -20,8 +22,13 @@ import type {
   Settings,
 } from '@aurora/shared'
 import type { Logger, PermissionMode } from '@aurora/shared'
-import type { Rect } from './coordinates.js'
+import { rectContains, type Point, type Rect } from './coordinates.js'
 import { canHoldComputerUseSession } from './session-policy.js'
+
+/** 虚拟光标滑动的一帧（约 60fps：比原来的 30fps 跟随更顺，单次滑动只有十几帧）。 */
+const CURSOR_FRAME_MS = 16
+/** 单次滑动的上限：模型给的坐标再远也不需要更长，避免一次动作卡住整个回合。 */
+const CURSOR_MOTION_MAX_MS = 2000
 
 export interface ComputerUseDisplay {
   id: number
@@ -51,12 +58,14 @@ export interface ComputerUseServiceOptions {
   permissionMode: () => PermissionMode
   /** 当前显示器列表（DIP bounds）。 */
   displays: () => readonly ComputerUseDisplay[]
-  /** 光标 DIP 点（Electron screen.getCursorScreenPoint 的装配层封装）。 */
+  /**
+   * 光标 DIP 点（Electron screen.getCursorScreenPoint 的装配层封装）。
+   *
+   * **只在进入操作态时读一次**，作为虚拟光标的起始落点（否则第一次滑动会从屏幕左上角
+   * 飞出来）；此后虚拟光标只由 Agent 动作驱动，不再跟随用户的鼠标。
+   */
   cursorPoint: () => { x: number; y: number }
   now?: () => number
-  /** 单测可注入定时器；缺省用全局。 */
-  setInterval?: typeof setInterval
-  clearInterval?: typeof clearInterval
   /**
    * 会话结束时清理端口侧坐标空间（下一会话必须重新截图）。
    *
@@ -70,6 +79,21 @@ export interface ComputerUseActionMeta {
   displayId?: number
   x?: number
   y?: number
+}
+
+/** 虚拟光标的目标落点（显示器内 DIP，与 `cursor` 事件同一坐标空间）。 */
+export interface ComputerUseCursorTarget {
+  displayId: number
+  x: number
+  y: number
+  /** 平滑时长（毫秒，0 / 缺省 = 直接落点）。 */
+  durationMs?: number
+}
+
+/** 缓出曲线：前段快、末段慢，落点更像人手而不是匀速机械臂。 */
+function easeOutCubic(ratio: number): number {
+  const clamped = Math.min(1, Math.max(0, ratio))
+  return 1 - (1 - clamped) ** 3
 }
 
 export class ComputerUseError extends Error {
@@ -91,14 +115,21 @@ export class ComputerUseService {
   private lastActionKind: string | undefined
   private lastActionAt: string | undefined
   private idleTimer: ReturnType<typeof setTimeout> | undefined
-  private cursorTimer: ReturnType<typeof setInterval> | undefined
-  private lastCursor: { x: number; y: number } | undefined
-  private lastDisplayId: number | undefined
   private stopHotkeyAvailable = false
   /** 浮层是否已经为本次授权显示过（第一次工具调用时才置 true）。 */
   private overlayShown = false
   /** 最近几步动作描述（新 → 旧），供过程面板挂载时补齐历史。 */
   private recentActions: ComputerUseStep[] = []
+  /**
+   * 虚拟光标当前落点（显示器内 DIP，与 `cursor` 事件同一坐标空间）。
+   *
+   * **只由 `moveCursor()` 改**：这是 Agent 自己的光标，不跟随用户的鼠标。
+   */
+  private virtualCursor: { displayId: number; x: number; y: number } | undefined
+  /** 进行中的滑动（新滑动 / 停止时取消，保证同一时刻只有一条轨迹）。 */
+  private cursorMotion: { cancel: () => void } | undefined
+  /** 本次操作态是否已经用真实指针播过种子（每个会话只播一次）。 */
+  private cursorSeeded = false
 
   constructor(options: ComputerUseServiceOptions) {
     this.options = options
@@ -180,6 +211,9 @@ export class ComputerUseService {
     this.lastActionAt = undefined
     this.recentActions = []
     this.overlayShown = false
+    this.cancelCursorMotion()
+    this.virtualCursor = undefined
+    this.cursorSeeded = false
     const displays = this.options.displays()
     // 授权本身**不**建浮层：用户刚敲 /computer 时屏幕上还没有任何操作，突然满屏流光会像
     // 「已经开始乱点」。浮层由第一次工具调用经 `ensureOperating()` 显示。
@@ -217,8 +251,9 @@ export class ComputerUseService {
     this.lastActionKind = undefined
     this.lastActionAt = undefined
     this.recentActions = []
-    this.lastCursor = undefined
-    this.lastDisplayId = undefined
+    this.cancelCursorMotion()
+    this.virtualCursor = undefined
+    this.cursorSeeded = false
     if (wasShown) {
       try {
         this.options.overlay.hide()
@@ -257,7 +292,7 @@ export class ComputerUseService {
       throw new ComputerUseError('E_CU_READONLY', '只读档下不能使用 Computer Use')
     }
     this.armIdleTimer()
-    // 第一次工具调用 = 真正开始操作：到这时才建浮层 / 启动光标循环。
+    // 第一次工具调用 = 真正开始操作：到这时才建浮层 / 播虚拟光标种子。
     this.ensureOperating()
   }
 
@@ -321,6 +356,39 @@ export class ComputerUseService {
     button: 'left' | 'right' | 'middle'
   }): void {
     this.emit({ type: 'click', ...input })
+  }
+
+  /**
+   * 把虚拟光标滑到目标点（**Agent 自己的光标**，与用户的鼠标无关）。
+   *
+   * 点击 / 拖拽 / 滚轮在合成输入前先 `await` 这里：用户看到的是「光标先滑过去，
+   * 到位后才点下去」，而不是原地冒出一圈涟漪。同一时刻只有一条轨迹 ——
+   * 新调用取消上一段未完成的滑动（`stop()` 也会取消，避免动作卡在动画上）。
+   *
+   * 坐标是**显示器内 DIP**（与浮层窗口同一坐标空间）；关闭 `showVirtualCursor`
+   * 时不播动画、直接落点，点击也就没有额外的等待。
+   */
+  async moveCursor(target: ComputerUseCursorTarget): Promise<void> {
+    this.cancelCursorMotion()
+    const to = {
+      displayId: target.displayId,
+      x: Math.round(target.x * 100) / 100,
+      y: Math.round(target.y * 100) / 100,
+    }
+    const durationMs = Math.max(
+      0,
+      Math.min(CURSOR_MOTION_MAX_MS, Math.round(target.durationMs ?? 0)),
+    )
+    const from = this.virtualCursor
+    // 换显示器时不跨屏滑（会在上一块屏留下一条跑出边界的轨迹），直接在新屏落点。
+    const start = from !== undefined && from.displayId === to.displayId ? from : { ...to }
+    const distance = Math.hypot(to.x - start.x, to.y - start.y)
+    const animate = durationMs > 0 && distance >= 1 && this.virtualCursorVisible()
+    if (!animate) {
+      this.setVirtualCursor(to)
+      return
+    }
+    await this.runCursorMotion(start, to, durationMs)
   }
 
   notice(tone: 'info' | 'warn', text: string): void {
@@ -401,7 +469,9 @@ export class ComputerUseService {
           return
         }
         this.options.overlay.applyConfig(cfg)
-        this.startCursorLoop()
+        // 虚拟光标从「真实指针当前位置」起步**一次**：否则第一段滑动会从屏幕左上角飞出来。
+        // 之后它只跟 Agent 的动作走 —— 用户再晃鼠标，光环留在原地（2026-10-31 口径）。
+        this.seedVirtualCursor()
         this.options.logger.info('Computer Use 开始操作，浮层已显示', {
           displays: displays.map((display) => display.id),
         })
@@ -428,54 +498,96 @@ export class ComputerUseService {
     this.idleTimer.unref?.()
   }
 
-  private startCursorLoop(): void {
-    this.clearCursorTimer()
-    const setIntervalFn = this.options.setInterval ?? setInterval
-    this.cursorTimer = setIntervalFn(() => {
-      if (this.sessionId === undefined) return
-      let point: { x: number; y: number }
-      try {
-        point = this.options.cursorPoint()
-      } catch {
-        return
-      }
-      const display = this.options.displays().find((item) => {
-        const x = point.x
-        const y = point.y
-        return (
-          x >= item.bounds.x &&
-          x <= item.bounds.x + item.bounds.width &&
-          y >= item.bounds.y &&
-          y <= item.bounds.y + item.bounds.height
-        )
-      })
-      if (display === undefined) return
-      if (
-        this.lastCursor !== undefined &&
-        Math.abs(this.lastCursor.x - point.x) < 0.5 &&
-        Math.abs(this.lastCursor.y - point.y) < 0.5 &&
-        this.lastDisplayId === display.id
-      ) {
-        return
-      }
-      this.lastCursor = point
-      this.lastDisplayId = display.id
-      this.emit({
-        type: 'cursor',
-        displayId: display.id,
-        x: point.x - display.bounds.x,
-        y: point.y - display.bounds.y,
-        visible: true,
-      })
-    }, 33)
-    this.cursorTimer.unref?.()
+  /**
+   * 用真实指针给虚拟光标播一次种子（每个操作态只播一次）。
+   *
+   * 只读一次位置、不做轮询：这样「光环出现在鼠标现在的位置」符合直觉，又不会变成
+   * 「虚拟光标 = 用户鼠标的影子」。读不到指针（远程会话 / 权限）就静默跳过，
+   * 第一次 `moveCursor()` 会直接从落点开始。
+   */
+  private seedVirtualCursor(): void {
+    if (this.cursorSeeded || this.sessionId === undefined) return
+    this.cursorSeeded = true
+    let point: Point
+    try {
+      point = this.options.cursorPoint()
+    } catch {
+      return
+    }
+    const display = this.options.displays().find((item) => rectContains(item.bounds, point))
+    if (display === undefined) return
+    this.setVirtualCursor({
+      displayId: display.id,
+      x: point.x - display.bounds.x,
+      y: point.y - display.bounds.y,
+    })
   }
 
-  private clearCursorTimer(): void {
-    if (this.cursorTimer === undefined) return
-    const clear = this.options.clearInterval ?? clearInterval
-    clear(this.cursorTimer)
-    this.cursorTimer = undefined
+  /** 把落点写进状态并发一条 `cursor` 事件（浮层按 `displayId` 挑自己那一扇窗）。 */
+  private setVirtualCursor(point: { displayId: number; x: number; y: number }): void {
+    this.virtualCursor = point
+    if (this.sessionId === undefined) return
+    this.emit({
+      type: 'cursor',
+      displayId: point.displayId,
+      x: point.x,
+      y: point.y,
+      visible: true,
+    })
+  }
+
+  /** 播一段滑动：约 60fps 发 `cursor` 事件，缓出曲线（先快后慢，像人手的落点）。 */
+  private runCursorMotion(
+    from: { displayId: number; x: number; y: number },
+    to: { displayId: number; x: number; y: number },
+    durationMs: number,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const startedAt = this.now()
+      let done = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (): void => {
+        if (done) return
+        done = true
+        if (timer !== undefined) clearTimeout(timer)
+        if (this.cursorMotion?.cancel === finish) this.cursorMotion = undefined
+        resolve()
+      }
+      const step = (): void => {
+        timer = undefined
+        if (done) return
+        const ratio = Math.min(1, (this.now() - startedAt) / durationMs)
+        const eased = easeOutCubic(ratio)
+        this.setVirtualCursor({
+          displayId: to.displayId,
+          x: from.x + (to.x - from.x) * eased,
+          y: from.y + (to.y - from.y) * eased,
+        })
+        if (ratio >= 1) {
+          finish()
+          return
+        }
+        timer = setTimeout(step, CURSOR_FRAME_MS)
+        timer.unref?.()
+      }
+      this.cursorMotion = { cancel: finish }
+      step()
+    })
+  }
+
+  private cancelCursorMotion(): void {
+    const motion = this.cursorMotion
+    this.cursorMotion = undefined
+    motion?.cancel()
+  }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now()
+  }
+
+  /** 用户关掉虚拟光标时不播动画：既不画，也不该为「看不见的滑动」多等一程。 */
+  private virtualCursorVisible(): boolean {
+    return this.options.settings().computerUse.showVirtualCursor !== false
   }
 
   private clearTimers(): void {
@@ -483,7 +595,7 @@ export class ComputerUseService {
       clearTimeout(this.idleTimer)
       this.idleTimer = undefined
     }
-    this.clearCursorTimer()
+    this.cancelCursorMotion()
   }
 
   private emit(event: ComputerUseEvent): void {

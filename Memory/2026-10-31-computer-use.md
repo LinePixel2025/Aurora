@@ -17,7 +17,7 @@
   `/computer` 还会把「请使用 Computer Use 工具操作电脑，完成：」放进用户消息，运行档也要求模型
   优先调 `computer_*`，否则模型会「有权限但不用」。
 - **授权 ≠ 开始操作**：`computerUseService.start()` 只建立授权、不发 `started` 以外的副作用；
-  浮层与光标循环由**第一次工具调用**（截图 / 读窗口 / 动作）经 `ensureCallAllowed → ensureOperating`
+  浮层与光标动画由**第一次工具调用**（截图 / 读窗口 / 动作）经 `ensureCallAllowed → ensureOperating`
   懒启动。`stop()` 只在 `overlayShown` 时收起浮层，授权后未操作时屏幕上什么都没有。
   `computer_start` 走的也是 `service.start()`，所以 Agent 自行进入同样不会立刻弹浮层。
 - **Agent 可主动退出，且退出即回前台**：`computer_stop`（sensitivity `safe`，无参数）→ 端口
@@ -33,6 +33,19 @@
 - 坐标以**最近截图图片像素**为准：`physical = origin + image / scale`；没有截图 / 显示器变化
   要拒绝。点击前 `WindowFromPoint` 命中测试、移动后 `GetCursorPos` 回执、`SendInput` 返回 0
   必须报错，绝不静默在错误位置点击。
+- **虚拟光标不跟随用户鼠标（2026-10-31 修订）**：光环的位置只由 `service.moveCursor()`
+  （显示器内 DIP，约 60fps 插值 + easeOutCubic）写入，**原来那个 30fps 轮询
+  `screen.getCursorScreenPoint()` 的 `startCursorLoop()` 已删除** —— 用户晃鼠标时它必须停在原地。
+  进入操作态时用真实指针**播一次种子**（否则第一段滑动从屏幕左上角飞出来），仅此一次。
+  目标点用 `screen.screenToDipPoint` 换算（`screenshots.ts` 的 `physicalToDip`），
+  125% / 150% 缩放下不对齐就是在这一步算错的。
+- **先移动光标、再点击（2026-10-31 修订）**：点击 / 双击 / 右键 / 拖拽 / 滚轮在 `SendInput` 之前
+  并发做两件事 —— 虚拟光标滑到落点、系统指针按 `moveDurationMs` 平滑移动（原来是 `movePointer(start, 0)`
+  原地瞬移）；两者到位后停 `CURSOR_SETTLE_MS = 60ms` 再合成点击，最后才 `noteClick()` 画涟漪。
+  拖拽：先滑到起点，再让虚拟光标按宿主同一时长跟到终点。关闭 `showVirtualCursor` 时不播动画
+  （点击不额外等待）；跨显示器不跨屏滑，直接在新屏落点。
+- **涟漪坐标必须是显示器内 DIP**：`noteClick()` 以前直接把模型给的**图片像素**发出去，
+  高 DPI / 缩放屏上涟漪会偏离落点。现在统一用 `dipOf(physical)` 算出的 DIP 点。
 - 浮层每显示器一扇 + **顶部操作过程面板**：`focusable:false`、鼠标穿透、`showInactive()`；
   **绝不用 `setContentProtection(true)`**：WDA_EXCLUDEFROMCAPTURE 会让 RustDesk / 远程桌面 /
   屏幕共享里完全看不到浮层（本机实测就是这样，用户看到「没有流光、没有过程面板、没有虚拟光标」）。
@@ -115,3 +128,8 @@
 > 2026-10-31 二次修订（本分支）：新增 `computer_start` 让 Agent 自行进入（只授权、不建浮层），
 > 保留 `/computer` 作为用户入口；`computer_stop` 退出时把 Aurora 带回前台并切回该会话，
 > 只有 `agent` 结束原因抢焦点。
+> 2026-10-31 三次修订（虚拟光标解耦）：删掉「30fps 轮询真实指针」的 `startCursorLoop()`，
+> 虚拟光标改为只由 `service.moveCursor()` 驱动（60fps 插值 + easeOutCubic，显示器内 DIP），
+> 进入操作态时用真实指针播一次种子；点击类动作改为「先并发滑光标 + 平滑移动指针 → 停 60ms →
+> `SendInput` → 涟漪」，并把涟漪坐标从图片像素改成 DIP。测试口径：`service.test.ts` 断言
+> 「没有动作就不再发 `cursor` 事件」「滑动中途帧单调」「新滑动取消旧滑动 / `stop()` 取消在途滑动」。

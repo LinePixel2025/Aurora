@@ -11,15 +11,12 @@ function logger(): {
   return { info: () => undefined, warn: () => undefined, debug: () => undefined }
 }
 
-function makeService(options: {
-  settings: Settings
-  vision?: boolean
-  overlayVisible?: boolean
-  interval?: typeof setInterval
-}) {
+function makeService(options: { settings: Settings; vision?: boolean; overlayVisible?: boolean }) {
   const events: string[] = []
   const showCalls: number[] = []
   const stopped: Array<{ sessionId: string; reason: string }> = []
+  /** 虚拟光标事件（`cursor`）的完整负载，用于断言轨迹。 */
+  const cursors: Array<{ displayId: number; x: number; y: number }> = []
   const service = new ComputerUseService({
     settings: () => options.settings,
     logger: logger() as never,
@@ -28,7 +25,12 @@ function makeService(options: {
         showCalls.push(displays.length)
       },
       hide: () => undefined,
-      emit: (event) => events.push(event.type),
+      emit: (event) => {
+        events.push(event.type)
+        if (event.type === 'cursor') {
+          cursors.push({ displayId: event.displayId, x: event.x, y: event.y })
+        }
+      },
       applyConfig: () => undefined,
       diagnostics: () => ({ visible: options.overlayVisible === true, displays: 1 }),
     },
@@ -37,11 +39,9 @@ function makeService(options: {
     permissionMode: () => 'auto',
     displays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 100, height: 100 } }],
     cursorPoint: () => ({ x: 10, y: 10 }),
-    setInterval: () => ({ unref: () => undefined }) as never,
-    clearInterval: () => undefined,
     onStopped: (sessionId, reason) => stopped.push({ sessionId, reason }),
   })
-  return { service, events, showCalls, stopped }
+  return { service, events, showCalls, stopped, cursors }
 }
 
 describe('ComputerUseService', () => {
@@ -156,4 +156,72 @@ describe('ComputerUseService', () => {
   it('run context 常量存在（非视觉 / 未授权提示由 run profile 使用）', () => {
     expect(COMPUTER_USE_RUN_CONTEXT).toContain('Computer Use')
   })
+
+  it('虚拟光标：进入操作态时只播一次种子，之后不跟随（不轮询真实指针）', async () => {
+    const settings = createDefaultSettings()
+    settings.computerUse.enabled = true
+    const { service, cursors } = makeService({ settings })
+    await service.start('main')
+    service.ensureCallAllowed('main')
+    await Promise.resolve()
+    await Promise.resolve()
+    // 种子 = 真实指针 (10,10) 的显示器内 DIP
+    expect(cursors).toEqual([{ displayId: 1, x: 10, y: 10 }])
+    const framesAfterSeed = cursors.length
+    // 没有动作就不再发 `cursor`（旧实现是 30fps 轮询，用户晃鼠标浮层会跟着跑）
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(cursors).toHaveLength(framesAfterSeed)
+  })
+
+  it('虚拟光标：moveCursor 沿轨迹滑到落点，关闭视觉时直接落点', async () => {
+    const settings = createDefaultSettings()
+    settings.computerUse.enabled = true
+    const { service, cursors } = makeService({ settings })
+    await service.start('main')
+    service.ensureCallAllowed('main')
+    await Promise.resolve()
+    await Promise.resolve()
+    cursors.length = 0
+
+    await service.moveCursor({ displayId: 1, x: 80, y: 40, durationMs: 120 })
+    expect(cursors.length).toBeGreaterThan(2)
+    expect(cursors.at(-1)).toEqual({ displayId: 1, x: 80, y: 40 })
+    // 中间帧必须单调前进，且都落在起点与终点之间（不是瞬移后补几帧）
+    const midway = cursors[Math.floor(cursors.length / 2)]!
+    expect(midway.x).toBeGreaterThan(10)
+    expect(midway.x).toBeLessThan(80)
+
+    settings.computerUse.showVirtualCursor = false
+    cursors.length = 0
+    await service.moveCursor({ displayId: 1, x: 5, y: 5, durationMs: 120 })
+    expect(cursors).toEqual([{ displayId: 1, x: 5, y: 5 }])
+  })
+
+  it('虚拟光标：新滑动取消上一段，停止会话也会取消（不留悬挂的动画）', async () => {
+    const settings = createDefaultSettings()
+    settings.computerUse.enabled = true
+    const { service, cursors } = makeService({ settings })
+    await service.start('main')
+    service.ensureCallAllowed('main')
+    await Promise.resolve()
+    await Promise.resolve()
+    cursors.length = 0
+
+    const first = service.moveCursor({ displayId: 1, x: 90, y: 90, durationMs: 200 })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    const second = service.moveCursor({ displayId: 1, x: 20, y: 20, durationMs: 40 })
+    await Promise.all([first, second])
+    // 后一段的终点生效，前一段不会再把光标拽回 (90,90)
+    expect(cursors.at(-1)).toEqual({ displayId: 1, x: 20, y: 20 })
+
+    const pending = service.moveCursor({ displayId: 1, x: 70, y: 10, durationMs: 400 })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    service.stop('user')
+    // 停止必须让在途滑动立刻结束，否则动作链会卡在动画上
+    await expect(Promise.race([pending, timeout(300)])).resolves.toBeUndefined()
+  })
 })
+
+function timeout(ms: number): Promise<'timeout'> {
+  return new Promise((resolve) => setTimeout(() => resolve('timeout'), ms))
+}

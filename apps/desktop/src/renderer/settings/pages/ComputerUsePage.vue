@@ -127,7 +127,7 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
         <SettingField
           data-field="computer-use.showVirtualCursor"
           label="虚拟光标"
-          hint="跟随真实指针的光环与拖尾；原生指针仍保留"
+          hint="Agent 自己的光环与拖尾，不跟你的鼠标；原生指针仍保留"
         >
           <label class="row tiny">
             <input
@@ -179,7 +179,7 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
         <SettingField
           data-field="computer-use.moveDurationMs"
           label="鼠标移动时长"
-          hint="毫秒，0 ～ 1000；0 = 瞬移，默认 160"
+          hint="毫秒，0 ～ 1000；0 = 瞬移；点击前光标也按此时长先滑到落点"
         >
           <input
             class="input input-num"
