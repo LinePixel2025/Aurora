@@ -80,7 +80,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   v39 Computer Use +5 条断言）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
-  **提交前仍必须跑全量**。
+  **全量冒烟只在用户说「提交」时跑**（2026-10-31 口径，见 `Memory/2026-10-31-iteration-vs-full-acceptance.md`）；
+  迭代期只跑相关单测子集与定向截图，不要每轮任务收尾都全量。
 - **Center 网页端验收（视觉 + 行为）**：`pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
   —— 真实服务器子进程（临时数据目录）+ 协议忠实的桩客户端 + 系统 Edge，逐场景截图 / 读 DOM 并写 `report.json`
   （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **106/106**
@@ -120,9 +121,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
   （只按 `pass === false` 会把纯截图场景误判成失败）。`AURORA_CAPTURE_ONLY` 是**子串**匹配
   （`'chat.png'` 连带命中 `theme-chat.png`），且**每轮必须写独立目录**（同目录会覆盖上一轮 `report.json`）。
-  **跑法预算（2026-10-10 用户口径）**：迭代期**只跑定向**（`AURORA_CAPTURE_ONLY`，7–15s/轮），
-  **全量截图只在最后验收阶段跑**（代码冻结后一次性跑满足口径的轮次，1 轮约 2.5 分钟）；
-  同理 `pnpm test` 迭代期只跑相关子集、全量放最后。验收口径本身不降级。
+  **跑法预算（2026-10-31 用户口径，见 `Memory/2026-10-31-iteration-vs-full-acceptance.md`）**：
+  **迭代期只跑定向**（`AURORA_CAPTURE_ONLY` / 相关窗口 + `pnpm vitest run <相关文件>` + 必要 typecheck，7–15s/轮）；
+  **全量验收（全量单测 / 冒烟 / 全量截图）等用户明确说「提交」时再跑**，不要每轮任务收尾自动全量。
+  提交前的全量验收口径不降级：绿了才提交并推送，红了先修。
 - **CI 按需触发，不跟随 push / PR**（`.github/workflows/ci.yml`，Windows）：顺序
   `format:check → lint → typecheck → test → build`。日常验证靠本地
   `pnpm typecheck && pnpm test && pnpm build`（与 CI 同一套检查、全量约 30 秒）；

@@ -12,6 +12,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-31 | 迭代期只跑定向验收，全量验收等用户说「提交」再跑                               | 测试, 验收, 截图, 冒烟, 流程, 口径 | [2026-10-31-iteration-vs-full-acceptance.md](2026-10-31-iteration-vs-full-acceptance.md) |
 | 2026-10-31 | v0.5.9 双投发布（Computer Use + 插件工具包）与 `gh release` 先建轻量 tag 的坑 | 发布, 打包, 更新源, Center, GitHub, 插件, 工具包, git, 坑, 口径 | [2026-10-31-v059-release-and-plugin-kit.md](2026-10-31-v059-release-and-plugin-kit.md) |
 | 2026-10-31 | Aurora 开源迁移：单仓库发布 / MIT / README 图文重写与 v0.5.8 资产迁移           | 发布, 开源, GitHub, 打包, 更新源, 许可证, README, 迁移, 口径 | [2026-10-31-open-source-single-repo-release.md](2026-10-31-open-source-single-repo-release.md) |
 | 2026-10-31 | 合并 PR 时分支还挂在 worktree：`gh pr merge --delete-branch` 退出码 1 但合并已成功、远端分支未删 | 发布, git, GitHub, PR, worktree, 坑, 口径 | [2026-10-31-pr-merge-worktree-gotcha.md](2026-10-31-pr-merge-worktree-gotcha.md) |
