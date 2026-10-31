@@ -293,14 +293,14 @@ flowchart LR
 
 ## 发布与自动更新
 
-从 v0.5.8 起，**源码与安装包都在本仓库**：
+从 2026-10-31 开源起，**源码与安装包都在本仓库**：
 
 | 位置 | 内容 |
 |---|---|
 | `LinePixel2025/Aurora` Releases | `Aurora-Setup-<版本>.exe`、`*.blockmap`、`latest.yml` |
 | Aurora Center 更新源 | 同一批产物（可选自托管） |
 
-客户端更新顺序：**Aurora Center 更新源 → 本仓库 GitHub Releases → 包内 `app-update.yml`**。更新资产三件套必须版本、size 与 sha512 一致。
+客户端更新顺序：**Aurora Center 更新源 → 本仓库 GitHub Releases（包内 `app-update.yml`）**。更新资产三件套必须版本、size 与 sha512 一致。
 
 ```powershell
 pnpm release -- --notes-file docs/release-notes/v<版本>.md

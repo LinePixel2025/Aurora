@@ -60,6 +60,19 @@ if (tag === undefined || tag === '') {
   process.exit(2)
 }
 
+/**
+ * Release 正文必须使用 docs/release-notes/<tag>.md（与 annotated tag 同源）。
+ * 这个脚本只负责上传资产，不在这里另写一份简化文案。
+ */
+const notesPath = join(root, 'docs', 'release-notes', `${tag}.md`)
+let notesText
+try {
+  notesText = await fs.readFile(notesPath, 'utf8')
+} catch {
+  console.error(`缺少发布说明：${notesPath}\n请先相对上一版本汇总更新点。`)
+  process.exit(2)
+}
+
 const files = [`Aurora-Setup-${version}.exe`, `Aurora-Setup-${version}.exe.blockmap`, 'latest.yml']
 
 for (const name of files) {
@@ -143,7 +156,7 @@ if (release.ok) {
         tag_name: tag,
         target_commitish: 'main',
         name: `Aurora ${tag}`,
-        body: `Aurora ${tag}（Windows x64 安装包，未签名）。\n\n首次运行若出现 SmartScreen「未知发行者」提示：点「更多信息」→「仍要运行」。`,
+        body: notesText,
         draft: false,
         prerelease: false,
       }),
