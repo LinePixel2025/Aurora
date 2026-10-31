@@ -12,6 +12,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-31 | Aurora 开源迁移：单仓库发布 / MIT / README 图文重写与 v0.5.8 资产迁移           | 发布, 开源, GitHub, 打包, 更新源, 许可证, README, 迁移, 口径 | [2026-10-31-open-source-single-repo-release.md](2026-10-31-open-source-single-repo-release.md) |
 | 2026-10-31 | 合并 PR 时分支还挂在 worktree：`gh pr merge --delete-branch` 退出码 1 但合并已成功、远端分支未删 | 发布, git, GitHub, PR, worktree, 坑, 口径 | [2026-10-31-pr-merge-worktree-gotcha.md](2026-10-31-pr-merge-worktree-gotcha.md) |
 | 2026-10-31 | Computer Use（v39）：`/computer` + `computer_start` 授权、退出回前台、PowerShell 宿主、顶部过程面板、RustDesk 下浮层可见性、虚拟光标不跟用户鼠标 / 先移动再点击 | Computer Use, 工具, 权限, PowerShell, 浮层, 过程面板, 前台, RustDesk, 远程桌面, 虚拟光标, 探针, 坑, 口径 | [2026-10-31-computer-use.md](2026-10-31-computer-use.md) |
 | 2026-10-30 | 桌面小组件点击不抢前台（focusable:false）与「固定」= 锁位置                     | 插件, 小组件, Electron, 窗口, 焦点, 布局, 探针, 坑, 口径 | [2026-10-30-widget-focus-and-lock.md](2026-10-30-widget-focus-and-lock.md) |
