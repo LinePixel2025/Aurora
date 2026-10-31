@@ -5704,12 +5704,13 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
 })()`
 
 /**
- * 流光提醒卡片的静态预览（docs/07 §2.2.3，2026-10-24）。
+ * 流光提醒卡片的静态预览（docs/07 §2.2.3，2026-10-24；2026-11-01 补「大屏可读」判据）。
  *
- * 只量矩形、不量存在：卡片必须与窗口一样大（窗口 = 卡片 + 12px 阴影外边距），
+ * 只量矩形与计算样式、不量存在：卡片必须与窗口一样大（窗口 = 卡片 + 12px 阴影外边距），
  * 因为透明窗口多出来的那块区域会挡住下面窗口的点击 —— 卡片缩水这件事在视觉上"更好看"，
  * 却会让一个死区出现在屏幕顶上。此外钉住：大圆角、实色填充（不得是渐变彩带）、
- * 标题单行、正文在卡片内、关闭按钮可点尺寸。
+ * 标题单行、正文在卡片内、关闭按钮可点尺寸，以及 2026-11-01 的**下限**：
+ * 卡宽 ≥440px、标题字号 ≥20px、正文字号 ≥17px（旧值 420 / 13.5 / 12.5 会直接红）。
  */
 export const BANNER_CARD_CAPTURE_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -5749,6 +5750,16 @@ export const BANNER_CARD_CAPTURE_CHECK = `(async () => {
     const shadow = cardStyle === null ? '' : cardStyle.boxShadow
     const titleText = title === null ? '' : (title.textContent || '').trim()
     const bodyText = body === null ? '' : (body.textContent || '').trim()
+    /*
+     * 字号是「大屏后排能不能看清」的唯一量化判据（2026-11-01）：卡片宽度按显示器比例取，
+     * 字号由渲染层按卡片宽度流体放大。这里把**下限**钉住 —— 谁把字号改回 13.5 / 12.5 就会红。
+     * 标题单行的判据也从"写死 26px"改成按 computed line-height 推（字号放大后 26 已不成立）。
+     */
+    const titleStyle = title === null ? null : getComputedStyle(title)
+    const bodyStyle = body === null ? null : getComputedStyle(body)
+    const titleFontSize = titleStyle === null ? 0 : Number.parseFloat(titleStyle.fontSize) || 0
+    const titleLineHeight = titleStyle === null ? 0 : Number.parseFloat(titleStyle.lineHeight) || 0
+    const bodyFontSize = bodyStyle === null ? 0 : Number.parseFloat(bodyStyle.fontSize) || 0
     /*
      * 入场 / 退场动画必须真的**声明**着（2026-10-24 修过「弹出来没有动效」）：
      * 原先卡片是「挂载时就带着最终 class」，浏览器不会播 transition —— 观感是啪一下出现。
@@ -5803,12 +5814,21 @@ export const BANNER_CARD_CAPTURE_CHECK = `(async () => {
       softShadow: shadow !== 'none',
       hasTitle: titleText !== '',
       hasBody: bodyText !== '',
-      titleSingleLine: titleRect !== null && titleRect.height > 0 && titleRect.height <= 26,
+      // 标题单行：高度不得超过一行（computed line-height 的 1.5 倍，含字体上下留白）
+      titleSingleLine:
+        titleRect !== null &&
+        titleRect.height > 0 &&
+        titleRect.height <= Math.round((titleLineHeight > 0 ? titleLineHeight : titleFontSize * 1.3) * 1.5),
+      // 大字判据：默认标准档在 1920 屏上标题 ≈23.6px、正文 ≈20px（旧实现 13.5 / 12.5）
+      titleReadable: titleFontSize >= 20,
+      bodyReadable: bodyFontSize >= 17,
+      // 卡片整体不能缩回「手机大小」：标准档在 1024 屏上也有 640px 卡宽
+      cardWideEnough: cardRect !== null && cardRect.width >= 440,
       titleInsideCard: insideCard(titleRect),
       bodyInsideCard: insideCard(bodyRect),
       closeInsideCard: insideCard(closeRect),
-      closeClickable: closeRect !== null && closeRect.width >= 12 && closeRect.height >= 12,
-      accentBar: accentRect !== null && accentRect.width >= 2 && accentRect.height > 0,
+      closeClickable: closeRect !== null && closeRect.width >= 28 && closeRect.height >= 28,
+      accentBar: accentRect !== null && accentRect.width >= 3 && accentRect.height > 0,
       entranceDeclared,
       leavingDeclared,
     }
@@ -5828,6 +5848,9 @@ export const BANNER_CARD_CAPTURE_CHECK = `(async () => {
       shadow,
       titleText,
       bodyText,
+      titleFontSize,
+      bodyFontSize,
+      closeSize: closeRect === null ? null : Math.round(closeRect.width),
       fillsWindow,
       conditions,
       pass,
@@ -6023,10 +6046,11 @@ export const SETTINGS_NOTIFICATIONS_STYLE_ACT = `(async () => {
 })()`
 
 /**
- * 提醒细节区组的探针（v38）。
+ * 提醒细节区组的探针（v38；2026-11-01 补「试听提示音」按钮）。
  *
  * 只量矩形与默认选中态：五个设置项都在、每行都能点（高度 ≥ 24）、
- * 大小档三选一里「标准」被选中、停留时长三档里「6 秒」被选中、音量滑杆是 60。
+ * 大小档三选一里「标准」被选中、停留时长三档里「6 秒」被选中、音量滑杆是 60、
+ * 音量行有可点的「试听」按钮（不点它 —— 截图不该出声）。
  * 判据只写一份（pass 取 conditions 的乘积）。
  */
 export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
@@ -6047,6 +6071,8 @@ export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
     const speak = field('speak') === null ? null : field('speak').querySelector('input')
     const volumeRange = document.querySelector('[data-field="notifications.volume"] input[type="range"]')
     const volumeValue = document.querySelector('[data-field="notifications.volume"] .volume-value')
+    const testSound = field('testSound')
+    const testSoundRect = rectOf(testSound)
     const sectionRect = rectOf(field('style'))
     const conditions = {
       sectionPresent: sectionRect !== null && sectionRect.width > 300,
@@ -6054,6 +6080,13 @@ export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
       speakToggle: speak !== null && speak.type === 'checkbox' && speak.checked === true,
       volumeRange: volumeRange !== null && volumeRange.value === '60',
       volumeLabel: volumeValue !== null && (volumeValue.textContent || '').includes('60'),
+      // 试听按钮：在、没被禁用、能点（不给它点 —— 截图期间不想出声）
+      soundPreviewButton:
+        testSound !== null &&
+        testSound.disabled === false &&
+        testSoundRect !== null &&
+        testSoundRect.height >= 24 &&
+        testSoundRect.width >= 40,
       sizeOptions: sizeInfo.every((item) => item !== null),
       // 出厂态是「标准」，不是第一项（第一项是紧凑档）
       sizeDefault: sizeInfo[1] !== null && sizeInfo[1].active === true && sizeInfo[0].active === false && sizeInfo[2].active === false,
@@ -6070,6 +6103,7 @@ export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
       sizeInfo,
       durationInfo,
       volume: volumeRange === null ? '' : volumeRange.value,
+      testSound: testSoundRect,
       conditions,
       pass,
     }

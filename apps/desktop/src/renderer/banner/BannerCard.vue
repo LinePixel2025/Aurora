@@ -12,12 +12,16 @@
  *
  * 高度由**内容**决定（`height: auto`），量出来之后立刻回报主进程 —— 主进程把窗口调成
  * 「卡片 + 24px 外边距」。为什么不按字符数估算：真实换行取决于字体与中英混排，
- * 估算偏大 = 透明窗口多出一块挡点击的死区，偏小 = 正文被裁掉。
+ * 估算偏大 = 透明窗口多出一块挡点击的死区，偏小 = 正文被裁掉。主进程因此只用
+ * `BANNER_CARD.initialHeight` 占位（约 1–2 帧），真实高度一律以这里量到的为准。
+ *
+ * 字号 / 内边距 / 关闭按钮全部用 `cqw` 跟卡片宽度联动（根节点是容器查询锚点）：
+ * 主进程只决定宽度（按显示器比例），渲染层决定"字有多大"，两边不会各写一套数字。
  */
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BannerShowPayload } from '@aurora/shared'
 import { useTts } from '../shared/composables/useTts.js'
-import { playBannerChime } from './chime.js'
+import { playBannerChime } from '../shared/chime.js'
 
 const props = defineProps<{
   payload: BannerShowPayload | null
@@ -125,17 +129,30 @@ onUnmounted(() => {
   inset: 0;
   overflow: hidden;
   pointer-events: none;
+  /*
+   * 字号随卡片宽度流体放大（大屏 / 教室投影后排可读）：根节点就是**容器查询锚点**，
+   * 它的宽度 = 窗口宽 = 卡片 + 24px 外边距，所以卡片里的 `cqw` 永远跟主进程给的宽度同源，
+   * 不用 `100vw`（会踩「滚动条让视口比窗口少几像素」的老坑），也不需要主进程再写一套字号。
+   */
+  container-type: inline-size;
 }
 
 .banner-card {
+  /* 卡片内的尺寸尺度统一从这里派生：全部跟窗口宽度联动 */
+  --banner-pad: clamp(14px, 2cqw, 22px);
+  --banner-gap: clamp(10px, 1.4cqw, 16px);
+  --banner-close: clamp(30px, 3.6cqw, 40px);
+  --banner-accent: clamp(3px, 0.5cqw, 5px);
   /* 12px 外边距留给阴影：主进程据此把窗口调成「卡片 + 24px」，多出来的区域才会挡住点击 */
+  position: relative;
   box-sizing: border-box;
   display: flex;
-  gap: 10px;
+  gap: var(--banner-gap);
   width: calc(100% - 24px);
-  min-height: 46px;
   margin: 12px;
-  padding: 11px 30px 11px 12px;
+  /* 右侧给关闭按钮留位（pad + 按钮 + 4px 余量）：卡片放大后文字不会压到按钮 */
+  padding: var(--banner-pad) calc(var(--banner-pad) + var(--banner-close) + 4px) var(--banner-pad)
+    var(--banner-pad);
   border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
   border-radius: var(--radius-lg);
   background: var(--bg-overlay);
@@ -184,7 +201,7 @@ onUnmounted(() => {
 /* 语义色条：只表达档位，不做渐变 */
 .banner-card-accent {
   flex: none;
-  width: 3px;
+  width: var(--banner-accent);
   border-radius: 2px;
   background: var(--aurora-blue);
 }
@@ -206,7 +223,7 @@ onUnmounted(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: clamp(6px, 0.9cqw, 10px);
 }
 
 /* 标题与正文比卡片晚一点点出现（30ms 错峰），落下的层次更清楚 */
@@ -228,9 +245,9 @@ onUnmounted(() => {
 
 .banner-card-title {
   margin: 0;
-  font-size: 13.5px;
-  font-weight: 600;
-  line-height: 20px;
+  font-size: clamp(19px, 3.3cqw, 34px);
+  font-weight: 650;
+  line-height: 1.3;
   letter-spacing: 0.1px;
   color: var(--text-primary);
   overflow: hidden;
@@ -240,9 +257,10 @@ onUnmounted(() => {
 
 .banner-card-body {
   margin: 0;
-  font-size: 12.5px;
-  line-height: 19px;
-  color: var(--text-secondary);
+  font-size: clamp(16px, 2.8cqw, 28px);
+  line-height: 1.45;
+  /* 投影 / 大屏上看的是对比度：正文用主文本色，层次靠字号而不是靠"更灰" */
+  color: var(--text-primary);
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -252,20 +270,20 @@ onUnmounted(() => {
 
 .banner-card-close {
   position: absolute;
-  /* 与卡片右上角的圆弧留出视觉呼吸（12px 外边距 + 8px） */
-  top: 20px;
-  right: 20px;
+  /* 锚定卡片自身（`.banner-card` 是 relative），内缩量与内边距联动 */
+  top: calc(var(--banner-pad) - 4px);
+  right: calc(var(--banner-pad) - 4px);
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: var(--banner-close);
+  height: var(--banner-close);
   padding: 0;
   border: none;
   border-radius: 50%;
   background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: calc(var(--banner-close) * 0.6);
   line-height: 1;
   cursor: pointer;
   transition:

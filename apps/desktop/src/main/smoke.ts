@@ -257,8 +257,9 @@ export function smokeScript(
     }
 
     // 2.4 提醒细节（v38，docs/07 §4）：提示音 / 音量 / 朗读 / 卡片大小 / 停留时长。
-    //     size 用**原生窗口宽度**证（cardWidth），其余用配置回读 + 非法值拒绝证；
-    //     sound / speak 的总闸语义由 banner.test.ts 的单测覆盖（这里只验接线）。
+    //     size 用**原生窗口宽度**证：2026-11-01 起宽度按显示器比例取，写死像素没有意义，
+    //     改成「同一台机器上紧凑档 < 宽大档」的分档对比（两档都在合法区间内）。
+    //     其余用配置回读 + 非法值拒绝证；sound / speak 的总闸语义由 banner.test.ts 覆盖。
     {
       const details = await window.aurora.settings.get()
       const initial = details && details.ok ? details.value.notifications : undefined
@@ -271,22 +272,40 @@ export function smokeScript(
       const invalidVolume = await window.aurora.settings.update({ notifications: { volume: 200 } })
       record('非法音量（200）被拒绝', Boolean(invalidVolume) && invalidVolume.ok === false, invalidVolume ? (invalidVolume.ok ? '意外成功' : invalidVolume.message) : '无结果')
 
-      expectOk('settings.update(notifications 细节)', await window.aurora.settings.update({
-        notifications: { channel: 'banner', sound: false, speak: false, volume: 20, size: 'large', durationMs: 8000 },
+      const readBannerDiag = async () => {
+        const result = await window.aurora.app.getSmokeDiagnostics()
+        return result && result.ok ? result.value.banner : undefined
+      }
+      /** 发一条测试提醒并读回卡片窗原生宽度（-1 = 没读到） */
+      const measureCardWidth = async () => {
+        const test = await window.aurora.notifications.test()
+        const diag = await waitFor(
+          readBannerDiag,
+          (value) => Boolean(value && value.cardVisible === true && typeof value.cardWidth === 'number'),
+          4000,
+        )
+        await window.aurora.app.smokeBanner('dismiss')
+        if (!test || test.ok !== true) return -1
+        return diag && typeof diag.cardWidth === 'number' ? diag.cardWidth : -1
+      }
+
+      expectOk('settings.update(notifications 细节 紧凑档)', await window.aurora.settings.update({
+        notifications: { channel: 'banner', sound: false, speak: false, volume: 20, size: 'compact', durationMs: 4000 },
       }))
-      const largeTest = await window.aurora.notifications.test()
-      const largeDiag = await waitFor(
-        async () => {
-          const result = await window.aurora.app.getSmokeDiagnostics()
-          return result && result.ok ? result.value.banner : undefined
-        },
-        (value) => Boolean(value && value.cardVisible === true && typeof value.cardWidth === 'number'),
-        4000,
+      const compactWidth = await measureCardWidth()
+
+      expectOk('settings.update(notifications 细节 宽大档)', await window.aurora.settings.update({
+        notifications: { channel: 'banner', sound: false, speak: false, volume: 20, size: 'large', durationMs: 4000 },
+      }))
+      const largeWidth = await measureCardWidth()
+
+      // 紧凑档卡宽 460–700 + 两侧各 12px 外边距（Windows 无边框窗口可能多出几个像素，给 ±6 容差）；
+      // 宽大档只做上限 + 「明显比紧凑宽」的相对判据 —— 小屏上会被 displayWidth - 40 压住。
+      record(
+        '弹窗大小分档真的生效（紧凑 < 宽大，且都在合法区间）',
+        compactWidth >= 478 && compactWidth <= 730 && largeWidth <= 1310 && largeWidth >= compactWidth + 120,
+        'compact=' + String(compactWidth) + ' large=' + String(largeWidth),
       )
-      // 大档卡片 480 + 两侧 12px 外边距 = 504（Windows 无边框窗口可能多出几个像素，给 ±6 容差）
-      const width = largeDiag && typeof largeDiag.cardWidth === 'number' ? largeDiag.cardWidth : -1
-      record('弹窗大小=宽大时卡片窗真的变宽（≈504）', Boolean(largeTest) && largeTest.ok === true && width >= 498 && width <= 510, 'cardWidth=' + String(width))
-      await window.aurora.app.smokeBanner('dismiss')
 
       expectOk('settings.update(notifications 细节还原)', await window.aurora.settings.update({
         notifications: { channel: 'system', sound: true, speak: true, volume: 60, size: 'standard', durationMs: 6000 },

@@ -1169,18 +1169,13 @@ export type ReminderChannel = (typeof REMINDER_CHANNELS)[number]
 /**
  * 流光提醒的卡片尺寸档（v38，docs/07 §2.2.3）。
  *
- * 只决定**卡片窗宽度**（高度按内容量出来），因为「弹窗大小」对这张卡真正有意义的
- * 就是一行能放多少字：`compact` 更适合短提醒、`large` 适合长正文。
+ * 档位**只决定尺寸**，几何口径在 `main/banner-geometry.ts`：卡片窗宽度按所在显示器的
+ * DIP 宽度取比例（紧凑 0.24 / 标准 0.36 / 宽大 0.46）后夹取，字号由渲染层按卡片宽度
+ * 流体放大（`cqw`），因此大屏 / 投影上整张卡与文字一起变大。取值与默认值固定，
+ * 宽度数字不进配置（改了不用迁移）。
  */
 export const BANNER_CARD_SIZE_IDS = ['compact', 'standard', 'large'] as const
 export type BannerCardSize = (typeof BANNER_CARD_SIZE_IDS)[number]
-
-/** 三档对应的卡片宽度（CSS 像素）。卡片窗宽度 = 它 + 两侧各 12px 阴影外边距。 */
-export const BANNER_CARD_WIDTHS: Record<BannerCardSize, number> = {
-  compact: 360,
-  standard: 420,
-  large: 480,
-}
 
 export const NotificationsSchema = z.object({
   /** 默认提醒方式（缺省 `system` = 与 v37 之前的行为一字不差）。 */

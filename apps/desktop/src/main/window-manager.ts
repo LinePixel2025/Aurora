@@ -17,12 +17,12 @@ import {
   type WebPreferences,
 } from 'electron'
 import {
-  BANNER_CARD_WIDTHS,
   IPC,
   WINDOW_NAMES,
   createInitialWindowState,
   hideWindow as hideInState,
   showWindow as showInState,
+  type BannerCardSize,
   type BannerShowPayload,
   type ComputerUseEvent,
   type ComputerUseSettings,
@@ -39,6 +39,7 @@ import {
   type EdgeBarSide,
 } from './edge-bar-geometry.js'
 import { awarenessGlowBounds, type AwarenessGlowRect } from './awareness-glow.js'
+import { BANNER_CARD, bannerCardBounds, clampBannerCardHeight } from './banner-geometry.js'
 import { zoomActionForInput } from './zoom-shortcuts.js'
 import {
   ensurePluginPageProtocol,
@@ -97,27 +98,6 @@ export interface BannerWindowDiagnostics {
 
 /** 内部窗口名：不属于 `WINDOW_NAMES`，没有窗口状态机，只由业务直接驱动。 */
 type InternalWindowName = 'awareness-glow' | 'banner' | 'computer-use'
-
-/**
- * 流光提醒卡片窗的几何（docs/07 §2.2.3）。
- *
- * 宽度来自用户设置的三档（`notifications.size` → `BANNER_CARD_WIDTHS`），高度按正文行数估算：
- * **窗口矩形必须与卡片一样大**，否则透明窗口多出来的那块区域会挡住下面窗口的点击
- * （透明 ≠ 可穿透）。卡片自带 12px 外边距画柔和阴影，所以窗口 = 卡片 + 上下左右各 12px。
- */
-const BANNER_CARD = {
-  margin: 12,
-  /** 标题行 20 + 上下内边距 11×2 = 42；正文每行 19 + 与标题的间距 6 */
-  baseHeight: 48,
-  lineHeight: 19,
-  gap: 6,
-  maxLines: 3,
-  /** 顶到屏幕上边缘的距离（卡片「从流光里落下」，不是贴死第 0 像素） */
-  topOffset: 16,
-  /** 卡片高度区间：46 只够标题 + 内边距；200 已能放 3 行正文还有余量（再高必然是误报） */
-  minHeight: 46,
-  maxHeight: 200,
-} as const
 
 interface WindowSpec {
   width: number
@@ -569,6 +549,9 @@ export class WindowManager {
    * `banner-card` 是可点的置顶卡片（关闭按钮 / 点击卡片关闭），因此**不做穿透**。
    * 合成一扇窗要么挡住整屏点击，要么卡片点不到 —— 分开是经过取舍的方案，别为了「少一扇窗」合并。
    *
+   * 卡片窗高度这里只给**占位值**（`BANNER_CARD.initialHeight`）：真实高度由渲染层量完经
+   * `banner:measure` 回报，`resizeBannerCard` 立刻收缩（见 `banner-geometry.ts` 的说明）。
+   *
    * 返回值表示「请求已交给两扇窗」：窗口加载是异步的，这里同步返回 true，
    * 真正把画面推出去在 `deliverBanner()` 里等两扇窗首次加载完成之后。
    */
@@ -579,7 +562,7 @@ export class WindowManager {
     const displayBounds = this.edgeBarDisplay().bounds
     const glowBounds = awarenessGlowBounds(displayBounds)
     if (!sameBounds(glow.getBounds(), glowBounds)) glow.setBounds(glowBounds)
-    const cardBounds = this.bannerCardBounds(payload, displayBounds)
+    const cardBounds = this.bannerCardWindowBounds(displayBounds)
     if (!sameBounds(card.getBounds(), cardBounds)) card.setBounds(cardBounds)
     void this.deliverBanner(glow, card, payload)
     return true
@@ -646,9 +629,7 @@ export class WindowManager {
   resizeBannerCard(cardHeight: number): boolean {
     const win = this.bannerCardWindow
     if (win === undefined || win.isDestroyed()) return false
-    const height = Math.round(
-      Math.min(BANNER_CARD.maxHeight, Math.max(BANNER_CARD.minHeight, cardHeight)),
-    )
+    const height = clampBannerCardHeight(cardHeight)
     const bounds = win.getBounds()
     const contentHeight = win.getContentBounds().height
     const frameDelta = Math.max(0, bounds.height - contentHeight)
@@ -711,39 +692,19 @@ export class WindowManager {
   }
 
   /**
-   * 卡片窗几何：水平居中、贴顶下浮。
+   * 卡片窗**首帧**几何：水平居中、贴顶下浮、高度取 `BANNER_CARD.initialHeight`。
    *
-   * 宽度取用户设置的三档（`notifications.size`，v38）；高度仍是「内容量出来 + 24px」——
-   * 这一处只给**首帧**估算（渲染层随后用 `banner:measure` 回报真实高度并覆盖它），
-   * 所以按当前宽度折算每行字数，别用固定 28 字（360px 的紧凑卡会估矮、480px 的会估高）。
+   * 宽度按所在显示器 DIP 宽度与 `notifications.size` 现算（`banner-geometry`）；
+   * 真实高度由渲染层量完经 `banner:measure` 覆盖，这里不再按字符数估算
+   * （估算偏大 = 透明死区、偏小 = 裁字，且 CSS 字号是流体的，主进程算不准）。
    */
-  private bannerCardBounds(
-    payload: BannerShowPayload | undefined,
-    displayBounds: AwarenessGlowRect,
-  ): AwarenessGlowRect {
-    const body = payload?.body ?? ''
-    const cardWidth = this.bannerCardWidth()
-    const charsPerLine = Math.max(16, Math.floor((cardWidth - 76) / 12.6))
-    const lines =
-      body === ''
-        ? 0
-        : Math.min(BANNER_CARD.maxLines, Math.max(1, Math.ceil(body.length / charsPerLine)))
-    const cardHeight =
-      BANNER_CARD.baseHeight + (lines === 0 ? 0 : BANNER_CARD.gap + lines * BANNER_CARD.lineHeight)
-    const width = cardWidth + BANNER_CARD.margin * 2
-    const height = cardHeight + BANNER_CARD.margin * 2
-    return {
-      x: Math.round(displayBounds.x + (displayBounds.width - width) / 2),
-      y: Math.round(displayBounds.y + BANNER_CARD.topOffset),
-      width,
-      height,
-    }
+  private bannerCardWindowBounds(displayBounds: AwarenessGlowRect): AwarenessGlowRect {
+    return bannerCardBounds(this.currentBannerSize(), displayBounds)
   }
 
-  /** 当前生效的卡片宽度（读设置，现读即生效；未知值回落标准档） */
-  private bannerCardWidth(): number {
-    const size = this.options.settings.get().notifications.size
-    return BANNER_CARD_WIDTHS[size] ?? BANNER_CARD_WIDTHS.standard
+  /** 当前生效的卡档（读设置，现读即生效；脏值由 `banner-geometry` 回落标准档） */
+  private currentBannerSize(): BannerCardSize {
+    return this.options.settings.get().notifications.size
   }
 
   private bannerWindowDiagnostics(
@@ -1263,14 +1224,18 @@ export class WindowManager {
   }
 
   /**
-   * 流光提醒的**卡片窗**：紧凑置顶卡片，`focusable: false` + `showInactive()`（不抢焦点），
+   * 流光提醒的**卡片窗**：置顶卡片，`focusable: false` + `showInactive()`（不抢焦点），
    * 但**不做鼠标穿透** —— 卡片上的关闭按钮要能点。
+   *
+   * `autoplayPolicy` 显式钉成 `no-user-gesture-required`（Electron 44 的默认值就是它）：
+   * 提示音跑在 Web Audio 上，卡片窗既不可聚焦、用户也不会先点一下再弹提醒 ——
+   * 一旦哪天默认变成"需要用户手势"，表现就是「有时不响」而没有任何报错。
    */
   private ensureBannerCard(): BrowserWindow {
     const existing = this.bannerCardWindow
     if (existing !== undefined && !existing.isDestroyed()) return existing
 
-    const bounds = this.bannerCardBounds(undefined, this.edgeBarDisplay().bounds)
+    const bounds = this.bannerCardWindowBounds(this.edgeBarDisplay().bounds)
     const win = new BrowserWindow({
       ...bounds,
       show: false,
@@ -1294,6 +1259,7 @@ export class WindowManager {
         nodeIntegration: false,
         devTools: this.options.isDev,
         backgroundThrottling: this.options.backgroundThrottling ?? true,
+        autoplayPolicy: 'no-user-gesture-required',
       },
     })
 

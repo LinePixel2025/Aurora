@@ -171,9 +171,13 @@
   - **`banner-glow`**（光带窗）：覆盖**整块显示器** `bounds`（不用 `workArea`，避免任务栏缝隙）
     的透明浮层，只在屏幕顶边画一条 **64px** 光谱流光带（贴在屏幕第 0 像素，其余区域全透明）；
     `setIgnoreMouseEvents(true, { forward: true })` 完全鼠标穿透，因此「覆盖整屏」不等于「挡住整屏」。
-  - **`banner-card`**（卡片窗）：紧凑置顶卡片，**420px 宽**、高度按正文行数算（0/1/2/3 行），
-    水平居中、顶边下浮 **16px**；**不做鼠标穿透**（卡片上的关闭按钮要能点），
-    `focusable: false` + `showInactive()` 不抢焦点。
+  - **`banner-card`**（卡片窗）：置顶卡片，宽度按**所在显示器 DIP 宽度的比例**取（`notifications.size`
+    三档：紧凑 0.24 / 标准 0.36 / 宽大 0.46，再夹取 460–700 / 640–1000 / 780–1280，且不超过
+    `显示器宽 - 40`），水平居中、顶边下浮 **16px**；高度由内容决定 —— 首帧先按固定
+    **240px** 显示，渲染层量完（`banner:measure`）立刻收缩到「卡片 + 24px」（多出来的透明区
+    只存在约 1–2 帧，不再做字符数估算）；**不做鼠标穿透**（卡片上的关闭按钮要能点），
+    `focusable: false` + `showInactive()` 不抢焦点，`autoplayPolicy` 显式钉成
+    `no-user-gesture-required`（与 Electron 默认一致，防将来默认变化让提示音变成"要用户先点一下"）。
   - **窗口矩形 = 卡片 + 上下左右各 12px**（阴影外边距）。这条几何是硬的：透明窗口多出来的
     那块区域会挡住下面窗口的点击（透明 ≠ 可穿透），卡片缩水会在屏幕顶上留一个看不见的死区；
     截图探针按「卡片四边各留 8–16px」把这条钉住。
@@ -181,19 +185,27 @@
     显示顺序**先光带、后卡片**（卡片要在流光之上）。
 - **视觉（R1，Apple HIG 的克制分层）**：卡片用 `--bg-overlay` 实色填充 + 1px hairline
   （`--border-subtle` 混透明）+ `--radius-lg` 大圆角 + `--shadow-2` 柔和阴影；左侧一条
-  **3px 语义色条**（info = `--aurora-blue`、success = `--status-ok`、warning = `--status-unread`、
-  error = `--status-error`）。**禁用品牌双色渐变**（`--aurora-gradient` 已是纯强调色），
-  卡片背景必须是实色（探针断言 `background-image === none`），不出现霓虹彩带 / 拟物。
+  **语义色条**（info = `--aurora-blue`、success = `--status-ok`、warning = `--status-unread`、
+  error = `--status-error`，粗 `clamp(3px, 0.5cqw, 5px)`）。**禁用品牌双色渐变**
+  （`--aurora-gradient` 已是纯强调色），卡片背景必须是实色（探针断言 `background-image === none`），
+  不出现霓虹彩带 / 拟物。
   光带是 Apple Intelligence 风格的多色光谱（品红 → 紫罗兰 → 强调色 → 青 → 琥珀），
   每层经 `color-mix(..., transparent)` 压到 ≤36% 不透明度 + 大半径高斯模糊；
   **类名与关键帧名是 `banner-glow-*`，刻意不复用自感知流光的 `glow-*` / `awareness-glow-*`**
   （共用名字会让截图探针按 `animationName` 互相误命中）。
-- **内容（R2）**：标题（semibold 13.5px、单行省略）+ 正文（`--text-secondary` 12.5px、
-  最多 3 行 `-webkit-line-clamp`）。正文允许为空 —— 此时卡片只显示标题，不留空的第二行；
+- **内容（R2）**：标题（semibold、单行省略）+ 正文（`--text-primary`、最多 3 行
+  `-webkit-line-clamp`）。正文允许为空 —— 此时卡片只显示标题，不留空的第二行；
   标题为空时服务回落成「Aurora 提醒」。
-- **可配置（v38，设置 → 提醒页）**：`notifications.sound`（提示音）/ `volume`（0–100，
-  提示音与语音共用）/ `speak`（语音朗读）/ `size`（`compact` 360 / `standard` 420 /
-  `large` 480，只改卡片宽度、高度仍按内容量）/ `durationMs`（停留时长 2–30s，缺省 6s）。
+  **字号随卡片宽度流体放大**（卡片窗根节点是容器查询锚点，`cqw` = 窗口宽的 1%）：
+  标题 `clamp(19px, 3.3cqw, 34px)` / 行高 1.3、正文 `clamp(16px, 2.8cqw, 28px)` / 行高 1.45、
+  内边距 `clamp(14px, 2cqw, 22px)`、文字间距 `clamp(10px, 1.4cqw, 16px)`；
+  在 1920 屏上落成：紧凑 460px 卡（标题 19 / 正文 16）、标准 691px（23.6 / 20）、
+  宽大 883px（29.9 / 25.4）。关闭按钮 `clamp(30px, 3.6cqw, 40px)` 方钮，锚定**卡片**右上角
+  （`.banner-card` 因此必须 `position: relative`），右侧内边距为它预留位置。
+- **可配置（v38，设置 → 提醒页；2026-11-01 把 `size` 改成显示相对口径）**：
+  `notifications.sound`（提示音）/ `volume`（0–100，提示音与语音共用）/ `speak`（语音朗读）/
+  `size`（`compact` / `standard` / `large`：同时决定**卡片窗宽度**（按显示器宽比例）与**字号**，
+  高度仍按内容量）/ `durationMs`（停留时长 2–30s，缺省 6s）。取值与默认值不变，**不升配置版本**。
   前四项在**非流光通道**下置灰（仍可见，免得用户找不到）。`sound` / `speak` 是**总闸**：
   关掉后连请求级 `sound: true` / `speak: true` 也不越过；开着时请求级仍可让某一条静音 / 不读。
 - **行为**：
@@ -214,8 +226,16 @@
   - 渲染层按 `durationMs - 320ms` 开始淡出、到点回执 `banner:dismiss(id)`；主进程另有
     `durationMs + 1500ms` 的**兜底定时器**（渲染进程崩掉 / 脚本异常时照样收尾，卡片不会永远挂着）。
   - 点击卡片任意位置或右上角关闭按钮都会播完退场再回执关闭；主进程收到回执后隐藏两扇窗并推进队列。
-  - **提示音（R4）**：Web Audio 现场合成两声上行音（A5 → E6，快起慢落、峰值音量很低），
-    不新增音频资产（打包体积 / CSP / 资源缺失三件事一起省掉）；失败静默降级。
+  - **提示音（R4，2026-11-01 重写）**：Web Audio 现场合成三声上行音
+    （A5 → C#6 → E6，三角波，快起慢落 0.72s），不新增音频资产（打包体积 / CSP / 资源缺失
+    三件事一起省掉）；**模块级复用同一个 `AudioContext`**，播放前若 `state !== 'running'`
+    先 `await resume()`，再从 `currentTime + 40ms` 开始调度 —— 这是修「有时不响」的关键：
+    旧实现每次 `new AudioContext()` 并把音符排在 `currentTime`（挂起时是 0），
+    上下文稍后恢复时音符已经过去，于是静默。每音峰值 `0.26 × volume^0.7`
+    （默认 60% 下 ≈ 0.18，旧实现是 `0.05 × 0.6 = 0.03`，几乎听不见），末尾接压缩器
+    （threshold -12dB / ratio 8）防叠加削波；失败一律静默降级（卡片与朗读不受影响）。
+    设置页音量行提供「试听」按钮，走**同一个** `playBannerChime`，用来区分「Aurora 没响」
+    与「系统没声」。
   - **语音（R3）**：`speak` 为真且 **TTS 已配置**（`tts.enabled` + `tts.active` 指向完整 provider，
     判据与对话窗朗读共用 `renderer/shared/tts-config.ts`）时经 `tts:synthesize` 合成
     `title + '。' + body` 后播放；**未配置时静默跳过、不报错不重试**（口径同 06 §13.5）。
@@ -225,11 +245,13 @@
   —— **仅当交互窗未在前台**（不可见或没有键盘焦点）才补一条，`speak: false`、`sound: true`。
   三者都走同一个 `BannerService.show()`，排队与去重因此只有一份实现。
 - **截图与探针**：`banner-card.png` / `banner-glow.png` 两个场景（内部窗口由
-  `captureWindows` 现取，`?preview=1` 渲染固定示例内容）。判据只量矩形：卡片必须与窗口同大
-  （四边各留 8–16px）、标题单行、正文在卡片内、关闭按钮 ≥12px；光带贴住顶边、横向 ≥95% 视口、
-  厚度 ≤120px，且 600ms 前后 `background-position` 真有变化。另各有一条**动效声明**判据：
-  卡片要能在样式表里找到 `banner-card-enter-active` / `leave-active`，光带根的
-  `transition-duration` 含 `0.32s`（防「动画被删/改名」）。
+  `captureWindows` 现取，`?preview=1` 渲染固定示例内容）。判据只量矩形 + 计算样式：
+  卡片必须与窗口同大（四边各留 8–16px）、卡宽 ≥440px、标题单行（高度按 computed
+  line-height 推）、正文字号 ≥17px、标题字号 ≥20px、关闭按钮 ≥28px、正文在卡片内；
+  光带贴住顶边、横向 ≥95% 视口、厚度 ≤120px，且 600ms 前后 `background-position` 真有变化。
+  另各有一条**动效声明**判据：卡片要能在样式表里找到 `banner-card-enter-active` /
+  `leave-active`，光带根的 `transition-duration` 含 `0.32s`（防「动画被删/改名」）。
+  「提醒」设置页细节区另钉一枚「试听」按钮存在且可点。
 
 ### 2.3 主界面（Chat Window）
 
@@ -1597,9 +1619,11 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   `banner` 流光提醒 / `both` 两者都发 / `off` 不打扰（只记日志）。去重（3s，`dedupeKey`）在
   通道判定**之前**：`both` 下同一条提醒也只算一次，不会出现「系统通知被合并、流光却弹了两次」。
   `notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，不受这个默认值影响。
-- **流光提醒的细节（v38，同一页下半部分）**：提示音开关 / 音量（0–100，提示音与语音共用）/
-  语音朗读开关 / 弹窗大小（紧凑 360 / 标准 420 / 宽大 480）/ 停留时长（2–30s）。全部即时生效：
-  主进程每次 `show()` 现读设置，`size` 直接决定卡片窗宽度（高度仍按内容量）。
+- **流光提醒的细节（v38，同一页下半部分）**：提示音开关 / 音量（0–100，提示音与语音共用，
+  带「试听」按钮）/ 语音朗读开关 / 弹窗大小（紧凑 / 标准 / 宽大）/ 停留时长（2–30s）。
+  全部即时生效：主进程每次 `show()` 现读设置，`size` 决定卡片窗宽度（按显示器宽度比例取）与字号
+  （高度仍按内容量）。2026-11-01 起三档整体放大：1920 屏上标准档卡宽 ≈691px、标题 ≈23.6px、
+  正文 ≈20px（旧值 420 / 13.5 / 12.5），教室投影建议选「宽大」。
 - **系统通知**：分类完成（点击打开对应文件夹）、课前提醒、引导提醒。
 - **流光提醒（2026-10-24，§2.2.3）**：屏幕顶端流光 + 置顶卡片的第三条提醒通道，
   由 Agent 工具 `notify_banner`、插件 `ctx.banner`、`ask_user` 提问三处触发；

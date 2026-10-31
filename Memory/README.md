@@ -28,7 +28,7 @@
 | 2026-10-25 | 插件用量统计（ctx.usage）：本机按日账本、权限口径与面板取数的坑                    | 插件, 用量, Token, 生图, 语音, 隐私, 探针, 坑, 口径 | [2026-10-25-plugin-usage-stats.md](2026-10-25-plugin-usage-stats.md) |
 | 2026-10-25 | v0.5.6 双投发布（流光提醒 + 提醒设置页，配置 v36→v38）与三个发布卡点                    | 发布, 打包, 更新源, Center, GitHub, 记录, 口径 | [2026-10-25-v056-release.md](2026-10-25-v056-release.md) |
 | 2026-10-24 | 默认提醒方式（v37）：路由放在 NotificationService、去重先于通道、设置页两处接线              | 提醒, 通知, 配置, 迁移, 设置页, 探针, 坑, 口径 | [2026-10-24-default-reminder-channel.md](2026-10-24-default-reminder-channel.md) |
-| 2026-10-24 | 流光提醒（Banner Notification）：窗口几何 / 内容高度回报 / 三条来源 / 探针口径 | 流光提醒, banner, Electron, 窗口, IPC, TTS, 探针, 坑, 口径 | [2026-10-24-banner-notification-channel.md](2026-10-24-banner-notification-channel.md) |
+| 2026-10-24（11-01 修订） | 流光提醒（Banner Notification）：窗口几何 / 内容高度回报 / 三条来源 / 大屏字号与卡宽 / 提示音可靠性 / 探针口径 | 流光提醒, banner, Electron, 窗口, IPC, TTS, 提示音, Web Audio, 大屏, 字号, 探针, 坑, 口径 | [2026-10-24-banner-notification-channel.md](2026-10-24-banner-notification-channel.md) |
 | 2026-10-24 | 插件独立界面启动空窗、Center 官方模型抢占默认模型、插件重启/配置窗口 | 插件, 启动, IPC, Center, 模型优先级, 重启, 窗口, 探针, 坑, 口径 | [2026-10-24-plugin-startup-model-priority-config-window.md](2026-10-24-plugin-startup-model-priority-config-window.md) |
 | 2026-10-24 | 插件 / MCP 点号工具名发给严格网关会整请求 400：出站线路名编解码                | agent-core, 工具, 插件, MCP, LLM, provider, 坑, 口径 | [2026-10-24-tool-wire-names.md](2026-10-24-tool-wire-names.md) |
 | 2026-10-24 | 桌面小组件层级（floating / normal / desktop）与原生 Acrylic：owner 亲和 / 恢复守护 / 圆角 shape | 插件, 小组件, Electron, 窗口, 毛玻璃, Win32, PowerShell, 坑, 口径 | [2026-10-24-widget-window-level-and-glass.md](2026-10-24-widget-window-level-and-glass.md) |

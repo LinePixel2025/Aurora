@@ -24,6 +24,7 @@ import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import { useSettingsStore } from '../../shared/stores.js'
+import { playBannerChime } from '../../shared/chime.js'
 
 const settingsStore = useSettingsStore()
 const error = ref<string | null>(null)
@@ -80,6 +81,14 @@ const size = computed<BannerCardSize>(() => notifications.value?.size ?? 'standa
 const durationMs = computed(() => notifications.value?.durationMs ?? 6000)
 /** 只有流光通道才吃这些细节：选系统通知时整块置灰（文案仍可见，免得用户找不到） */
 const bannerActive = computed(() => channel.value === 'banner' || channel.value === 'both')
+
+/**
+ * 试听提示音：与流光卡片走**同一个** `playBannerChime`（同一个音量曲线 / 音色）。
+ * 听不到 = 系统 / 设备侧没声，而不是"流光提醒没响"—— 排障时这条比猜测有用。
+ */
+function previewSound(): void {
+  void playBannerChime(volume.value / 100)
+}
 
 async function save(patch: Partial<NonNullable<typeof notifications.value>>): Promise<void> {
   const current = notifications.value
@@ -251,7 +260,7 @@ function describeTest(result: NotificationTestResult): string {
       <SettingField
         data-field="notifications.sound"
         label="提示音"
-        hint="弹出时播两声轻提示音，与系统提示音互不影响"
+        hint="弹出时播一段上行提示音，与系统提示音互不影响"
       >
         <input
           type="checkbox"
@@ -278,6 +287,14 @@ function describeTest(result: NotificationTestResult): string {
             @change="save({ volume: Number(($event.target as HTMLInputElement).value) })"
           />
           <span class="tiny muted mono volume-value">{{ volume }}%</span>
+          <AppButton
+            size="sm"
+            data-field="notifications.testSound"
+            :disabled="!bannerActive || !sound"
+            @click="previewSound"
+          >
+            试听
+          </AppButton>
         </div>
       </SettingField>
 
@@ -297,7 +314,7 @@ function describeTest(result: NotificationTestResult): string {
       <SettingField
         data-field="notifications.size"
         label="弹窗大小"
-        hint="卡片宽度；正文越长越适合宽一档"
+        hint="卡片与文字大小随屏幕宽度放大；投影建议选宽大"
       >
         <div class="seg-row" role="radiogroup" aria-label="弹窗大小">
           <button

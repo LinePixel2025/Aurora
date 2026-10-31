@@ -296,7 +296,7 @@
     "sound": true, // v38：提示音总闸（关掉后请求级 sound:true 也不响）
     "volume": 60, // v38：提示音与语音播报音量（0–100）
     "speak": true, // v38：语音朗读总闸（仍需 tts 已配置）
-    "size": "standard", // v38：compact 360 | standard 420 | large 480（只改卡片宽度）
+    "size": "standard", // v38：compact / standard / large —— 按显示器宽度比例取卡宽并流体放大字号（2026-11-01 放大）
     "durationMs": 6000, // v38：停留时长（2000–30000）
   },
   // v39 新增：Computer Use（docs/06 §28）。整组在 SETTINGS_READONLY_PREFIXES 里；
@@ -641,7 +641,8 @@
 - `notifications`（**v37 新增，v38 扩展**，见 07 §4）：提醒通道与细节。
   `channel`：`system`（默认，系统通知中心）/ `banner`（流光提醒）/ `both`（两条都发）/
   `off`（不打扰，只记日志）；`sound` / `volume` / `speak` / `size` / `durationMs`（v38）：
-  流光提醒的提示音、音量（0–100）、语音朗读、卡片大小（`compact` / `standard` / `large`）与停留时长（2–30s）。
+  流光提醒的提示音、音量（0–100）、语音朗读、卡片大小（`compact` / `standard` / `large`：
+  按显示器宽度比例取卡宽 + 流体字号，2026-11-01 起整体放大；取值与默认值未变）与停留时长（2–30s）。
   `sound` / `speak` 是**总闸**：关掉后请求级 `true` 也不越过。`channel` 只决定 Aurora 自己发起的提醒
   （分类完成 / 课前提醒 / 引导 / `notify_user`）；`notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，
   不受 `channel` 影响（但仍受两个总闸约束）。`SettingsPatch` 新增可选 `notifications` 字段（顶层浅合并）；
