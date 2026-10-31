@@ -5,6 +5,10 @@
 本目录存放 Aurora 项目的规划与设计文档，作为开发的**单一事实来源（SSOT）**。
 代码结构、接口与交互以实现前的最新文档为准，如需偏离，先改文档再改代码。
 
+> **开源与发布**：项目以 [MIT License](../LICENSE) 开源；安装包、`latest.yml` 与
+> `*.blockmap` 统一发布在本仓库 [GitHub Releases](https://github.com/LinePixel2025/Aurora/releases)。
+> 2026-10-31 起不再使用独立的 `Aurora-releases` 仓库，拓扑见 [09 §1](./09-packaging-release.md)。
+
 ## 当前实现状态
 
 **开发中：Computer Use（配置 Schema v39）**——让 Agent 在用户显式授权后截屏并操控真实
