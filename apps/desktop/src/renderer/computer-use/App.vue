@@ -8,11 +8,12 @@
  * - `layer=hud`：**顶部**置顶的过程面板，逐条显示「正在做什么」（不显示坐标 / 尺寸 /
  *   输入文字），并把最近几步淡化列在下面。
  *
- * 两者都不接收鼠标（主进程已 `setIgnoreMouseEvents`），也都 `setContentProtection(true)`，
- * 因此不会出现在 Agent 自己的截图里。
+ * 两者都不接收鼠标（主进程已 `setIgnoreMouseEvents`），也不做内容保护
+ *（远程桌面 / 屏幕共享下要能看见）。
  *
- * 光标位置由主进程 30fps 推送（不是渲染层猜）；用户手动移动鼠标时浮层也会跟上，
- * 这正是「干扰不中断」的可见证据。
+ * 光标位置由主进程推送：**这是 Agent 自己的光标**，只在动作层调用 `moveCursor()` 时
+ * 沿轨迹移动；用户自己晃鼠标时光环停在原地（2026-10-31 起不再跟随真实指针）。
+ * 第一次进入操作态时主进程用真实指针播一次种子，避免第一段滑动从屏幕角落飞出来。
  */
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import type { ComputerUseEvent } from '@aurora/shared'
@@ -35,6 +36,8 @@ const active = ref(preview)
 const cursor = reactive({ x: 0, y: 0 })
 const trail = ref<Array<{ x: number; y: number }>>([])
 const ripple = ref<{ x: number; y: number; key: number } | null>(null)
+/** 收到过光标位置才开始画：否则第一帧会在窗口左上角闪一个光环。 */
+const hasCursor = ref(false)
 /** 过程面板：新 → 旧。第一条是「这一步在干什么」。 */
 const steps = ref<ComputerUseStepView[]>(preview ? PREVIEW_STEPS.map((step) => ({ ...step })) : [])
 const hudTone = ref<'info' | 'warn'>('info')
@@ -65,6 +68,7 @@ function applyVisuals(settings: {
 }
 
 function setCursor(x: number, y: number): void {
+  hasCursor.value = true
   cursor.x = x
   cursor.y = y
   trail.value = [...trail.value.slice(-3), { x, y }]
@@ -238,7 +242,7 @@ onUnmounted(() => {
       </span>
     </div>
 
-    <div v-if="showCursor" class="cu-cursor-layer" data-field="computer-use.cursor">
+    <div v-if="showCursor && hasCursor" class="cu-cursor-layer" data-field="computer-use.cursor">
       <span
         v-for="(point, index) in trail"
         :key="`${point.x}-${point.y}-${index}`"

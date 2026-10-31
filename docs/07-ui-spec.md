@@ -2649,12 +2649,16 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   - `setIgnoreMouseEvents(true, { forward: true })`（透明 ≠ 穿透）；
   - **不做 `setContentProtection`**：WDA 会让 RustDesk / 远程桌面 / 屏幕共享完全看不到浮层；
   - **进入操作模式后持续在场、实时更新**：不再在截屏时隐藏，模型截图会带上浮层；
-  - `backgroundThrottling: false`（光标 30fps 跟手）。
+  - `backgroundThrottling: false`（虚拟光标按 60fps 插值滑动，不被后台节流）。
   - **出现时机**：授权（`/computer`）本身不建浮层；第一次工具调用（截图 / 读窗口 / 动作）
     才创建并显示；此后一直保持，直到用户停止 / Agent 调 `computer_stop` / 会话结束。
-- **视觉**：虚拟光标（`computer-use.cursor`）跟随真实指针，光环
-  `computer-use-cursor-pulse` + 拖尾；点击 / 拖拽 / 滚轮涟漪
-  `computer-use-click-ripple`；**顶部光谱流光带**（与「流光提醒」同款：
+- **视觉**：虚拟光标（`computer-use.cursor`）是 **Agent 自己的光标**——只按动作层的
+  `moveCursor()` 轨迹移动（显示器内 DIP、约 60fps、缓出），**不跟随用户的鼠标**；
+  进入操作态时用真实指针位置播一次种子，收到第一个位置事件之前不画（避免左上角闪一下）。
+  光环 `computer-use-cursor-pulse` + 拖尾；点击 / 拖拽 / 滚轮涟漪
+  `computer-use-click-ripple`（按显示器内 DIP 定位；**光环先滑到落点、停一拍，系统指针才瞬移
+  过去并点击** —— 滑行阶段系统指针原地不动，不会把用户的鼠标拽着走）；
+  **顶部光谱流光带**（与「流光提醒」同款：
   `.cu-glow-bloom` 呼吸 `computer-use-glow-breathe` + `.cu-glow-halo` / `.cu-glow-line`
   流转 `computer-use-glow-spectrum`）在操作期间持续播放，每个动作再短暂增亮一档；
   `prefers-reduced-motion` 下降级为静态。原生系统指针保留（虚拟光标是光环 + 拖尾，

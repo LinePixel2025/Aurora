@@ -71,6 +71,35 @@ export function dipToPhysical(point: { x: number; y: number }): { x: number; y: 
   }
 }
 
+/**
+ * 物理虚拟屏幕点 → DIP 点（虚拟光标落点用：浮层窗口是 DIP 坐标）。
+ *
+ * 动作层一路是物理像素（`SendInput` / 截图像素），浮层却按 DIP 摆位；不换算就会在
+ * 125% / 150% 缩放下「光标停在点击位置的左边」。`screen.screenToDipPoint` 是 Windows
+ * 专有 API，异常时按各显示器 scaleFactor 手算一遍兜底。
+ */
+export function physicalToDip(point: { x: number; y: number }): { x: number; y: number } {
+  try {
+    return screen.screenToDipPoint(point)
+  } catch {
+    for (const display of screen.getAllDisplays()) {
+      const origin = dipToPhysical({ x: display.bounds.x, y: display.bounds.y })
+      const factor = display.scaleFactor > 0 ? display.scaleFactor : 1
+      const x = display.bounds.x + (point.x - origin.x) / factor
+      const y = display.bounds.y + (point.y - origin.y) / factor
+      if (
+        x >= display.bounds.x - 1 &&
+        x <= display.bounds.x + display.bounds.width + 1 &&
+        y >= display.bounds.y - 1 &&
+        y <= display.bounds.y + display.bounds.height + 1
+      ) {
+        return { x, y }
+      }
+    }
+    return point
+  }
+}
+
 function displayGeometryOf(display: Display): DisplayGeometry {
   const topLeft = display.bounds
   const bottomRight = {
