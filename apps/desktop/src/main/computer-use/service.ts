@@ -69,8 +69,9 @@ export interface ComputerUseServiceOptions {
   /**
    * 会话结束时清理端口侧坐标空间（下一会话必须重新截图）。
    *
-   * 带上 `reason` 是为了让装配层区分「Agent 主动完成任务退出」（需要把 Aurora 调回前台）
-   * 与「用户 / 设置 / 锁屏 / 退出」等其它结束原因 —— 后者不该抢用户当前应用的焦点。
+   * 带上 `reason` 是为了让装配层区分「结束原因」：任务完成 / 用户停止 / 闲置 / 预算 /
+   * 失败会把 Aurora 调回前台，设置页改配置 / 切模型 / 锁屏 / 退出则保持用户当前焦点
+   * （判据唯一一份在 `foreground.ts`）。
    */
   onStopped?: (sessionId: string, reason: ComputerUseStatusStopReason) => void
 }

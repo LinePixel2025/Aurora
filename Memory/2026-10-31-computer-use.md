@@ -1,6 +1,6 @@
 # Computer Use（v39）：授权、PowerShell 宿主与浮层口径
 
-**标签**：Computer Use, agent-core, 工具, 权限, PowerShell, 窗口, 浮层, 过程面板, RustDesk, 远程桌面, 截图, IPC, 探针, 坑, 口径
+**标签**：Computer Use, agent-core, 工具, 权限, PowerShell, 窗口, 浮层, 状态胶囊, 过程面板, 前台, RustDesk, 远程桌面, 截图, IPC, 探针, 提示词, 坑, 口径
 
 ## 结论
 
@@ -49,14 +49,15 @@
   关闭 `showVirtualCursor` 时不播动画、也不等那 60ms；跨显示器不跨屏滑，直接在新屏落点。
 - **涟漪坐标必须是显示器内 DIP**：`noteClick()` 以前直接把模型给的**图片像素**发出去，
   高 DPI / 缩放屏上涟漪会偏离落点。现在统一用 `dipOf(physical)` 算出的 DIP 点。
-- 浮层每显示器一扇 + **顶部操作过程面板**：`focusable:false`、鼠标穿透、`showInactive()`；
+- 浮层每显示器一扇 + **顶部状态胶囊**（v39.2 起；此前是「顶部操作过程面板」）：
+  `focusable:false`、鼠标穿透、`showInactive()`；
   **绝不用 `setContentProtection(true)`**：WDA_EXCLUDEFROMCAPTURE 会让 RustDesk / 远程桌面 /
   屏幕共享里完全看不到浮层（本机实测就是这样，用户看到「没有流光、没有过程面板、没有虚拟光标」）。
   **进入操作模式后持续在场、每个动作实时更新**：不要为截图隐藏（用户明确要求「一直在场」；
-  代价是模型截图会带上浮层）。面板只显示「这一步在干什么」与最近 3 步，
-  **不显示运行时长 / 坐标 / 矩形 / 尺寸 / 输入文字**（2026-10-31 删除计时）。
+  代价是模型截图会带上浮层）。v39.2 起面板只显示「这一步在干什么」+ 可选的「下一步」，
+  **不再列历史步骤**，**不显示运行时长 / 坐标 / 矩形 / 尺寸 / 输入文字**（2026-10-31 删除计时）。
   `ComputerUseStatus.recentActions` 是 `{ action, summary, count }[]`（新→旧，最多 6 条），
-  面板挂载时据此补齐漏掉的前几步；`lastActionKind` 给对话状态条选图标。
+  HUD 挂载时只取最新一条补「当前步骤」；`lastActionKind` 给对话状态条选图标。
 - **步骤图标与历史分组（2026-10-31）**：`action` → 图标映射唯一一份在
   `apps/desktop/src/renderer/shared/computer-use-steps.ts`（截图 Scan、点击 MousePointerClick、
   移动 MousePointer2、键盘 Keyboard、窗口 AppWindow、UI 控件图标、等待 Timer、未知 Wrench）；
@@ -70,7 +71,7 @@
   `cu-glow-bloom` 呼吸 + `cu-glow-halo` / `cu-glow-line` 流转），不再是四边细线；
   关键帧 `computer-use-glow-breathe` / `computer-use-glow-spectrum`，类名仍用 `cu-glow-*` 防探针互撞。
 - 过程描述由 `policy.ts` 的 `describe*Action` 生成，一律「正在 …」现在进行时；截图 / 读窗口 /
-  等控件是**只读步骤**，走 `service.noteStep()`：进过程面板与状态条，**不计动作限额**。
+  等控件是**只读步骤**，走 `service.noteStep()`：进状态胶囊与状态条，**不计动作限额**。
 - 受保护目标硬编码：Aurora 自身 pid、终端 / shell、任务管理器、UAC / 锁屏；`allowedApps` 空
   = 除禁止项与保护目标外允许，deny 优先；`launch` 只接受 `.exe` / `.com`。
 
@@ -84,7 +85,7 @@
   （WDA_EXCLUDEFROMCAPTURE）会让浮层在 RustDesk / 远程桌面 / 屏幕共享的画面里完全不可见，
   但 Win32 侧 `isVisible()` / `isAlwaysOnTop()` / DWM `cloaked=0` 全部正常，日志也照常打印
   「浮层已显示」——非常像「窗口没建」。判据：用 GDI `CopyFromScreen` 截整屏，保护开启时顶部
-  没有过程面板、关闭时同一位置出现；Agent 自己的 `capturePage` 两种情况都能拍到（**不能**用它判断）。
+  没有状态胶囊、关闭时同一位置出现；Agent 自己的 `capturePage` 两种情况都能拍到（**不能**用它判断）。
 - **不要为截图隐藏浮层（2026-10-31 用户口径）**：曾用 `withVisualsHidden` 在 `captureDisplay()`
   前后隐藏 / 恢复，结果用户看到浮层频繁闪断，明确要求「所有特效、提示框一直在场」。
   现在截屏不隐藏，模型图片会带上 HUD / 光标 / 光带；如果将来要排除，只能另找不闪断的方案，
@@ -92,15 +93,19 @@
 - **不要给 `overlay.applyConfig()` 接授权路径**：WindowManager 的 `applyComputerUseConfig()` 会直接
   `showComputerUseOverlays()`。所以 `start()` 里不调它、`reconfigure()` 只在 `overlayShown` 时调；
   否则「刚输入 `/computer` 就满屏流光」。
-- **过程面板几何（2026-10-31）**：窗口 560×116、`y = display.bounds.y + 20`（顶部居中，**不是底部**）；
-  探针 `nativeCheck` 用 `screen.getDisplayMatching(hud.bounds)` 断言 `hud.bounds.y - display.y <= 200`。
-  面板设计走「安静的状态仪器」：状态行 + 当前步骤 + 最近 2 步，唯一装饰是贴顶 1px 光谱细线；
-  不再用色块/分隔线/时间；600×128 旧尺寸已废弃。
+- **状态胶囊几何（v39.2，替换旧「过程面板 560×116 / 560×140」）**：窗口 **520×88**、
+  `y = display.bounds.y + 6`（贴顶边，**不是底部**；旧 y+20 会盖住标签栏 / 地址栏）；
+  卡片 `width: fit-content` 自适应（宽 ≤520、高 36–54）。探针 `nativeCheck` 用
+  `screen.getDisplayMatching(hud.bounds)` 断言 `hud.bounds.y - display.y <= 24` 且
+  `width <= 540 && height <= 96`；DOM 探针量卡片矩形（≤ 520×64）并要求没有
+  `.hud-history` / `[data-field="computer-use.hud-step"]` / `.hud-time`。
+  设计只剩两层：当前步骤 + 可选「下一步」，唯一装饰是贴顶 1px 光谱细线；不再用色块/分隔线/时间。
 - **探针口径**：`chat-computer-use.png` 现在是「输入 `/computer` 后斜杠候选出现且旧开关不存在」；
   `computer-use-overlay.png` 断言顶部光带的 `computer-use-glow-breathe` / `computer-use-glow-spectrum`
-  动画名与光标 / 光环；`computer-use-hud.png` 断言 `.hud-title` 含「正在操作」、`.hud-text` 含「正在」
-  且不含 `(`、至少 2 条 `.hud-step`、当前 / 历史图标（`.hud-current-icon` / `.hud-history-icon`）、
-  至少 1 个 `×N`（`.hud-repeat`）、心跳 `computer-use-hud-heartbeat`、无 `.hud-time`；
+  动画名与光标 / 光环（v39.2 光带 64 → 48px，动画名不变）；
+  `computer-use-hud.png` 断言 `.hud-text` 含「正在」且不含 `(`、`.hud-next` 含「下一步」、
+  `.hud-count` 带 `/`、`.hud-repeat`（×N）、`.hud-current-icon`、`.hud-dot` 心跳
+  `computer-use-hud-heartbeat`，且没有历史 / `.hud-time`；
   两个 nativeCheck 都要求 `contentProtected === false`（防有人把内容保护加回来）。
 - **`win-host-script.ts` 里不能出现反引号**：PS 按键表里的反引号会提前结束 TS 模板字符串，
   报一长串「',' expected」。用字符码或删除该键。
@@ -119,7 +124,7 @@
 
 - UIPI 下无法驱动管理员窗口；UAC 安全桌面 / 锁屏不可见；独占全屏可能遮住浮层。
 - 多屏不同 DPI 跨屏移动窗口后要重新截图；原生系统指针保留（虚拟光标是光环 + 拖尾）。
-- 截图会发送给模型，可能包含敏感屏幕内容；过程面板不含坐标 / 输入文字，日志只记动作类型。
+- 截图会发送给模型，可能包含敏感屏幕内容；状态胶囊不含坐标 / 输入文字，日志只记动作类型。
 
 > 2026-10-31 修订：入口改为 `/computer` 并带显式指令、授权与操作分离、底部 HUD 改为顶部过程面板、
 > 流光改为「流光提醒」同款顶部光带；修复「RustDesk 下看不到浮层」——去掉内容保护；再按用户要求
@@ -156,3 +161,19 @@
 > 预算（≤120 字不受影响）；`app_launch` 等窗 5s → 2s。160ms 光标滑行 + 60ms 停一拍**不动**
 > （视觉口径）。回归断言在 `run-profile.test.ts` / `service.test.ts` / `agentLoop.test.ts` /
 > `agentHost.test.ts` / `computer-use.test.ts`。
+> 2026-11-01 六次修订（v39.2：胶囊化 / 结束即回前台 / 提示词强化）：
+> (1) **顶部过程面板缩成「状态胶囊」**：窗口 560×140 → **520×88、`y = display.y + 6`**（贴顶边，
+> 不再 y+20），卡片 `width: fit-content` 按内容自适应（宽 ≤520、高 36–54），只留两行
+> 「当前步骤（图标 + 描述 + ×N + 步数）」+ 可选「下一步」；**删除最近两步历史**（HUD 里的
+> `.hud-history` / `.hud-step` / `.hud-history-icon` / `.hud-title` 全删，`recentActions` 仍留在
+> service 里供状态条 / 挂载补齐）。底色 88% → **94% 不透明** + 描边 + 阴影（「可见度高」），
+> 顶部光带 64 → 48px（bloom 40 / halo 34）。探针改为量矩形（卡片 ≤ 520×64、窗口 ≤ 540×96、
+> y 偏移 ≤ 24）且断言没有 history / step / `.hud-time`。**别再按 560×140 / 四层信息改回去**。
+> (2) **结束即回前台**：`foreground.ts` 的 `shouldBringAuroraToFront` 从「只有 agent」放宽到
+> **agent / user / idle / budget / error**（任务完成 / 用户停止 / 闲置 / 预算 / 失败都要让用户看到收尾）；
+> settings / permission / model / system / quit 仍不抢焦点。
+> (3) **提示词强化**：运行说明改成「截图 → 定位 → 同轮批量 2–4 步 → 截图验收」循环，补
+> 「定位优先级（UIA find → activate/快捷键 → 坐标）」「键盘前确认前台」「失败先重看、两次就换手段」
+> 「收尾立刻 computer_stop」；工具描述同步重写（`computer_ui` 先 find 不拉整棵树、
+> `computer_window launch` 不要到桌面找图标）。`computer_start` 结果新增**显示器几何**
+> （id / 物理尺寸 / 缩放 / 物理原点），截图结果新增「顶部胶囊与光环是 Aurora 的浮层，不是点击目标」。

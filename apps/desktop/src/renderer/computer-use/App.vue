@@ -3,10 +3,11 @@
  * Computer Use 浮层 / 操作过程面板（v39，docs/06 §28、docs/07 §7）。
  *
  * 同一个入口两种窗口：
- * - `layer=overlay`（每显示器一扇）：虚拟光标 + 四边流光 + 弥散光晕；
+ * - `layer=overlay`（每显示器一扇）：虚拟光标 + 顶部光谱流光 + 弥散光晕；
  *   每个动作到来时短暂增亮一档，表示 Agent 正在动手；
- * - `layer=hud`：**顶部**置顶的过程面板，逐条显示「正在做什么」（不显示坐标 / 尺寸 /
- *   输入文字），并把最近几步淡化列在下面。
+ * - `layer=hud`：**顶部**置顶的状态胶囊（v39.2）：只留「这一步在干什么」一行，
+ *   加一行可选的「下一步」计划；不显示坐标 / 尺寸 / 输入文字，也不再列历史步骤。
+ *   尺寸按内容自适应、贴在显示器顶边，尽量少挡屏幕（模型截图会带上它）。
  *
  * 两者都不接收鼠标（主进程已 `setIgnoreMouseEvents`），也不做内容保护
  *（远程桌面 / 屏幕共享下要能看见）。
@@ -24,13 +25,12 @@ const layer = query.get('layer') === 'hud' ? 'hud' : 'overlay'
 const preview = query.has('preview')
 const displayId = Number(query.get('displayId') ?? '')
 
-/** 截图预览的固定过程（只用于 `?preview=1`；真实值来自主进程事件）。 */
-const PREVIEW_STEPS: ComputerUseStepView[] = [
-  { action: 'mouse.click', summary: '正在点击「保存」', count: 1 },
-  { action: 'keyboard.type', summary: '正在输入文字（12 个字符）', count: 1 },
-  { action: 'screen.capture', summary: '正在查看屏幕', count: 3 },
-  { action: 'window.activate', summary: '正在切换到「记事本」', count: 1 },
-]
+/** 截图预览的固定步骤（只用于 `?preview=1`；真实值来自主进程事件）。 */
+const PREVIEW_STEP: ComputerUseStepView = {
+  action: 'mouse.click',
+  summary: '正在点击「保存」',
+  count: 3,
+}
 
 const active = ref(preview)
 const cursor = reactive({ x: 0, y: 0 })
@@ -38,13 +38,15 @@ const trail = ref<Array<{ x: number; y: number }>>([])
 const ripple = ref<{ x: number; y: number; key: number } | null>(null)
 /** 收到过光标位置才开始画：否则第一帧会在窗口左上角闪一个光环。 */
 const hasCursor = ref(false)
-/** 过程面板：新 → 旧。第一条是「这一步在干什么」。 */
-const steps = ref<ComputerUseStepView[]>(preview ? PREVIEW_STEPS.map((step) => ({ ...step })) : [])
 /**
- * 下一步计划（v39.1）：模型在动作参数 `next` 里写的一句话。
- * 只在 HUD 显示；空串 = 隐藏那一行（这一步没给计划 / 会话结束）。
+ * 过程面板：只保留**当前这一步**（连续相同的 action + summary 累加 `count` 显示 ×N）。
+ *
+ * 为什么不再列历史（v39.2）：面板在屏幕上、且在模型的截图里，历史两步只增加遮挡面积；
+ * 「刚刚做过什么」在对话状态条与聊天记录里都有。屏幕上的信息只留「现在」与「接下来」。
  */
-const nextText = ref(preview ? '正在点击「保存」' : '')
+const currentStep = ref<ComputerUseStepView | null>(preview ? { ...PREVIEW_STEP } : null)
+/** 下一步计划（v39.1）：模型在动作参数 `next` 里写的一句话。空串 = 隐藏那一行。 */
+const nextText = ref(preview ? '截图确认保存结果' : '')
 const hudTone = ref<'info' | 'warn'>('info')
 const actions = ref(preview ? 7 : 0)
 const maxSteps = ref(300)
@@ -58,11 +60,8 @@ let pulseTimer: ReturnType<typeof setTimeout> | undefined
 let offEvent: (() => void) | null = null
 
 const isHud = computed(() => layer === 'hud')
-const currentStep = computed<ComputerUseStepView | undefined>(() => steps.value[0])
 const currentText = computed(() => currentStep.value?.summary ?? '正在准备…')
 const currentIcon = computed(() => computerUseIcon(currentStep.value?.action))
-/** 只保留最近两步：面板的目标是「这一步在干什么」，历史多了反而抢注意力。 */
-const history = computed(() => steps.value.slice(1, 3))
 
 function applyVisuals(settings: {
   computerUse?: { showVirtualCursor?: boolean; glow?: boolean; showHud?: boolean }
@@ -102,17 +101,17 @@ function pulse(): void {
 
 /**
  * 记一步。**连续**的同一 action + summary 合并成一条并累加 count（显示 ×N）；
- * 中间隔了别的步骤就保留为新的一条，不丢时间顺序（旧实现是全局去重，会把旧位置抹掉）。
+ * 中间隔了别的步骤就从新的一条开始（旧的那一步只留在主进程的快照里）。
  */
 function pushStep(action: string, summary: string): void {
   const text = summary.trim()
   if (text === '') return
-  const head = steps.value[0]
-  if (head !== undefined && head.action === action && head.summary === text) {
-    steps.value = [{ ...head, count: head.count + 1 }, ...steps.value.slice(1)]
+  const head = currentStep.value
+  if (head !== null && head.action === action && head.summary === text) {
+    currentStep.value = { ...head, count: head.count + 1 }
     return
   }
-  steps.value = [{ action, summary: text, count: 1 }, ...steps.value].slice(0, 4)
+  currentStep.value = { action, summary: text, count: 1 }
 }
 
 function onEvent(event: ComputerUseEvent): void {
@@ -174,11 +173,10 @@ onMounted(() => {
     active.value = result.value.active
     actions.value = result.value.actions
     maxSteps.value = result.value.maxActions
-    // 窗口加载期间可能已经发生了几步：用主进程的过程快照补历史，别让面板从空白开始。
-    if (steps.value.length === 0 && result.value.recentActions !== undefined) {
-      steps.value = result.value.recentActions
-        .map((step) => ({ ...step, count: step.count ?? 1 }))
-        .slice(0, 4)
+    // 窗口加载期间可能已经发生了一步：用主进程的过程快照补上「当前步骤」，别从空白开始。
+    if (currentStep.value === null && result.value.recentActions !== undefined) {
+      const head = result.value.recentActions[0]
+      if (head !== undefined) currentStep.value = { ...head, count: head.count ?? 1 }
     }
     nextText.value = result.value.nextAction ?? ''
   })
@@ -201,47 +199,31 @@ onUnmounted(() => {
     data-field="computer-use.hud"
     aria-hidden="true"
   >
-    <header class="hud-head">
-      <span class="hud-dot" :class="hudTone" />
-      <span class="hud-title" data-field="computer-use.hud-title">正在操作</span>
-      <span class="hud-count">{{ actions > 0 ? `${actions} / ${maxSteps}` : '准备中' }}</span>
-    </header>
     <div class="hud-current">
+      <span class="hud-dot" :class="hudTone" data-field="computer-use.hud-dot" />
       <component
         :is="currentIcon"
         class="hud-current-icon"
-        :size="15"
+        :size="14"
         :stroke-width="1.9"
         aria-hidden="true"
       />
       <span class="hud-current-text" data-field="computer-use.hud-text">{{ currentText }}</span>
-      <span v-if="(currentStep?.count ?? 1) > 1" class="hud-repeat">
+      <span
+        v-if="(currentStep?.count ?? 1) > 1"
+        class="hud-repeat"
+        data-field="computer-use.hud-repeat"
+      >
         {{ currentStep?.count }}×
+      </span>
+      <span class="hud-count" data-field="computer-use.hud-count">
+        {{ actions > 0 ? `${actions} / ${maxSteps}` : '准备中' }}
       </span>
     </div>
     <p v-if="nextText !== ''" class="hud-next" data-field="computer-use.hud-next">
       <span class="hud-next-label">下一步</span>
       <span class="hud-next-text">{{ nextText }}</span>
     </p>
-    <ol v-if="history.length > 0" class="hud-history">
-      <li
-        v-for="(item, index) in history"
-        :key="`${item.action}-${index}`"
-        class="hud-history-item"
-        data-field="computer-use.hud-step"
-      >
-        <component
-          :is="computerUseIcon(item.action)"
-          class="hud-history-icon"
-          :size="12"
-          :stroke-width="1.8"
-          aria-hidden="true"
-        />
-        <span class="hud-history-text">{{ item.summary }}</span>
-        <span v-if="item.count > 1" class="hud-repeat">{{ item.count }}×</span>
-      </li>
-    </ol>
-    <p v-else class="hud-empty">正在准备…</p>
   </div>
 
   <div
@@ -334,7 +316,9 @@ onUnmounted(() => {
   top: 0;
   left: 0;
   right: 0;
-  height: 64px;
+  /* v39.2：光带从 64px 收到 48px —— 屏幕顶部这条是模型截图里最先被挡住的区域，
+   * 收窄后仍保留「液态光谱」的观感，但压住的窗口标题栏更少。 */
+  height: 48px;
   pointer-events: none;
 }
 
@@ -348,7 +332,7 @@ onUnmounted(() => {
 
 /* Bloom：宽幅弥散光谱底色（大半径模糊 = 液态感） */
 .cu-glow-bloom {
-  height: 54px;
+  height: 40px;
   background:
     radial-gradient(
       ellipse 32% 90% at 10% 0%,
@@ -382,7 +366,7 @@ onUnmounted(() => {
 
 /* Halo：主光谱流带（色相沿顶边流转） */
 .cu-glow-halo {
-  height: 46px;
+  height: 34px;
   background:
     linear-gradient(
       100deg,
@@ -498,36 +482,45 @@ onUnmounted(() => {
 }
 
 /*
- * 顶部操作过程面板：窗口就是卡片本身（560×140，v39.1 加了一行「下一步」），透明区不拦截鼠标。
+ * 顶部操作过程面板 → **状态胶囊**（v39.2）：窗口 520×88，卡片按内容自适应、贴在显示器顶边。
  *
- * 设计目标是「安静的状态仪器」而不是聊天卡：
- * - 只留四层信息：状态行 / 当前步骤 / 下一步计划 / 最近两步；没有分隔线、没有色块；
- * - 唯一的签名元素是贴顶的一条 1px 光谱细线（与屏幕流光同源，不抢注意力）；
- * - 底色用 `--bg-overlay`（浅色档近白、深色档深灰），**不能用不存在的 `--bg-elevated`**
- *   （那个 fallback 是写死的深色，浅色主题下会变成黑板）。
+ * 设计目标是「少挡屏幕，但一眼看清」而不是聊天卡：
+ * - 只留两层信息：**这一步在干什么**（图标 + 描述 + ×N + 步数）+ 可选的**下一步计划**；
+ *   不再列最近两步 —— 屏幕上多一行就多挡模型截图的十几像素，历史在对话状态条里。
+ * - 唯一的签名元素是贴顶的一条 1px 光谱细线（与屏幕流光同源，不抢注意力）。
+ * - **可见度**：底色 94% 不透明（浅色档近白、深色档深灰），边框 + 阴影保证白底 / 深底
+ *   桌面上都能看出边界；正文用 --text-primary，副文本用 --text-secondary（不是最淡的 muted）。
+ * - 底色必须用 `--bg-overlay`（浅色档白、深色档 #2c2c2e），**不能用不存在的 `--bg-elevated`**
+ *   （那个 fallback 写死深色，浅色主题下会变成黑板）。
  */
 .computer-use-hud {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  padding: 13px 18px 12px;
-  border-radius: 18px;
-  border: 1px solid color-mix(in srgb, var(--text-primary) 9%, transparent);
-  background: color-mix(in srgb, var(--bg-overlay) 88%, transparent);
+  gap: 3px;
+  padding: 7px 13px 8px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 11%, transparent);
+  background: color-mix(in srgb, var(--bg-overlay) 94%, transparent);
   box-shadow:
-    0 14px 36px -24px color-mix(in srgb, #000 45%, transparent),
-    inset 0 1px 0 color-mix(in srgb, #fff 24%, transparent);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    0 10px 26px -18px color-mix(in srgb, #000 52%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
   color: var(--text-primary);
   overflow: hidden;
   opacity: 0;
-  transform: translateY(-5px) scale(0.992);
+  transform: translateY(-6px) scale(0.99);
   transform-origin: 50% 0;
   transition:
-    opacity 200ms var(--ease-standard),
-    transform 240ms var(--ease-standard),
+    opacity 160ms var(--ease-standard),
+    transform 200ms var(--ease-standard),
     border-color 240ms var(--ease-standard);
 }
 
@@ -536,8 +529,8 @@ onUnmounted(() => {
   content: '';
   position: absolute;
   top: 0;
-  left: 24px;
-  right: 24px;
+  left: 18px;
+  right: 18px;
   height: 1px;
   background: linear-gradient(
     90deg,
@@ -559,12 +552,12 @@ onUnmounted(() => {
   border-color: color-mix(in srgb, var(--aurora-blue) 30%, transparent);
 }
 
-.hud-head {
+.hud-current {
   display: flex;
   align-items: center;
   gap: 7px;
-  flex: 0 0 auto;
-  height: 16px;
+  min-width: 0;
+  color: var(--text-primary);
 }
 
 .hud-dot {
@@ -582,35 +575,14 @@ onUnmounted(() => {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-unread) 14%, transparent);
 }
 
-.hud-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
-  letter-spacing: 0.01em;
-}
-
 .hud-count {
   flex: 0 0 auto;
+  margin-left: 2px;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-variant-numeric: var(--num-tabular);
   font-size: 10.5px;
   letter-spacing: 0.02em;
-}
-
-.hud-current {
-  margin: 8px 0 0;
-  flex: 0 0 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--text-primary);
 }
 
 .hud-current-icon {
@@ -623,9 +595,9 @@ onUnmounted(() => {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: var(--text-lg);
+  font-size: var(--text-base);
   font-weight: var(--weight-semibold);
-  line-height: 1.3;
+  line-height: 20px;
   letter-spacing: -0.01em;
 }
 
@@ -645,17 +617,16 @@ onUnmounted(() => {
   line-height: 16px;
 }
 
-/* 「下一步」：模型给的一句话计划（v39.1）。弱化到副文本层级，不跟当前步骤抢注意力。 */
+/* 「下一步」：模型给的一句话计划（v39.1）。副文本层级，不跟当前步骤抢注意力。 */
 .hud-next {
-  margin: 5px 0 0;
-  flex: 0 0 auto;
+  margin: 0;
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 11px;
-  line-height: 1.4;
+  line-height: 15px;
 }
 
 .hud-next-label {
@@ -665,7 +636,7 @@ onUnmounted(() => {
   background: var(--fill-1);
   color: var(--text-secondary);
   font-size: 10px;
-  line-height: 16px;
+  line-height: 15px;
 }
 
 .hud-next-text {
@@ -673,51 +644,6 @@ onUnmounted(() => {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.hud-history {
-  margin: 6px 0 0;
-  padding: 0;
-  flex: 0 0 auto;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  overflow: hidden;
-}
-
-.hud-history-item {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.45;
-  opacity: 0.82;
-}
-
-.hud-history-icon {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-}
-
-.hud-history-text {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.hud-history-item:nth-child(2) {
-  opacity: 0.62;
-}
-
-.hud-empty {
-  margin: 6px 0 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.45;
 }
 
 @keyframes computer-use-glow-breathe {

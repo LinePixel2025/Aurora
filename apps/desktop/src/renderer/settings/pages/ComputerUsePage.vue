@@ -157,7 +157,7 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
         <SettingField
           data-field="computer-use.showHud"
           label="操作过程面板"
-          hint="屏幕顶部显示这一步在干什么与最近几步；不显示坐标与输入内容"
+          hint="屏幕顶部显示这一步在干什么与下一步计划；不显示坐标与输入内容"
         >
           <label class="row tiny">
             <input

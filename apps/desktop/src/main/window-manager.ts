@@ -1334,7 +1334,7 @@ export class WindowManager {
   // ───────────────────────── Computer Use 浮层（v39，docs/06 §28） ─────────────────────────
 
   /**
-   * 显示 Computer Use 浮层：每块显示器一扇透明窗 + 一块**顶部**操作过程面板。
+   * 显示 Computer Use 浮层：每块显示器一扇透明窗 + 一块**顶部**状态胶囊（v39.2，过程面板精简版）。
    *
    * 三条硬口径：`showInactive()`（绝不抢用户当前应用的焦点）、
    * `setIgnoreMouseEvents(true, { forward: true })`（透明 ≠ 穿透，必须显式开）、
@@ -1682,14 +1682,15 @@ export class WindowManager {
 
   private computerUseHudBounds(): WindowBounds {
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-    // 置顶操作过程面板：贴在目标显示器顶部居中（不是底部）。窗口 = 卡片，透明区不拦截鼠标。
-    // 高度 140（v39.1）：状态行 / 当前步骤 / 「下一步」/ 最近 2 步四层信息；
+    // 顶部状态胶囊（v39.2）：贴在目标显示器顶边（6px），窗口只比卡片大一圈留给「下一步」。
+    // 卡片本身按内容自适应宽度（约 360–520），这里给上界：窗口 520×88。
+    // 旧尺寸 560×140 + y+20 会盖住标签栏 / 地址栏 —— 那正是模型最需要看清的一条。
     // 继续加高之前先看截图是不是真需要（面板越高压到的桌面内容越多）。
-    const width = 560
-    const height = 140
+    const width = Math.min(520, display.bounds.width)
+    const height = 88
     return {
       x: Math.round(display.bounds.x + (display.bounds.width - width) / 2),
-      y: Math.round(display.bounds.y + 20),
+      y: Math.round(display.bounds.y + 6),
       width,
       height,
     }
@@ -2003,7 +2004,8 @@ export class WindowManager {
    * （Windows 下对最小化窗口调 `show()` 不会退出最小化）。任务完成要把结果送到用户
    * 眼前，而用户很可能把主界面最小化在任务栏里，必须显式 `restore()`。
    *
-   * 只给「Agent 主动退出 Computer Use」这类**用户明确期待被打断**的场景用；
+   * 只给「Computer Use 结束」这类**用户明确期待被打断**的场景用（任务完成 / 用户停止 /
+   * 闲置超时 / 预算触顶 / 失败关闭，判据在 `computer-use/foreground.ts`）；
    * 小组件 / 提醒 / 普通推送仍走 `showInactive()`，不得抢焦点。
    */
   bringToFront(name: WindowName): WindowState {

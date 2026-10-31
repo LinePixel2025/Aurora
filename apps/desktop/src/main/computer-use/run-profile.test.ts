@@ -37,6 +37,8 @@ describe('Computer Use run profile', () => {
     // v39.1：进入后**同一次请求的下一轮**就可用，且不许与入口同轮批量
     expect(profile?.runContext).toContain('同一次请求的下一轮')
     expect(profile?.runContext).toContain('不要在同一轮')
+    // v39.2：先讲清「什么任务该进 Computer Use」，避免把结构化工具能做的活也丢给桌面
+    expect(profile?.runContext).toContain('必须点真实桌面')
   })
 
   it('已授权：动作工具 + 退出工具可见，入口摘掉，并注入退出约定', () => {
@@ -48,6 +50,10 @@ describe('Computer Use run profile', () => {
     expect(profile?.runContext).toContain('2–4 个动作')
     expect(profile?.runContext).toContain('`next`')
     expect(profile?.runContext).toContain('computer_wait')
+    // v39.2：操作循环 / 定位优先级 / 失败先重看（防「一步一停」与「盲重试」回归）
+    expect(profile?.runContext).toContain('截图验收')
+    expect(profile?.runContext).toContain('computer_ui')
+    expect(profile?.runContext).toContain('失败先重看')
   })
 
   it('组合运行档：上下文拼接、hiddenTools 并集、allowedTools 交集', () => {

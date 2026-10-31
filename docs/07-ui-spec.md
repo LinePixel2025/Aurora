@@ -2663,29 +2663,32 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   流转 `computer-use-glow-spectrum`）在操作期间持续播放，每个动作再短暂增亮一档；
   `prefers-reduced-motion` 下降级为静态。原生系统指针保留（虚拟光标是光环 + 拖尾，
   不替换系统光标）。
-- **操作过程面板（顶部）**：屏幕顶部居中一扇穿透窗（`computer-use.hud`，560×140、`y = display.y + 20`），
-  `● 正在操作` + 第 N / 上限步，下面是**这一步在干什么**
-  （`computer-use.hud-text`，如「正在点击『保存』」）、**下一步计划**
-  （`computer-use.hud-next`，「下一步」标签 + 模型写在动作参数 `next` 里的一句话）与最近 **2** 步历史
-  （`computer-use.hud-step`，第二行更淡）；每一步都带语义图标
-  （`.hud-current-icon` / `.hud-history-icon`：截图 = Scan、点击 = MousePointerClick、
-  移动 = MousePointer2、键盘 = Keyboard、窗口 = AppWindow、UI = 对应控件图标、等待 = Timer）。
-  **历史分组**：连续的同一 `action + summary` 合并为一条并在右侧显示 `×N`
-  （`.hud-repeat`），中间隔了别的步骤就保留为新的一条 —— 不刷屏、也不丢时间顺序。
+- **操作过程面板 → 顶部状态胶囊（v39.2）**：屏幕顶部居中一扇穿透窗（`computer-use.hud`，
+  窗口 520×88、`y = display.y + 6`），卡片按内容自适应（宽 ≤520、高 36–54）：
+  一行 `● 图标 + 这一步在干什么 + ×N + 第 N / 上限`，下面**可选**一行「下一步」计划
+  （`computer-use.hud-next`，「下一步」标签 + 模型写在动作参数 `next` 里的一句话）。
+  **不再列最近两步历史**（v39.2 精简）：屏幕上多一行就多挡模型截图的十几像素，
+  「刚做过什么」在对话状态条与聊天记录里都有。每一步都带语义图标
+  （`.hud-current-icon`：截图 = Scan、点击 = MousePointerClick、移动 = MousePointer2、
+  键盘 = Keyboard、窗口 = AppWindow、UI = 对应控件图标、等待 = Timer）。
+  连续同一 `action + summary` 合并为一条并在右侧显示 `×N`（`.hud-repeat`）。
   心跳 `computer-use-hud-heartbeat`；空闲显示「正在准备…」。
   **不显示运行时长、坐标 / 矩形 / 输入文字 / 截图内容**。
-  视觉走「安静的状态仪器」：状态行 / 当前步骤 / 下一步 / 最近两步四层，无分隔线与色块；唯一装饰是贴顶
-  1px 光谱细线（`::before`）。底色用 `--bg-overlay` 跟随明暗档（浅色档白卡、深色档深卡），
+  视觉走「一行状态」：无分隔线与色块，唯一装饰是贴顶 1px 光谱细线（`::before`）。
+  底色 94% 不透明（`--bg-overlay` 跟随明暗档）+ 描边 + 柔和阴影，保证白底 / 深底桌面上都看得清；
   不能用写死深色的 `--bg-elevated` fallback（浅色主题下会成为「黑板看不清」）。
+  贴显示器顶边 6px（不是 20px）：只压住窗口标题栏最上面一条，不盖标签栏 / 地址栏。
 - **截图锚点**：`computer-use-overlay.png`（`?layer=overlay&preview=1`，
   `computer-use.root` / `.glow` / `.glow-band` / `.cursor` / `.cursor-ring`、
   `computer-use-glow-breathe` 与 `computer-use-glow-spectrum` 动画名）、
-  `computer-use-hud.png`（`?layer=hud&preview=1`，`computer-use.hud` / `.hud-title` /
-  `.hud-text` / `.hud-next` / `.hud-step` / `.hud-current-icon` / `.hud-history-icon` / `.hud-repeat`
-  与心跳动画名）、`settings-computer-use.png`（`?page=computer-use`，各 `computer-use.*`
-  字段锚点）。原生断言覆盖：可见、置顶、不可聚焦、鼠标穿透、**内容保护必须为 false**、
-  过程面板贴在显示器顶部（不是底部）。
+  `computer-use-hud.png`（`?layer=hud&preview=1`，`computer-use.hud` / `.hud-text` /
+  `.hud-next` / `.hud-count` / `.hud-repeat` / `.hud-current-icon` / `.hud-dot` 与心跳动画名；
+  并断言卡片矩形 ≤ 520×64、窗口 ≤ 540×96、没有 `.hud-history` / `.hud-step` / `.hud-time`）、
+  `settings-computer-use.png`（`?page=computer-use`，各 `computer-use.*` 字段锚点）。
+  原生断言覆盖：可见、置顶、不可聚焦、鼠标穿透、**内容保护必须为 false**、
+  过程面板贴在显示器顶部（偏移 ≤ 24px）且足够小（不是旧 560×140 大卡）。
 - **停止入口**：Agent 的 `computer_stop` / 状态条按钮 / 托盘「停止 Computer Use」/
   `Ctrl+Alt+Shift+Esc`（仅会话期间注册）。用户移动鼠标 / 键盘**不是**停止入口。
-  只有 Agent 主动退出会把主界面带到前台（显示 + 从最小化恢复 + 激活，并切回刚完成任务的
-  会话）；其余停止入口保持用户当前应用焦点不变。
+  **结束即回前台**：任务完成 / 用户停止 / 闲置 / 预算 / 失败都会把主界面带到前台
+  （显示 + 从最小化恢复 + 激活，并切回刚完成任务的那条会话）；设置页改配置 / 切模型 /
+  锁屏 / 退出不抢焦点（判据唯一一份在 `main/computer-use/foreground.ts`）。

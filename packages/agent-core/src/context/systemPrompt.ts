@@ -280,21 +280,19 @@ export function buildToolGuidance(toolNames: readonly string[]): string | undefi
   }
   if (has('computer_screenshot')) {
     lines.push(
-      '- Computer Use：先想好后面 2–4 步，再 `computer_screenshot` 看屏幕并建立坐标空间；' +
-        '然后**在同一条回复里按顺序批量发出 2–4 个动作**（如 点击输入框 → 输入 → 回车），' +
-        '一批做完再截图核对，不要一步一停。坐标默认按最近一张截图的像素，不要用猜测的物理坐标。' +
-        '每个动作都填 `next`（下一步做什么，一句话；过程面板会显示「下一步」）。' +
-        '优先用 `computer_ui` 按控件名操作、用快捷键代替盲点；**不要每个动作后都 `computer_wait`**，' +
-        '只在明确知道要加载时等。不得操作 Aurora 自身、终端、任务管理器、UAC / 锁屏等受保护窗口；' +
-        '用户手动移动鼠标或键盘时任务继续，不要因此停止，也不要重复已成功的动作。' +
-        '任务完成或用户要求停止时调用 `computer_stop` 退出（Aurora 会自动回到前台汇报）。',
+      '- Computer Use：桌面操作的循环是「截图 → 定位 → 同轮批量执行 2–4 步 → 截图验收」。' +
+        '先想清目标再动手；坐标只用**最近一张截图**的图片像素；优先 `computer_ui` 控件 / 快捷键，' +
+        '其次才点坐标；键盘输入前确认前台是目标窗口。' +
+        '每个动作填 `next`；不要每步 `computer_wait`；受保护窗口（Aurora / 终端 / 任务管理器 / ' +
+        'UAC / 锁屏）不可操作。任务结束调用 `computer_stop`（Aurora 会自动回到前台汇报）。',
     )
   } else if (has('computer_start')) {
     // 未进入模式：只给了 Agent 入口工具（v39 优化）。这里的指引要和 run profile 的
     // 「未进入」运行说明同口径，避免模型反过来让用户去敲 /computer。
     lines.push(
-      '- Computer Use：需要直接操作真实桌面 / 桌面应用、而结构化工具（文件 / 终端 / 内置浏览器）' +
-        '做不到时，先调用 `computer_start` 进入；不要要求用户去敲 `/computer`。' +
+      '- Computer Use：任务**必须点真实桌面**才能完成（只有图形界面的应用 / 用户已打开的程序 / ' +
+        '系统设置界面）时，先调用 `computer_start` 进入；不要要求用户去敲 `/computer`，' +
+        '也不要说自己无法操作电脑。' +
         '进入后**同一次请求的下一轮**就出现 `computer_*` 动作工具（不必等用户再发消息），' +
         '但**不要在同一轮里同时调用 `computer_start` 与动作工具**（那一轮它们还不在工具面里）。' +
         '下一轮先 `computer_screenshot`，再按 2–4 步批量动作、每步填 `next`；' +

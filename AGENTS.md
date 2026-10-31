@@ -99,7 +99,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   ⚠️ 筛选跑会产生假 FAIL（看到 FAIL 先问"是不是筛选跑的"，再用全量确认）。userData 自动隔离。规则见 docs/07 §5.3。
   当前基线（2026-10-24 实测；2026-10-25 提醒页新增 `settings-notifications-schedule` 场景后
   单轮 103 → 104、全量 112 → 113，定向实测全绿、待全量复核；v39 Computer Use 新增
-  浮层 / 顶部过程面板 / 设置页 / `/computer` 斜杠入口 4 个场景）：**全量 117 条 checks** ——
+  浮层 / 顶部状态胶囊 / 设置页 / `/computer` 斜杠入口 4 个场景）：**全量 117 条 checks** ——
   本机全量单轮 108 条（四窗 98 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
   提醒设置页 3）
   + onboarding 6 + memory/awareness-glow 3。
@@ -111,9 +111,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
   `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 117 条：
-  `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config,banner-card,banner-glow'`
+  `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config,banner-card,banner-glow,computer-use-overlay,computer-use-hud'`
   （108 checks，仅
-  `chat-model-picker` 红）
+  `chat-model-picker` 红；**两个 Computer Use 内部窗口必须显式列进 `AURORA_CAPTURE_WINDOWS`** ——
+  按 `target.name` 精确过滤，漏了它们只会得到 106 条，看起来「少了两张」）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
   （3 checks 全绿）；这是 capture 环境问题，不是子代理改动的回归。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
@@ -218,12 +219,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **webview guest 必须由渲染层上报 `webContentsId`**，主进程校验 `hostWebContents` 归属（chat 窗口）后才接管；不要按 URL / 标题猜 guest。
 - **Computer Use（v39，06 §28）三层门控缺一不可**：注册（Windows + `computerUse.enabled` + 模型 vision + 非只读档，共 8 个工具）、请求级（`computerUseRunProfile`：未授权只留 `computer_start`、已授权留 6 动作 + `computer_stop`、非视觉 / 自动化 / 自感知 / 子代理会话整组摘掉）、执行级（`service.start()` 重查资格、端口每次 `ensureCallAllowed`）。`computerUse` 整组在 `SETTINGS_READONLY_PREFIXES`：**Agent 能进入用户已开启的模式，但不得自行开启 / 放宽总开关、限额与应用名单**；授权只在内存、按会话、同时一个。用户入口是输入框 `/computer` 斜杠命令（可带任务），Agent 入口是 `computer_start`；输入框工具行不得再加「操作电脑」开关。
 - **Computer Use 授权 ≠ 开始操作**：`service.start()` 只建立授权，**不得**建浮层 / 播光标动画；第一次工具调用（截图 / 读窗口 / 动作）才经 `ensureOperating()` 显示浮层。`overlay.applyConfig()` 会直接显示窗口，只允许在已进入操作态时调用。
-- **Computer Use 退出即回前台**：Agent 调 `computer_stop` → `service.stop('agent')` → `onStopped(sessionId, reason)`；**只有 `reason === 'agent'`** 才 `bringToFront('chat')`（显示 + 最小化恢复 + 焦点）并 `chat:remoteActivate` 切回该会话。用户手动停止 / 设置页改配置 / 锁屏 / 退出都不得抢焦点。
+- **Computer Use 结束即回前台**：`service.stop(reason)` → `onStopped(sessionId, reason)` → `bringToFront('chat')`（显示 + 最小化恢复 + 焦点）并 `chat:remoteActivate` 切回该会话。判据唯一一份在 `main/computer-use/foreground.ts`：`agent` / `user` / `idle` / `budget` / `error` 抢焦点；`settings` / `permission` / `model` / `system` / `quit` 不抢（用户正在设置页 / 桌面不可见 / 正在退出）。
 - **Computer Use 输入宿主是常驻 PowerShell（NDJSON）**：懒启动一次、串行队列、失败关闭；脚本写 `<userData>/computer-use/win-host.ps1` 用 `-File` 启动（**不要** `-EncodedCommand`，超 32K 命令行上限）；用户文字 / 按键只走 JSON 参数，不拼进脚本；启动时设 per-monitor DPI awareness。
 - **Computer Use 坐标以最近截图图片像素为准**：`physical = origin + image / scale`；没有截图 / 显示器变化要拒绝并让模型重新截图；点击前 `WindowFromPoint` 命中测试、移动后 `GetCursorPos` 回执、`SendInput` 返回 0 必须报错，绝不静默在错误位置点击。
 - **虚拟光标是 Agent 自己的光标**（2026-10-31）：位置只由 `service.moveCursor()`（显示器内 DIP，60fps 插值）驱动，**不得轮询真实指针**——用户晃鼠标时光环停在原地；只在进入操作态时用真实指针播一次种子。**先移动再点击**：点击 / 滚轮先**只滑虚拟光标**（这段滑行里系统指针原地不动，别把用户的鼠标拽着走），到位停 60ms 后指针才瞬移到落点并立刻 `SendInput`（Windows 只能在指针处点击，这一下瞬移省不掉）；拖拽时虚拟光标跟到终点；涟漪按显示器内 DIP，不是图片像素。别改回「指针跟着一起滑」或「原地瞬移 + 30fps 跟随」。
 - **Computer Use 受保护目标不可配置**（Aurora 自身 / 终端 / 任务管理器 / UAC / 锁屏）；`allowedApps` 为空 = 除保护目标与 deny 外允许，deny 优先；`launch` 只接受 `.exe` / `.com`。
-- **Computer Use 浮层**：每显示器一扇透明窗（虚拟光标 + **顶部光谱流光带**，与「流光提醒」同款）+ **顶部操作过程面板**（560×116、`y = display.bounds.y + 20`），必须 `focusable:false`、鼠标穿透、`showInactive()`；**禁止 `setContentProtection`**（RustDesk / 远程桌面 / 屏幕共享会完全看不到）。进入操作模式后**持续在场、每个动作实时更新**，不要为截图隐藏（模型截图会带上浮层，这是「一直在场」的取舍）。用户手动移动鼠标 / 键盘**不得**自动暂停或停止；停止入口 = 状态条 / 托盘 / 快捷键 / 配置变化 / 锁屏 / 退出 / Agent 调 `computer_stop`。面板只显示「正在做什么」与步数，**不显示运行时长 / 坐标 / 矩形 / 尺寸 / 输入文字**。每一步带语义图标（图标只在 `packages/shared/src/browser/icons.ts` 登记），**连续的同一 `action + summary` 合并成 `×N`**（`ComputerUseStatus.recentActions` 是 `{action,summary,count}[]`，状态条按 `lastActionKind` 显示图标）。
+- **Computer Use 浮层**：每显示器一扇透明窗（虚拟光标 + **顶部光谱流光带**，与「流光提醒」同款，v39.2 收到 48px）+ **顶部状态胶囊**（窗口 520×88、贴在显示器顶边 6px、卡片按内容自适应（宽 ≤520、高 36–54）），必须 `focusable:false`、鼠标穿透、`showInactive()`；**禁止 `setContentProtection`**（RustDesk / 远程桌面 / 屏幕共享会完全看不到）。进入操作模式后**持续在场、每个动作实时更新**，不要为截图隐藏（模型截图会带上浮层，这是「一直在场」的取舍；截图结果里已说明胶囊 / 光环是 Aurora 自己的浮层）。用户手动移动鼠标 / 键盘**不得**自动暂停或停止；停止入口 = 状态条 / 托盘 / 快捷键 / 配置变化 / 锁屏 / 退出 / Agent 调 `computer_stop`。胶囊只有两行：当前步骤（带步数、连续同动作 `×N`）+ 可选的「下一步」计划，**不列历史步骤**；**不显示运行时长 / 坐标 / 矩形 / 尺寸 / 输入文字**。每一步带语义图标（图标只在 `packages/shared/src/browser/icons.ts` 登记），状态条按 `lastActionKind` 显示图标。
 - **`agent.browser` 整组在 `SETTINGS_READONLY_PREFIXES`**，AI 不得改；关闭能力（或切只读档）时必须结束全部 Agent 浏览器会话，别留下 Agent 徽章。
 - **插件贡献必须写在 `manifest.json`**（工具 / Skill / 命令 / 自动化 / 面板 / 主题 / 配置），
   运行期不得动态注册；工具最终名必须 `plugin.<id>.<name>`（≤ 64），默认 `confirm`，

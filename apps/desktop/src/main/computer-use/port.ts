@@ -171,6 +171,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       '浮层上的光环是 Agent 自己的虚拟光标（上次落点），可能与真实指针不同；动作仍按你给的坐标执行。',
       `换算：physical = origin(${view.origin.x}, ${view.origin.y}) + 图片像素 / scale(${view.scaleX.toFixed(4)}, ${view.scaleY.toFixed(4)})。` +
         ' computer_mouse 默认按图片像素给坐标。',
+      '截图顶部的 Aurora 状态胶囊 / 光环是 Aurora 自己的浮层，不属于被测应用，不要把它们当作点击目标。',
       `截图路径：${captured.path}`,
     ].join('\n')
     return {
@@ -354,7 +355,8 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     if (view?.targetPid !== undefined && foreground.pid !== view.targetPid) {
       throw new Error(
         `前台窗口已变成「${foreground.title}」(${normalizeExeName(foreground.exe)})，` +
-          '与最近截图的目标不一致；已拒绝输入。请重新截图并激活目标窗口。',
+          '与最近截图的目标不一致；已拒绝输入。请先 computer_screenshot 确认现状，' +
+          '用 computer_window activate 或点击目标窗口把焦点切回去，再输入。',
       )
     }
     if (input.action === 'type') {
@@ -643,15 +645,32 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         reason: reason.slice(0, 200),
       })
     }
+    // 先把「屏幕有多大」告诉模型：规划点击位置 / 窗口摆放时不必为了尺寸先截一张图。
+    // 只读几何，不碰输入宿主，也不建浮层（授权 ≠ 开始操作）。
+    const displays = listDisplayGeometries()
+    const displayText =
+      displays.length === 0
+        ? '显示器：读取失败，请用 computer_screenshot 重新确认。'
+        : [
+            `显示器（${displays.length} 块）：`,
+            ...displays.map((item) => {
+              const primary = item.id === primaryDisplayId() ? '（主屏）' : ''
+              return (
+                `- id ${item.id}${primary}：物理 ${item.physicalSize.width}×${item.physicalSize.height}，` +
+                `缩放 ${Math.round(item.scaleFactor * 100)}%，左上角物理 (${item.physicalOrigin.x}, ${item.physicalOrigin.y})`
+              )
+            }),
+          ].join('\n')
     return {
       content: [
         '已获得 Computer Use 授权（授权 ≠ 开始操作，浮层尚未显示）。',
+        displayText,
         '动作工具（computer_screenshot / computer_mouse / computer_keyboard / computer_window / ' +
           'computer_ui / computer_wait）**在同一次请求的下一轮立即可用**；' +
           '不要在下一轮之前、也不要和本工具放在同一轮里发动作调用。',
         '下一轮先想好 2–4 步，用 computer_screenshot 截图建立坐标空间，再按顺序批量下发动作；' +
           '每个动作填 next（一句话的下一步计划，过程面板会显示）。',
-        '不要每个动作后都 computer_wait；任务完成后必须调用 computer_stop 退出（Aurora 会自动回到前台向用户汇报）。',
+        '不要每个动作后都 computer_wait；桌面交互完成后必须调用 computer_stop 退出（Aurora 会回到前台）。',
       ].join('\n'),
       summary: '已获得 Computer Use 授权',
     }
@@ -875,7 +894,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     if (view?.targetPid !== undefined && hit.pid !== view.targetPid) {
       throw new Error(
         `目标点当前属于「${hit.title}」(${normalizeExeName(hit.exe)})，与最近截图的目标不一致；` +
-          '已取消点击。请重新截图确认要操作哪个窗口。',
+          '已取消点击。请重新 computer_screenshot 确认目标窗口，不要重试同一个坐标。',
       )
     }
   }

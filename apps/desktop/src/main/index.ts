@@ -1727,8 +1727,9 @@ async function bootstrap(): Promise<void> {
       cursorPoint: () => screen.getCursorScreenPoint(),
       onStopped: (sessionId, reason) => {
         computerUsePort?.clearSession(sessionId)
-        // v39 优化（docs/06 §28）：Agent 主动退出 = 任务完成，把主界面带回前台。
-        // 只有 `agent` 抢焦点；用户自己停 / 设置页改配置 / 锁屏 / 退出都不打扰。
+        // v39 优化（docs/06 §28）：Computer Use 一结束就把主界面带回前台。
+        // 任务完成 / 用户停止 / 闲置 / 预算 / 失败都算（见 `foreground.ts`）；
+        // 设置页改配置 / 切模型 / 锁屏 / 退出不打扰，不抢焦点。
         if (shouldBringAuroraToFront(reason)) {
           const manager = windows
           if (manager !== undefined) {
@@ -3816,16 +3817,19 @@ async function runCapture(dir: string): Promise<void> {
         file: 'computer-use-hud.png',
         query: { layer: 'hud', preview: '1' },
         check:
-          "(() => { const hud = document.querySelector('[data-field=\"computer-use.hud\"]'); const title = document.querySelector('[data-field=\"computer-use.hud-title\"]'); const text = document.querySelector('[data-field=\"computer-use.hud-text\"]'); const next = document.querySelector('[data-field=\"computer-use.hud-next\"]'); const items = document.querySelectorAll('[data-field=\"computer-use.hud-step\"]'); const currentIcon = document.querySelector('.hud-current-icon'); const historyIcons = document.querySelectorAll('.hud-history-icon'); const repeats = document.querySelectorAll('.hud-repeat'); const timer = document.querySelector('.hud-time'); const dot = document.querySelector('.hud-dot'); const style = dot === null ? null : getComputedStyle(dot); const titleText = title === null ? '' : title.textContent || ''; const stepText = text === null ? '' : text.textContent || ''; const nextText = next === null ? '' : next.textContent || ''; return { pass: hud !== null && title !== null && titleText.indexOf('正在操作') !== -1 && text !== null && stepText.indexOf('正在') !== -1 && stepText.indexOf('(') === -1 && next !== null && nextText.indexOf('下一步') !== -1 && nextText.indexOf('(') === -1 && items.length >= 2 && currentIcon !== null && historyIcons.length >= 2 && repeats.length >= 1 && timer === null && style !== null && style.animationName.indexOf('computer-use-hud-heartbeat') !== -1, title: titleText, text: stepText, next: nextText, history: items.length, historyIcons: historyIcons.length, repeats: repeats.length, hasTimer: timer !== null, animation: style === null ? '' : style.animationName }; })()",
+          "(() => { const hud = document.querySelector('[data-field=\"computer-use.hud\"]'); const text = document.querySelector('[data-field=\"computer-use.hud-text\"]'); const next = document.querySelector('[data-field=\"computer-use.hud-next\"]'); const count = document.querySelector('[data-field=\"computer-use.hud-count\"]'); const repeat = document.querySelector('[data-field=\"computer-use.hud-repeat\"]'); const icon = document.querySelector('.hud-current-icon'); const dot = document.querySelector('.hud-dot'); const timer = document.querySelector('.hud-time'); const history = document.querySelector('.hud-history'); const stepList = document.querySelector('[data-field=\"computer-use.hud-step\"]'); const style = dot === null ? null : getComputedStyle(dot); const rect = hud === null ? null : hud.getBoundingClientRect(); const stepText = text === null ? '' : text.textContent || ''; const nextText = next === null ? '' : next.textContent || ''; const countText = count === null ? '' : count.textContent || ''; return { pass: hud !== null && text !== null && stepText.indexOf('正在') !== -1 && stepText.indexOf('(') === -1 && next !== null && nextText.indexOf('下一步') !== -1 && nextText.indexOf('(') === -1 && count !== null && countText.indexOf('/') !== -1 && repeat !== null && icon !== null && timer === null && history === null && stepList === null && rect !== null && rect.width >= 200 && rect.width <= 520 && rect.height >= 36 && rect.height <= 64 && style !== null && style.animationName.indexOf('computer-use-hud-heartbeat') !== -1, text: stepText, next: nextText, count: countText, repeat: repeat !== null, width: rect === null ? 0 : Math.round(rect.width), height: rect === null ? 0 : Math.round(rect.height), hasTimer: timer !== null, hasHistory: history !== null, hasStepList: stepList !== null, animation: style === null ? '' : style.animationName }; })()",
         nativeCheck: () => {
           const hud = manager.getComputerUseDiagnostics().hud
           const display =
             hud.bounds === undefined ? undefined : screen.getDisplayMatching(hud.bounds)
-          // 「置顶显示操作过程」：窗口必须贴在显示器**顶部**（旧底部 HUD 会在这里变红）。
+          // 「顶部状态胶囊」（v39.2）：必须贴在显示器顶部、且足够小 ——
+          // 旧 560×140 / y+20 会盖住标签栏与地址栏，模型截图里最该看清的那一条就没了。
           const topPinned =
             hud.bounds !== undefined &&
             display !== undefined &&
-            hud.bounds.y - display.bounds.y <= 200
+            hud.bounds.y - display.bounds.y <= 24
+          const compact =
+            hud.bounds !== undefined && hud.bounds.width <= 540 && hud.bounds.height <= 96
           return {
             pass:
               hud.exists &&
@@ -3833,8 +3837,10 @@ async function runCapture(dir: string): Promise<void> {
               hud.focusable === false &&
               hud.mousePassthrough &&
               hud.contentProtected === false &&
-              topPinned,
+              topPinned &&
+              compact,
             topPinned,
+            compact,
             ...hud,
           }
         },

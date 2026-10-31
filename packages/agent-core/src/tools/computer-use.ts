@@ -254,7 +254,7 @@ const SPACES = ['image', 'screen'] as const
 const NEXT_PROPERTY = {
   type: 'string',
   description:
-    '下一步计划（一句话，≤120 字）：只显示在过程面板的「下一步」，不执行；' +
+    '下一步计划（一句话，≤120 字，用用户的语言）：只显示在过程面板的「下一步」，不执行；' +
     '不要写坐标或输入的文字。批量下发动作时每一步都填它。',
 }
 
@@ -281,11 +281,13 @@ function startTool(port: ComputerUsePort): ToolDefinition {
     name: COMPUTER_USE_START_TOOL_NAME,
     description:
       '由 Agent 主动建立 Computer Use 授权（用户已在设置里开启总开关时可用）。' +
-      '仅在用户要求操作真实桌面 / 桌面应用、而结构化工具（文件 / 终端 / 内置浏览器）做不到时调用。' +
-      '授权本身不显示浮层；**同一次请求的下一轮**动作工具（computer_screenshot / mouse / ' +
-      'keyboard / window / ui / wait）立即进入工具面 —— 不要在同一轮里同时调用本工具与动作工具' +
-      '（那些调用会报「工具不存在」）。进入前先想好后面 2–4 步，下一轮截图后按顺序批量下发动作。' +
-      '任务完成后必须调用 computer_stop 退出，把桌面还给用户。',
+      '用于任务必须点真实桌面才能完成时：只有图形界面的应用、用户已打开的程序、系统设置界面；' +
+      '结构化工具（文件 / 终端 / 内置浏览器 / 办公文档）能做时优先用它们。' +
+      '调用前先想好后面 2–4 步与目标窗口。授权本身不显示浮层；**同一次请求的下一轮**动作工具' +
+      '（computer_screenshot / mouse / keyboard / window / ui / wait）立即进入工具面 —— ' +
+      '不要在同一轮里同时调用本工具与动作工具（那些调用会报「工具不存在」）。' +
+      '下一轮先 computer_screenshot，再按顺序批量下发动作、每步填 next；' +
+      '桌面交互完成后必须调用 computer_stop 退出，把桌面还给用户。',
     parameters: {
       type: 'object',
       properties: {
@@ -316,8 +318,11 @@ function screenshotTool(port: ComputerUsePort): ToolDefinition {
   return {
     name: 'computer_screenshot',
     description:
-      '截取当前显示器（或指定窗口）并记录坐标空间。做任何鼠标/键盘/窗口动作前先截图；' +
-      '之后 computer_mouse 的 x/y 默认按这张图的像素。结果会给出显示器尺寸、换算关系、前台窗口与光标坐标。',
+      '截取当前显示器（或指定窗口）并**更新坐标空间**。任何坐标动作前先截图；' +
+      '窗口被移动 / 缩放 / 激活、弹窗出现、显示器变化后必须重新截图（旧坐标会失效）。' +
+      '其后的 computer_mouse 坐标默认是这张图的图片像素。' +
+      '结果给出显示器尺寸、图片尺寸、换算关系、前台窗口与鼠标位置，不需要自己换算物理坐标。' +
+      '小控件看不清时用 windowId 只截目标窗口（同样 maxWidth 下细节更多），或调大 maxWidth。',
     parameters: {
       type: 'object',
       properties: {
@@ -351,8 +356,9 @@ function mouseTool(port: ComputerUsePort): ToolDefinition {
   return {
     name: 'computer_mouse',
     description:
-      '移动 / 点击 / 拖拽 / 滚轮 / 查询真实鼠标。x/y 默认是最近一张截图的图片像素；' +
-      '也可 space:"screen" 用物理屏幕坐标。点击前会校验目标窗口没被换掉，不会盲点。',
+      '移动 / 点击 / 双击 / 右键 / 中键 / 拖拽 / 滚轮 / 读取指针。x/y 默认是最近一张截图的图片像素；' +
+      '也可 space:"screen" 用物理屏幕坐标。点击前会做命中测试与指针回执，并先滑 Agent 的虚拟光标再点击，' +
+      '不需要先单独 move。action:"position" 只读当前位置、不产生副作用。',
     parameters: {
       type: 'object',
       properties: {
@@ -390,8 +396,9 @@ function keyboardTool(port: ComputerUsePort): ToolDefinition {
   return {
     name: 'computer_keyboard',
     description:
-      '向当前前台窗口输入文字（支持中文/emoji）或按组合键。输入前会确认前台是最近截图的目标窗口；' +
-      '文字不会回显到日志。长文本建议先确认焦点在正确输入框。',
+      '向当前前台窗口输入文字（支持中文 / emoji）或按组合键。输入前会校验「前台窗口 == 最近截图目标」，' +
+      '不一致直接拒绝 —— 先点击 / 激活目标输入框并截图确认，再输入。submit=true 会在文字后补一个 Enter；' +
+      '长文本的逐字间隔有总延迟上限，不会卡住整个回合。',
     parameters: {
       type: 'object',
       properties: {
@@ -418,8 +425,9 @@ function windowTool(port: ComputerUsePort): ToolDefinition {
   return {
     name: 'computer_window',
     description:
-      '列出 / 激活 / 移动 / 缩放 / 最小化 / 最大化 / 还原 / 关闭窗口，或启动应用。' +
-      '窗口 id 来自 list；titleMatch 必须唯一。移动/缩放的 x/y/width/height 默认按最近截图换算。',
+      '列出 / 查询 / 激活 / 移动 / 缩放 / 最小化 / 最大化 / 还原 / 关闭窗口，或启动应用。' +
+      '窗口 id 来自 list，titleMatch 必须唯一。启动应用用 launch（只接受 .exe / .com，等窗约 2 秒），' +
+      '不要到桌面 / 开始菜单找图标。移动 / 缩放的 x/y/width/height 默认按最近截图换算。',
     parameters: {
       type: 'object',
       properties: {
@@ -448,8 +456,9 @@ function uiTool(port: ComputerUsePort): ToolDefinition {
   return {
     name: 'computer_ui',
     description:
-      '用 Windows UI Automation 读取控件树、按名称查找控件并直接调用（比坐标点击稳）。' +
-      'path 来自 tree / find；页面布局变化后路径会失效，需要重新读取。',
+      '用 Windows UI Automation 读取控件树、按名称查找控件并直接操作 —— 比坐标点击稳，能用就优先用。' +
+      '**先 find**（nameContains / role），不要每次都拉整棵树（可能上百节点）；' +
+      'path 来自 find / tree，页面布局变化后会失效，需要重新查找。',
     parameters: {
       type: 'object',
       properties: {
@@ -480,9 +489,8 @@ function waitTool(port: ComputerUsePort): ToolDefinition {
   return {
     name: 'computer_wait',
     description:
-      '等待一段时间让应用 / 页面完成加载（0–30 秒，缺省 1 秒）。等待期间会话保持运行。' +
-      '只在明确知道应用需要加载时用（如启动后、打开大文件后），**不要每个动作后都等**；' +
-      '连续动作直接排在同一轮里，界面变化用截图核对。',
+      '等待 0–30 秒（缺省 1 秒）让应用 / 页面完成加载。只在明确知道要加载时用（启动后、打开大文件后），' +
+      '**不要每个动作后都等**；连续动作直接排在同一轮里，界面变化用截图核对。',
     parameters: {
       type: 'object',
       properties: {
@@ -501,8 +509,9 @@ function stopTool(port: ComputerUsePort): ToolDefinition {
   return {
     name: 'computer_stop',
     description:
-      '主动退出 Computer Use 操作模式：任务完成、用户要求停止，或准备把桌面交还用户时调用。' +
-      '退出后本会话授权立即失效，屏幕上的流光与过程面板收起；下次操作需用户重新输入 /computer。',
+      '主动退出 Computer Use 操作模式：桌面交互完成、用户要求停止，或准备把桌面交还用户时调用。' +
+      '退出后本会话授权立即失效、浮层与过程面板收起，Aurora 会回到前台；' +
+      '**做完就立即调用**，不要一直占着桌面；下次操作由你再次调用 computer_start 进入。',
     parameters: {
       type: 'object',
       properties: {},
