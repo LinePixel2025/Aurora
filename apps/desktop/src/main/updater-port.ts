@@ -78,7 +78,7 @@ export function createUpdaterPort(logger: Logger, options: UpdaterPortOptions = 
         : options.centerFeed?.() !== undefined
           ? `Center: ${options.centerFeed?.()}（失败时回退 GitHub）`
           : app.isPackaged
-            ? 'github: LinePixel2025/Aurora-releases'
+            ? 'github: LinePixel2025/Aurora'
             : undefined,
     async checkForUpdates() {
       const updater = await load()
@@ -131,7 +131,7 @@ function configureFeed(updater: AppUpdater, feed: string, logger: Logger): void 
     updater.setFeedURL({
       provider: 'github',
       owner: 'LinePixel2025',
-      repo: 'Aurora-releases',
+      repo: 'Aurora',
     })
     return
   }

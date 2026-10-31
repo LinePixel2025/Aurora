@@ -1,13 +1,13 @@
 name: Release
 
-# 打 tag（v*）时自动打包 Windows 安装包并上传到**公开的 releases 仓库**。
-# 源码仓库可以保持 private：客户端只从公开 releases 仓库读取更新清单，
-# 不需要在安装包里携带任何 GitHub 凭证（docs/09 §1/§2）。
+# 打 tag（v*）时自动打包 Windows 安装包并上传到**本仓库的 GitHub Releases**。
+# 仓库已开源：客户端无需在安装包里携带任何 GitHub 凭证即可匿名读取更新清单
+# （docs/09 §1/§2）。
 # **按需触发**：不再跟随 `v*` tag 自动发布（docs/09 §2）。
 #
-# 原因：日常发布走本地 `scripts/release.mjs`（v0.3.0 起一直如此）；而云端发布需要
-# `secrets.RELEASE_TOKEN`（能写 Aurora-releases，当前未配置），挂在 tag 上只会每次
-# 稳定失败、制造红噪音。配好 token 后可恢复自动触发，把下面的 `push:` 块加回来：
+# 原因：日常发布走本地 `scripts/release.mjs`（v0.3.0 起一直如此）；云端发布使用
+# 仓库自带的 `GITHUB_TOKEN`（contents: write）即可，无需额外 `RELEASE_TOKEN`。
+# 需要自动触发时把下面的 `push:` 块加回来：
 #   on:
 #     push:
 #       tags: ['v*']
@@ -56,22 +56,22 @@ jobs:
           pnpm build
 
       - name: Package Windows installer
-        # `--publish never`：产物由下一步的 gh 上传，避免 electron-builder
-        # 用当前仓库的身份去发布（目标其实是另一个 releases 仓库）。
+        # `--publish never`：产物由下一步的 gh 上传，目标仓库与 Release 正文
+        # 都在下一步显式指定（不用 electron-builder 的默认发布文案）。
         run: pnpm --filter @aurora/desktop exec electron-builder --win --publish never
 
       - name: Verify release artifacts
         run: node scripts/verify-update.mjs
 
-      - name: Publish to releases repository
+      - name: Publish to GitHub Releases
         env:
-          # 需要能写 LinePixel2025/Aurora-releases 的 token（repo 权限即可）
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          # 同一仓库发布用自带 token 即可（workflow 已声明 contents: write）
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
           $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
           $tag = "v$version"
-          $repo = "LinePixel2025/Aurora-releases"
+          $repo = "LinePixel2025/Aurora"
           $assets = @(
             "apps/desktop/release/Aurora-Setup-$version.exe",
             "apps/desktop/release/Aurora-Setup-$version.exe.blockmap",
@@ -79,7 +79,8 @@ jobs:
           )
           gh release view $tag --repo $repo 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --repo $repo --title "Aurora $tag" --notes "Aurora $tag（Windows x64 安装包，未签名）"
+            # 发布说明与 tag 正文同源：强制使用 docs/release-notes 的完整正文
+            gh release create $tag --repo $repo --title "Aurora $tag" --notes-file "docs/release-notes/$tag.md"
           }
           gh release upload $tag --repo $repo --clobber @assets
 

@@ -37,7 +37,7 @@ onMounted(async () => {
 const installer = computed(() => release.value?.files.find((file) => file.kind === 'installer'))
 const downloadHref = computed(() =>
   installer.value === undefined
-    ? 'https://github.com/LinePixel2025/Aurora-releases/releases/latest'
+    ? 'https://github.com/LinePixel2025/Aurora/releases/latest'
     : `/api/updates/${encodeURIComponent(installer.value.name)}`,
 )
 const versionLabel = computed(() => release.value?.version ?? 'Windows x64')

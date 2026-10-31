@@ -26,6 +26,7 @@ integrations/classisland-bridge/bin/
 integrations/classisland-bridge/obj/
 # 编码代理的本地状态（DSH 会话/缓存），不属于项目源码
 .dsh/
+.agents/
 
 # 本地设计素材副本（不参与构建，也不需要进版本库）
 Design/Apple Copy.zip
@@ -40,3 +41,7 @@ apps/desktop/resources/officecli/
 
 # 本机 Office 工具测试用的示例文档（不进版本库，也不参与构建）
 apps/desktop/*.pptx
+
+# 本地宣传片渲染工作区（分镜 / 帧 / ffmpeg，体积大，不进源码仓库）
+scripts/promo/
+.promo-cache/

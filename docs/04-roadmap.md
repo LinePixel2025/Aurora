@@ -245,11 +245,11 @@ Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
     再套透明圆角矩形蒙版，直接产出 `icon.ico`（多尺寸，7 个条目）与各尺寸 PNG，
     另派生无底透明品牌标供主界面空态使用；打包不再依赖 winCodeSign 工具链。
   - **自动更新已落地（原 P7 项，随 P6 一起做）**：主进程 `UpdateService` 状态机 +
-    electron-updater 适配层，设置页「更新」区与托盘入口；更新源为**公开 releases 仓库**，
-    源码仓库保持私有，客户端不携带任何凭证（docs/09 §1）。
+    electron-updater 适配层，设置页「更新」区与托盘入口；更新源为**开源仓库自身的 Releases**，
+    客户端不携带任何凭证（docs/09 §1）。
   - **发布流程**：`pnpm release`（本地，构建→打包→校验→打 tag→可选上传）与
-    `.github/workflows/release.yml`（云端打包发布，**按需手动触发**；配置
-    `secrets.RELEASE_TOKEN` 后可恢复 `v*` tag 自动触发）。
+    `.github/workflows/release.yml`（云端打包发布，**按需手动触发**；使用 workflow
+    自带的 `GITHUB_TOKEN`，配好 Center 密码后可恢复 `v*` tag 自动触发）。
   - **不签名**（用户决策）：`win.signExecutable: false`（只跳签名，保留 exe 图标 /
     版本资源编辑），首装会出现 SmartScreen「未知发行者」提示，用户操作说明见
     docs/09 §4；接入证书时去掉该字段即可。

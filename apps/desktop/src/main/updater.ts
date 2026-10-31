@@ -5,7 +5,7 @@
  * `UpdateService` 只做状态机与错误降级，因此可以在 Node 里完整单测
  * （真实 autoUpdater 依赖已打包环境，无法在单测里驱动）。
  *
- * 更新源：公开的 releases-only 仓库（源码仓库保持私有），
+ * 更新源：开源仓库自身的 GitHub Releases，
  * 客户端不需要携带任何 GitHub 凭证。
  */
 import type { Logger, UpdateState, UpdateStatus } from '@aurora/shared'

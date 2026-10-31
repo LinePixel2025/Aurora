@@ -2,23 +2,24 @@
 
 状态：`已定稿`（v1 基线，P6 落地）；对应 [04-roadmap.md](./04-roadmap.md) 的 P6 与 P7。
 
-## 1. 发布拓扑（为什么是两个仓库）
+## 1. 发布拓扑（单仓库）
 
 | 仓库 | 可见性 | 内容 |
 |---|---|---|
-| `LinePixel2025/Aurora` | **私有** | 全部源码、文档、CI |
-| `LinePixel2025/Aurora-releases` | **公开** | 仅安装包 + `latest.yml` + `*.blockmap` |
+| `LinePixel2025/Aurora` | **公开** | 全部源码、文档、CI，以及安装包 / `latest.yml` / `*.blockmap` |
 
-原因：electron-updater 检查更新时需要读取更新清单，**要么匿名可访问，要么在客户端内置凭证**。
-把产物放到独立的公开仓库后：
+原因：electron-updater 检查更新时需要读取更新清单，**匿名可访问**是最简单、也不需要
+在客户端内置任何凭证的方式。仓库开源后，源码与发布产物可以放在同一个仓库：
 
-- 源码保持私有；
 - 安装包里不需要携带任何 GitHub token（解包也拿不到凭证）；
-- 撤销/轮换不存在问题（没有长期凭证）。
+- 撤销 / 轮换不存在问题（没有长期凭证）；
+- 用户下载安装包与查看源码是同一个入口，发布记录与提交历史一一对应。
 
-> 若将来改为私有分发，需要把 `electron-builder.yml` 的 `publish.provider` 换成
-> `generic` 并指向自建服务，或为 GitHub provider 配置 token —— 都会引入凭证分发问题，
-> 因此当前不采用。
+> 历史：2026-10-25 及以前，安装包放在独立的公开仓库 `LinePixel2025/Aurora-releases`，
+> 源码仓库保持私有。2026-10-31 开源后统一迁移到本仓库，旧仓库已删除。
+> **已安装的旧版本**客户端内置的 GitHub 回退源仍指向旧仓库；配置了 Aurora Center 的
+> 用户不受影响（Center 更新源优先），未配置 Center 的旧版本请手动下载新安装包覆盖安装。
+> 下一次发版会打入新的 `app-update.yml`，从该版本起回退源恢复可用。
 
 ## 2. 发布流程
 
@@ -65,7 +66,8 @@ pnpm release -- --publish --push   # 顺便把 tag 推到 origin
    两端截图、本地全量检查逐条打勾；需要云端干净环境时 `gh workflow run ci.yml --ref risk/<主题>`。
 5. **squash 合并**：`gh pr merge --squash --delete-branch`，保持 `main` 线性、发布说明不含合并提交。
 
-PR 只承担「自审 + 可回滚」，**不是强制门禁**（Free 私有仓库没有 branch protection，required checks 不可用）。
+PR 只承担「自审 + 可回滚」，**不是强制门禁**；开源后虽然可以使用 branch protection，
+但本项目仍不配置 required checks，发布前以本地全量检查为准。
 不建 `develop` / `release` 长期分支，也不为普通改动手动开分支。
 
 ### CI（按需触发，不自动跑）
@@ -75,24 +77,24 @@ PR 只承担「自审 + 可回滚」，**不是强制门禁**（Free 私有仓�
 | Workflow | 触发 | 用途 |
 |---|---|---|
 | `ci.yml` | `workflow_dispatch` | 干净环境中跑 `format:check → lint → typecheck → test → build` |
-| `release.yml` | `workflow_dispatch` | 云端打包 + GitHub/Center 双投（需 `RELEASE_TOKEN`、`AURORA_CENTER_PASSWORD`，可选 `AURORA_CENTER_URL`） |
+| `release.yml` | `workflow_dispatch` | 云端打包 + GitHub/Center 双投（GitHub 用自带 `GITHUB_TOKEN`，Center 需 `AURORA_CENTER_PASSWORD`，可选 `AURORA_CENTER_URL`） |
 
 手动发起：Actions 页面 → **Run workflow**，或 `gh workflow run ci.yml`。
 
-**为什么默认不自动跑**：单人私有仓库；PR 只用于高风险改动自审、不构成强制门禁
+**为什么默认不自动跑**：单人项目；PR 只用于高风险改动自审、不构成强制门禁
 （GitHub 的 branch protection 需 Pro），
 本地 `pnpm test`（2930 项 / 204 个文件，约 30s）+ `pnpm build`（约 6s）已覆盖同一套检查；
 自动跑只会产生与代码无关的红噪音（典型是下方 `minimumReleaseAge` 的安装期拦截），
 拖慢开发节奏。**发布前的权威验证走本地 `scripts/release.mjs`。**
 
-> `release.yml` 需要 `secrets.RELEASE_TOKEN`（能写 `Aurora-releases`）才能真正上传；
-> 未配置时它会在上传步骤失败，因此默认不挂在 tag 上。配好 token 后，把 `on:` 恢复为
-> `push: { tags: ['v*'] }` 即可实现「推 tag 即发布」。
+> `release.yml` 上传到**本仓库**的 GitHub Releases，使用 workflow 自带的
+> `secrets.GITHUB_TOKEN`（`permissions: contents: write`），不再需要额外的 `RELEASE_TOKEN`；
+> 未配置 `AURORA_CENTER_PASSWORD` 时 Center 步骤会失败，避免只发 GitHub 的半成品发布。
+> 配好 Center 密码后，把 `on:` 恢复为 `push: { tags: ['v*'] }` 即可实现「推 tag 即发布」。
 >
-> CI 里刻意用 `electron-builder --publish never` + `gh release upload`，
-> 因为 electron-builder 的自动发布是往**当前仓库**发的，而我们的产物要去另一个仓库。
-> 上传 GitHub 后还会调用 `aurora-center releases publish` 同步 Center；缺少
-> `AURORA_CENTER_PASSWORD` 时步骤会直接失败，避免只发 GitHub 的半成品发布。
+> CI 里刻意用 `electron-builder --publish never` + `gh release upload`：前者只负责生成
+> 三件产物，后者显式指定目标仓库与 Release 正文，避免 electron-builder 的自动发布
+> 使用默认文案。上传 GitHub 后还会调用 `aurora-center releases publish` 同步 Center。
 
 ### 最小发布年龄（`minimumReleaseAge`，重要）
 
@@ -135,7 +137,7 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
   不要退回 `signAndEditExecutable: false` —— 那会连 exe 图标一起跳掉，产物停在任何
   地方都是 Electron 默认图标。将来接入证书时去掉该字段并设置
   `CSC_LINK` / `CSC_KEY_PASSWORD` 即可，原因见 §4。
-- `app-update.yml` 由 electron-builder 自动生成并打进包内，指向 `Aurora-releases`。
+- `app-update.yml` 由 electron-builder 自动生成并打进包内，指向 `LinePixel2025/Aurora`。
 
 ## 4. 代码签名与 SmartScreen（当前不签名）
 
@@ -171,7 +173,7 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
 
 ### 更新源
 
-打包后由包内 `app-update.yml` 指定（`provider: github`，`owner/repo = LinePixel2025/Aurora-releases`）。
+打包后由包内 `app-update.yml` 指定（`provider: github`，`owner/repo = LinePixel2025/Aurora`）。
 自测可用 `AURORA_UPDATE_FEED` 覆盖为本地 HTTP 服务（仅调试开关，默认不生效）。
 
 ## 6. 验证方式

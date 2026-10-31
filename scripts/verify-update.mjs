@@ -14,7 +14,7 @@
  *    （electron-updater 会用这两个字段校验下载结果，不一致会导致更新失败）；
  * 3. `*.blockmap` 存在（差分下载的前提）；
  * 4. `win-unpacked/` 已打包完成：asar 存在、内置 skills 已随包、
- *    `app-update.yml` 指向公开 releases 仓库（否则装机后检查更新会失败）；
+ *    `app-update.yml` 指向公开仓库 Releases（否则装机后检查更新会失败）；
  * 5. 安装包内不含明文 API Key（粗筛 sk- 形态）。
  */
 import { createHash } from 'node:crypto'
@@ -150,8 +150,8 @@ if (await exists(appUpdatePath)) {
   const owner = readYamlScalar(appUpdate, 'owner')
   const repo = readYamlScalar(appUpdate, 'repo')
   record(
-    'app-update.yml 指向公开 releases 仓库',
-    owner === 'LinePixel2025' && repo === 'Aurora-releases',
+    'app-update.yml 指向开源仓库 Releases',
+    owner === 'LinePixel2025' && repo === 'Aurora',
     `${owner}/${repo}`,
   )
   record(

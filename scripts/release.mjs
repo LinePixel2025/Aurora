@@ -7,7 +7,7 @@
  *
  * 用法：
  *   node scripts/release.mjs                 # 构建 + 打包 + 校验 + 打 tag（仅限 main 分支）
- *   node scripts/release.mjs --publish       # 额外用 gh 上传产物到 releases 仓库
+ *   node scripts/release.mjs --publish       # 额外用 gh 上传产物到本仓库 GitHub Releases
  *   node scripts/release.mjs --publish --publish-center --center-url <url> --center-user <名>
  *                              # GitHub Releases 与 Center 必须双投
  *   node scripts/release.mjs --publish --push # 再把 tag 推到 origin
@@ -28,8 +28,11 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const releaseDir = join(root, 'apps', 'desktop', 'release')
 
-/** 更新产物托管仓库（公开，仅存放安装包与更新元数据） */
-const RELEASES_REPO = 'LinePixel2025/Aurora-releases'
+/**
+ * 更新产物托管仓库（开源仓库自身；安装包与更新元数据都发在这里）。
+ * 2026-10-31 起不再使用独立的 `Aurora-releases` 仓库。
+ */
+const RELEASES_REPO = 'LinePixel2025/Aurora'
 
 const args = new Set(process.argv.slice(2))
 const shouldPublish = args.has('--publish')
@@ -294,7 +297,7 @@ if (!shouldPublish && !shouldPublishCenter) {
 产物已就绪（未上传）：
   apps/desktop/release/${artifacts.join('\n  apps/desktop/release/')}
 
-上传到公开更新源仓库 ${RELEASES_REPO}：
+上传到开源仓库 ${RELEASES_REPO} 的 Releases：
   gh release create ${tag} --repo ${RELEASES_REPO} --title "Aurora ${tag}" \\
     apps/desktop/release/Aurora-Setup-${version}.exe \\
     apps/desktop/release/Aurora-Setup-${version}.exe.blockmap \\

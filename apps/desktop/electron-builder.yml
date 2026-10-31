@@ -1,8 +1,8 @@
 # electron-builder 打包配置（docs/04 §P6、docs/09 §3）
 #
 # 产物：Windows NSIS 安装包 + 自动更新所需的 latest.yml / blockmap。
-# 更新源：**公开的 releases-only 仓库**（`LinePixel2025/Aurora-releases`）——
-# 源码仓库保持私有，客户端无需携带任何 GitHub 凭证即可检查更新。
+# 更新源：**开源仓库自身的 Releases**（`LinePixel2025/Aurora`）——
+# 仓库已公开，客户端无需携带任何 GitHub 凭证即可匿名检查更新。
 #
 # 不签名（用户选择）：首装会出现 SmartScreen「未知发行者」提示，
 # 说明见 docs/09 §4；将来接入证书时只需加 `win.signingHashAlgorithms` +
@@ -90,13 +90,13 @@ nsis:
   # 卸载时保留用户配置与会话（%APPDATA%/Aurora），避免"卸载即丢数据"
   # 需要彻底清除时用户可手动删除该目录（docs/09 §5）
 
-# 发布目标：只上传安装包与更新元数据到公开 releases 仓库。
+# 发布目标：上传安装包与更新元数据到开源仓库自身的 GitHub Releases。
 # 本地打包（pnpm package）时 electron-builder 不会发布，只有带 --publish always
 # 或 CI 上设置 CSC/ GH_TOKEN 才会真正上传（见 docs/09 §2）。
 publish:
   provider: github
   owner: LinePixel2025
-  repo: Aurora-releases
+  repo: Aurora
   releaseType: release
   # 显式钉住更新通道：electron-builder 默认会从预发布版本号（`1.0.0-beta.1` → `beta`）
   # 推导出 `beta.yml`，而本仓库的发布脚本与客户端更新链路都按 `latest.yml` 组织。

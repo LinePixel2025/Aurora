@@ -105,7 +105,7 @@ docker compose exec -T aurora-center node bin/aurora-center.js status --data /da
 
 每次发布桌面客户端时，安装包、blockmap 与 `latest.yml` 必须同时上传：
 
-1. GitHub Releases：`LinePixel2025/Aurora-releases`；
+1. GitHub Releases：`LinePixel2025/Aurora`（开源仓库自身）；
 2. Aurora Center 更新源：管理网页 Release 卡、`aurora-center releases publish` 或
    `scripts/release.mjs --publish-center`。
 

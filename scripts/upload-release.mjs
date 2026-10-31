@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 把 release 产物上传到**公开的 releases 仓库**（docs/09 §2）。
+ * 把 release 产物上传到**开源仓库自身的 GitHub Releases**（docs/09 §2）。
  *
  * 为什么不用 `gh` CLI：本机可能没装；且 CI 里也要一条统一的路径。
  * 这里直接用 GitHub REST API，token 来源依次为：
@@ -49,7 +49,7 @@ const tagArgIndex = args.indexOf('--tag')
 const dryRun = args.includes('--dry-run')
 
 const OWNER = 'LinePixel2025'
-const REPO = 'Aurora-releases'
+const REPO = 'Aurora'
 
 const packageJson = JSON.parse(await fs.readFile(join(root, 'package.json'), 'utf8'))
 const version = packageJson.version

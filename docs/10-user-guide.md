@@ -24,7 +24,7 @@
 
 ## 1. 安装
 
-从 [Releases](https://github.com/aurora-desktop/aurora-releases/releases) 下载
+从 [Releases](https://github.com/LinePixel2025/Aurora/releases) 下载
 `Aurora-Setup-<版本>.exe` 并双击安装。
 
 ### 关于 SmartScreen 的提示
