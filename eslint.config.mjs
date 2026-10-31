@@ -12,13 +12,16 @@ export default tseslint.config(
       '**/out/**',
       '**/release/**',
       '**/coverage/**',
-      // 编码代理 / 宣传片 / 截图的本地工作区，不参与源码检查
+      // 编码代理 / 宣传片 / 截图 / 本机测试素材，不参与源码检查
       '.agents/**',
       '.dsh/**',
       '.zcode/**',
       '.readme-capture/**',
+      '.capture-*/**',
+      '.promo-cache/**',
       'scripts/promo/**',
       'Design/**',
+      'cu-test/**',
       'pnpm-lock.yaml',
     ],
   },

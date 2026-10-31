@@ -3,5 +3,17 @@ dist
 dist-web
 out
 release
+coverage
 pnpm-lock.yaml
 *.md
+
+# 本地工具状态 / 宣传片 / 截图 / 本机测试素材
+.agents
+.dsh
+.zcode
+.readme-capture
+.capture-*
+.promo-cache
+scripts/promo
+Design
+cu-test

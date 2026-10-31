@@ -1,47 +1,151 @@
+# ─────────────────────────────────────────────────────────────
+# Aurora .gitignore
+#
+# 只忽略「本机构建 / 运行 / 验收产物」与「本地工具状态」；
+# 源码、文档、示例、品牌资产与发布说明一律进版本库。
+# ─────────────────────────────────────────────────────────────
+
+# ── 依赖与包管理器 ──
 node_modules/
 .pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# ── 构建 / 打包 / 覆盖率 ──
 dist/
+dist-web/
 out/
 release/
+coverage/
+.nyc_output/
+*.lcov
 *.tsbuildinfo
 .vite/
 .turbo/
-coverage/
+.eslintcache
+.stylelintcache
+vite.config.*.timestamp-*
 
-# local env / editor
+# ── 本地环境 / 凭据（绝不入库） ──
 .env
-.env.local
+.env.*
+!.env.example
+!.env.template
+.envrc
+.direnv/
+*.local
+*.pem
+*.key
+*.ppk
+*.pfx
+*.p12
+*.crt
+*.cer
+*.secret
+id_rsa*
+id_ed25519*
+.ssh/
+
+# ── 日志 / 崩溃 / 调试 ──
+*.log
+*.log.*
+logs/
+*.dmp
+*.pid
+*.pid.lock
+*.heapsnapshot
+*.stackdump
+
+# ── 安装包 / 更新元数据 / 原生二进制 ──
+*.exe
+*.msi
+*.msix
+*.appx
+*.appxbundle
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.AppImage
+*.snap
+*.blockmap
+*.asar
+latest*.yml
+*.dll
+*.pdb
+*.node
+*.so
+*.dylib
+
+# ── 归档文件（构建 / 宣传产物） ──
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+
+# ── 测试 / 验收 / 截图产物 ──
+/.e2e-tmp/
+/.readme-capture/
+/.capture-*/
+test-results/
+playwright-report/
+blob-report/
+allure-results/
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# ── 编码代理 / 本地工具状态（不属于项目源码） ──
+/.agents/
+/.dsh/
+/.zcode/
+/.fleet/
+/.history/
+
+# ── 编辑器 / 操作系统 ──
 .idea/
+*.iml
+.vs/
+*.suo
+*.user
+*.code-workspace
 .vscode/*
 !.vscode/extensions.json
-*.log
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
 Thumbs.db
+thumbs.db
+ehthumbs.db
+desktop.ini
+Desktop.ini
+*.lnk
+*.swp
+*.swo
+*~
 
-# 编码代理的本地状态（计划草稿等），不属于项目源码
-.zcode/
+# ── 本机设计 / 宣传 / 电脑操控测试素材 ──
+/Design/
+/scripts/promo/
+/.promo-cache/
+/cu-test/
 
-# ClassIsland 桥接插件的 .NET 构建产物（源码在 integrations/ 下）
-integrations/classisland-bridge/bin/
-integrations/classisland-bridge/obj/
-# 编码代理的本地状态（DSH 会话/缓存），不属于项目源码
-.dsh/
-.agents/
-
-# 本地设计素材副本（不参与构建，也不需要进版本库）
-Design/Apple Copy.zip
-Design/Apple Copy/
-dist-web
-
-# 包内 OfficeCLI 由 scripts/fetch-officecli.mjs 固定版本拉取，不进源码仓库
-apps/desktop/resources/officecli/
-
-# 本地端到端验证产物（CDP 驱动真实客户端的截图与脚本）
-.e2e-tmp/
-
-# 本机 Office 工具测试用的示例文档（不进版本库，也不参与构建）
-apps/desktop/*.pptx
-
-# 本地宣传片渲染工作区（分镜 / 帧 / ffmpeg，体积大，不进源码仓库）
-scripts/promo/
-.promo-cache/
+# ── 项目特定生成物 ──
+/apps/desktop/resources/officecli/
+/apps/desktop/*.docx
+/apps/desktop/*.xlsx
+/apps/desktop/*.pptx
+/integrations/classisland-bridge/bin/
+/integrations/classisland-bridge/obj/
+/integrations/classisland-bridge/dist/
+/packages/center/data/
