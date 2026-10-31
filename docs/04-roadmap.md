@@ -2,19 +2,21 @@
 
 状态：`进行中`——P0–P5 已完成，P6 打包 / 自动更新 / 日志 / 文档完成（签名与启动优化待做），
 P6+「假开关」补齐与 P6++ 电脑操控已完成，P7 的 ClassIsland 联动已完成、Work / Code Mode 预留；
-**当前实际发布 v0.5.9（2026-10-31），Aurora Center 0.5.2**。
+**当前实际发布 v0.6.0（2026-11-01），Aurora Center 0.5.2**。
 
 > **版本口径**：2026-09-25 版本体系重构前，本文用 `v0.6.0` / `v0.7.0` / `v0.8.0` 表示里程碑
 > （P6+ / P6++ / 语音轮），**它们不是真实 tag**；实际发布从 `v0.0.1` 起，逐版见
 > [release-notes](./release-notes/)。下文历史段落保留旧编号，当前状态以
 > [docs/README](./README.md) 与 release-notes 为准。
 
-**2026-10 增量**：v0.4.1 → v0.5.9 已发布。v0.5.6 落地流光提醒与「提醒」设置页
+**2026-10 增量**：v0.4.1 → v0.6.0 已发布。v0.5.6 落地流光提醒与「提醒」设置页
 （Schema v38）；v0.5.7 落地 Center 插件侧栏面板镜像与插件 `ctx.usage`；v0.5.8 修复页面型
 面板参数直传；v0.5.9 落地 **Computer Use 桌面操控（v39，Schema v39）**、小组件点击不抢前台 /
-固定按钮、开源迁移与插件开发工具包升级。v0.5.1–v0.5.4 含插件系统 v36、内置浏览器 v35
-（八个 `browser_*` 工具）、任务编排 v34 与子代理增强。逐版索引见文末「2026-10 增量轮索引」，
-当前验收口径以 docs/README 的状态段为准。
+固定按钮、开源迁移与插件开发工具包升级；v0.6.0 落地 Computer Use **v39.2**（两层状态胶囊 /
+结束即回前台 / 提示词强化）、**流光提醒大屏可读性**（尺寸按显示器比例 + 流体字号 + 提示音重写）
+与**设置页视觉收敛**（3 组侧栏 / 统一页头与发丝线 / 左栏药丸溢出修复）。v0.5.1–v0.5.4 含插件
+系统 v36、内置浏览器 v35（八个 `browser_*` 工具）、任务编排 v34 与子代理增强。逐版索引见文末
+「2026-10 增量轮索引」，当前验收口径以 docs/README 的状态段为准。
 
 **窗口 UX 修复轮（v1.0 前）**：独立小窗已删除，「快速会话」并入交互窗侧栏（配置 Schema **v6**），
 交互窗「收起」= 直接隐藏窗口 —— 历史阶段行仍按当时实现记录，能力以 §5 变更记录与 07 / 08 为准。
@@ -579,6 +581,7 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
 | v0.5.5（2026-10-24） | 插件页面型小组件启动空窗修复（IPC 就绪后才建窗）；`llm.active` 恢复为用户默认最优先；插件重启全量广播重载；插件配置独立窗口 `plugin-config` | [release-notes/v0.5.5.md](./release-notes/v0.5.5.md)、[docs/07 §2.2.2/§8](./07-ui-spec.md)、[docs/08 §8](./08-settings-onboarding.md)、[docs/14 §2.1/§5.6](./14-plugin-system.md) |
 | v0.5.6（2026-10-25） | 流光提醒（Banner Notification）通道：屏顶光谱流光 + 置顶卡片，提示音 / 朗读 / 大小 / 停留时长可配，三个来源（`notify_banner` / `ctx.banner` / `ask_user`）；「提醒」设置页与默认提醒方式（迁移 v36→v37→v38）；卡片入场 / 退场动效修复 | [release-notes/v0.5.6.md](./release-notes/v0.5.6.md)、[docs/07 §2.2.3/§4](./07-ui-spec.md)、[docs/08 §1/§6.1](./08-settings-onboarding.md)、[docs/15 §4.1.1](./15-plugin-development-guide.md) |
 | v0.5.7（2026-10-25） | Center 插件侧栏面板镜像（声明式 / 页面型、owner 校验、事件订阅、`/p/` 市场资源托管）；提醒页聚合定时提醒与勿扰时段；插件 `ctx.usage` 本机用量统计；Center 服务器 0.5.1 | [release-notes/v0.5.7.md](./release-notes/v0.5.7.md)、[docs/12 §6.5/§14](./12-aurora-center.md)、[docs/14 §5.7/§4.1](./14-plugin-system.md)、[docs/07 §2.3](./07-ui-spec.md) |
+| v0.6.0（2026-11-01） | Computer Use v39.2（两层状态胶囊 520×88 / 结束即回前台 / 截图→定位→批量→验收提示词 / `computer_start` 带屏幕几何）；流光提醒大屏可读性（卡宽按显示器比例 0.24/0.36/0.46 + `cqw` 流体字号 + 高度实测收缩 + 提示音三声重写 / 试听）；设置页视觉收敛（3 组侧栏 / 单页头 / 发丝线区组 / `Line Production` 徽标）与左栏 Center 药丸溢出修复；Schema 仍 v39 | [release-notes/v0.6.0.md](./release-notes/v0.6.0.md)、[docs/06 §28](./06-agent-core.md)、[docs/07 §2.2.3/§2.5](./07-ui-spec.md) |
 | v0.5.9（2026-10-31） | Computer Use 桌面操控（v39，8 工具 / 三层门控 / 虚拟光标与过程面板 / Schema v39）；v39.1 请求内开放工具、批量执行、下一步提示、等待收敛；小组件点击不抢前台 + 固定；开源迁移（MIT / 单仓库）；插件开发工具包 v0.5.9（脚手架 / 同口径校验 / 打包器） | [release-notes/v0.5.9.md](./release-notes/v0.5.9.md)、[docs/06 §28](./06-agent-core.md)、[docs/14](./14-plugin-system.md) |
 | v0.5.8（2026-10-25） | Center 页面型插件面板参数直传修复（切视图 / 写操作恢复）；Center 允许改桌面视图（共享 `ui` 状态）；页面超时 25s 与自行导航断流；Center 服务器 0.5.2 | [release-notes/v0.5.8.md](./release-notes/v0.5.8.md)、[docs/12 §6.5](./12-aurora-center.md)、[docs/15 §7.1](./15-plugin-development-guide.md) |
 | v0.5.3（2026-10-24） | 页面型小组件 RPC 修复；页面动作 `message` / `error` 回传；桌面小组件 `hideCloseButton` | [release-notes/v0.5.3.md](./release-notes/v0.5.3.md)、[docs/14 §5.3](./14-plugin-system.md)、[docs/15 §7.5](./15-plugin-development-guide.md) |

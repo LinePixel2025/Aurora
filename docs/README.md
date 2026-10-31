@@ -11,23 +11,24 @@
 
 ## 当前实现状态
 
-**当前发布 v0.5.9：Computer Use 桌面操控（配置 Schema v39）**——Agent 在用户显式授权后
-截屏并操控真实鼠标 / 键盘 / 窗口 / UI Automation：常驻 PowerShell 输入宿主、虚拟光标与顶部
-光谱流光浮层、顶部操作过程面板 / 对话状态条（v39.1 起显示模型给的「下一步」计划）、`/computer`
-用户入口与 `computer_start` Agent 入口（授权后**同一次请求的下一轮**就可用动作工具，按 2–4 步
-批量执行）、独立设置页、按多模态模型与会话授权三层门控；Agent 任务完成调用 `computer_stop`
-退出并把 Aurora 调回前台。同版包含桌面小组件点击不抢前台 + 固定按钮、开源迁移（MIT / 单仓库）
-与**插件开发工具包 v0.5.9**（脚手架 / 同口径校验 / 打包器）。设计见
-[06 §28](./06-agent-core.md)、[07](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)；
-完整更新点与验收结果见 [release-notes/v0.5.9.md](./release-notes/v0.5.9.md)。
+**当前发布 v0.6.0：Computer Use v39.2 + 流光提醒大屏可读性 + 设置页视觉收敛**（配置 Schema
+仍为 **v39**，无迁移；插件 API 仍为 **v1**）——顶部操作过程面板收敛为**两层状态胶囊**
+（520×88、只留当前步骤与「下一步」、光带 48px、不列历史），Computer Use 结束时
+`agent` / `user` / `idle` / `budget` / `error` 五种原因都**把主界面带回前台**；操作提示词改成
+「截图 → 定位 → 同轮批量 2–4 步 → 截图验收」并补定位优先级、键盘前确认前台、失败先重看。
+流光提醒的卡片宽度改为**按显示器 DIP 宽度比例**（0.24 / 0.36 / 0.46）并随卡片**流体放大字号**，
+高度改由渲染层实测后收缩；提示音重写为三声上行音 + 复用 `AudioContext`，修复「有时不响」，
+提醒设置页新增「试听」。设置页侧栏 5 组收敛为 3 组、统一页头与发丝线区组、品牌行加
+`Line Production` 徽标，并修复左栏窄宽下 Center 药丸文字溢出。设计见
+[06 §28](./06-agent-core.md)、[07 §2.2.3/§2.5](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)；
+完整更新点与验收结果见 [release-notes/v0.6.0.md](./release-notes/v0.6.0.md)。
 Aurora Center 服务器不随本版升级（仍为 **0.5.2**，版本线独立）。
 
-**上一发布 v0.5.8：Center 页面型插件面板参数修复 + 页面断流**（配置 Schema 仍为
-**v38**，无迁移）——修复页面型面板在 Center 上调用参数被多包一层导致的「切视图无效 /
-输入内容不生效」；Center 允许改桌面视图（共享插件 `ui` 状态）的口径写进文档；页面请求
-超时对齐 25s，页面自行导航离开后断流并提示刷新。插件无需修改。Aurora Center 服务器
-同步升级到 **0.5.2**（版本线独立）。完整更新点与验收结果见
-[release-notes/v0.5.8.md](./release-notes/v0.5.8.md)。
+**上一发布 v0.5.9：Computer Use 桌面操控（配置 Schema v39）**——Agent 在用户显式授权后
+截屏并操控真实鼠标 / 键盘 / 窗口 / UI Automation（常驻 PowerShell 输入宿主、虚拟光标与顶部
+光谱流光、`/computer` 与 `computer_start` 双入口、三层门控）；同版含桌面小组件点击不抢前台 +
+固定按钮、开源迁移（MIT / 单仓库）与插件开发工具包 v0.5.9。Aurora Center 服务器仍为 **0.5.2**。
+完整更新点与验收结果见 [release-notes/v0.5.9.md](./release-notes/v0.5.9.md)。
 
 更早的逐版说明（**v0.5.7 及以前**）不再在本文维护，逐版见
 [`release-notes/`](./release-notes/) 与 [04-roadmap.md](./04-roadmap.md) 的「实现说明」；
