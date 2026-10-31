@@ -15,7 +15,8 @@
 
 **Aurora** 是一款常驻 Windows 系统托盘的**系统级 AI Agent**。它把「AI 对话」做成系统的一部分：屏幕右缘一条 8px 的提示条负责随取随用，三栏工作台负责把活真正干完——读文件、跑命令、操作 Office、开浏览器、执行自动化，所有动作都有确认、快照与回滚。
 
-> **当前发布：v0.5.8**（Windows x64，未签名）。`main` 分支已包含 Computer Use 桌面操控（配置 Schema v39，尚未发版）。
+> **当前发布：v0.5.9**（Windows x64，未签名）。含 **Computer Use 桌面操控**（配置 Schema v39，
+> 用户显式授权后 Agent 可截屏并操作真实桌面）与开源迁移 / 插件开发工具包 v0.5.9。
 > 发布说明与安装包见 [Releases](https://github.com/LinePixel2025/Aurora/releases)。
 
 ---
@@ -332,7 +333,7 @@ my-plugin/
 - 页面型插件运行在沙箱 iframe，只能经 postMessage 桥通信；
 - 安装即信任：插件进程不是 OS 沙箱，安装前请审查源码。
 
-完整契约见 [docs/14](./docs/14-plugin-system.md) 与 [docs/15](./docs/15-plugin-development-guide.md)，可整体拷走的工具包见 [`plugin-dev-kit/`](./plugin-dev-kit/README.md)，示例见 [`examples/plugins/`](./examples/plugins/)。
+完整契约见 [docs/14](./docs/14-plugin-system.md) 与 [docs/15](./docs/15-plugin-development-guide.md)；可整体拷走的工具包见 [`plugin-dev-kit/`](./plugin-dev-kit/README.md)（含脚手架 `create-plugin`、同口径校验 `check-plugin` 与零依赖打包 `pack-plugin`），示例见 [`examples/plugins/`](./examples/plugins/)。
 
 ---
 
