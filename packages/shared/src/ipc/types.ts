@@ -1338,6 +1338,12 @@ export interface ComputerUseStatus {
    * 过程面板挂载时从这里补齐历史，避免漏掉「窗口还没加载完」时发生的前几步。
    */
   recentActions?: ComputerUseStep[]
+  /**
+   * 下一步计划（v39.1）：模型在动作参数 `next` 里写下的一句话，只用于过程面板 /
+   * 状态条展示「下一步」，**不执行**；与 `summary` 同口径，不含坐标 / 输入文字。
+   * 缺省 = 还没有计划（或刚被清空）。
+   */
+  nextAction?: string
   overlay: {
     visible: boolean
     displays: number
@@ -1401,6 +1407,14 @@ export type ComputerUseEvent =
       x: number
       y: number
       button: 'left' | 'right' | 'middle'
+    }
+  | {
+      /**
+       * 下一步计划（v39.1）：模型在动作的 `next` 参数里写下的一句话，只用于展示。
+       * `text === ''` = 清空（这一步没给计划 / 会话结束），过程面板随之隐藏「下一步」一行。
+       */
+      type: 'next'
+      text: string
     }
   | {
       type: 'notice'

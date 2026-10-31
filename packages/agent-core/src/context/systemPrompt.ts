@@ -280,11 +280,13 @@ export function buildToolGuidance(toolNames: readonly string[]): string | undefi
   }
   if (has('computer_screenshot')) {
     lines.push(
-      '- Computer Use：先用 `computer_screenshot` 看屏幕并建立坐标空间，再用 `computer_mouse` / ' +
-        '`computer_keyboard` 动作；坐标默认按最近一张截图的像素，不要用猜测的物理坐标。' +
-        '优先用 `computer_ui` 按控件名操作、用快捷键代替盲点；每次动作后（或界面变化后）重新截图复核。' +
-        '不得操作 Aurora 自身、终端、任务管理器、UAC / 锁屏等受保护窗口；用户手动移动鼠标或键盘时' +
-        '任务继续，不要因此停止，也不要重复已成功的动作。' +
+      '- Computer Use：先想好后面 2–4 步，再 `computer_screenshot` 看屏幕并建立坐标空间；' +
+        '然后**在同一条回复里按顺序批量发出 2–4 个动作**（如 点击输入框 → 输入 → 回车），' +
+        '一批做完再截图核对，不要一步一停。坐标默认按最近一张截图的像素，不要用猜测的物理坐标。' +
+        '每个动作都填 `next`（下一步做什么，一句话；过程面板会显示「下一步」）。' +
+        '优先用 `computer_ui` 按控件名操作、用快捷键代替盲点；**不要每个动作后都 `computer_wait`**，' +
+        '只在明确知道要加载时等。不得操作 Aurora 自身、终端、任务管理器、UAC / 锁屏等受保护窗口；' +
+        '用户手动移动鼠标或键盘时任务继续，不要因此停止，也不要重复已成功的动作。' +
         '任务完成或用户要求停止时调用 `computer_stop` 退出（Aurora 会自动回到前台汇报）。',
     )
   } else if (has('computer_start')) {
@@ -293,7 +295,9 @@ export function buildToolGuidance(toolNames: readonly string[]): string | undefi
     lines.push(
       '- Computer Use：需要直接操作真实桌面 / 桌面应用、而结构化工具（文件 / 终端 / 内置浏览器）' +
         '做不到时，先调用 `computer_start` 进入；不要要求用户去敲 `/computer`。' +
-        '进入后**下一轮**才会出现 `computer_*` 动作工具，先 `computer_screenshot` 再动作，' +
+        '进入后**同一次请求的下一轮**就出现 `computer_*` 动作工具（不必等用户再发消息），' +
+        '但**不要在同一轮里同时调用 `computer_start` 与动作工具**（那一轮它们还不在工具面里）。' +
+        '下一轮先 `computer_screenshot`，再按 2–4 步批量动作、每步填 `next`；' +
         '任务完成调用 `computer_stop` 退出。',
     )
   }

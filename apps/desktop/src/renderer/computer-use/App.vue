@@ -40,6 +40,11 @@ const ripple = ref<{ x: number; y: number; key: number } | null>(null)
 const hasCursor = ref(false)
 /** 过程面板：新 → 旧。第一条是「这一步在干什么」。 */
 const steps = ref<ComputerUseStepView[]>(preview ? PREVIEW_STEPS.map((step) => ({ ...step })) : [])
+/**
+ * 下一步计划（v39.1）：模型在动作参数 `next` 里写的一句话。
+ * 只在 HUD 显示；空串 = 隐藏那一行（这一步没给计划 / 会话结束）。
+ */
+const nextText = ref(preview ? '正在点击「保存」' : '')
 const hudTone = ref<'info' | 'warn'>('info')
 const actions = ref(preview ? 7 : 0)
 const maxSteps = ref(300)
@@ -54,7 +59,7 @@ let offEvent: (() => void) | null = null
 
 const isHud = computed(() => layer === 'hud')
 const currentStep = computed<ComputerUseStepView | undefined>(() => steps.value[0])
-const currentText = computed(() => currentStep.value?.summary ?? '等待下一步…')
+const currentText = computed(() => currentStep.value?.summary ?? '正在准备…')
 const currentIcon = computed(() => computerUseIcon(currentStep.value?.action))
 /** 只保留最近两步：面板的目标是「这一步在干什么」，历史多了反而抢注意力。 */
 const history = computed(() => steps.value.slice(1, 3))
@@ -113,10 +118,17 @@ function pushStep(action: string, summary: string): void {
 function onEvent(event: ComputerUseEvent): void {
   if (event.type === 'started') {
     if (!preview) active.value = true
+    if (!preview) nextText.value = ''
     return
   }
   if (event.type === 'ended') {
     if (!preview) active.value = false
+    if (!preview) nextText.value = ''
+    return
+  }
+  if (event.type === 'next') {
+    if (!isHud.value || preview) return
+    nextText.value = event.text.trim()
     return
   }
   if (event.type === 'cursor') {
@@ -168,6 +180,7 @@ onMounted(() => {
         .map((step) => ({ ...step, count: step.count ?? 1 }))
         .slice(0, 4)
     }
+    nextText.value = result.value.nextAction ?? ''
   })
 })
 
@@ -206,6 +219,10 @@ onUnmounted(() => {
         {{ currentStep?.count }}×
       </span>
     </div>
+    <p v-if="nextText !== ''" class="hud-next" data-field="computer-use.hud-next">
+      <span class="hud-next-label">下一步</span>
+      <span class="hud-next-text">{{ nextText }}</span>
+    </p>
     <ol v-if="history.length > 0" class="hud-history">
       <li
         v-for="(item, index) in history"
@@ -224,7 +241,7 @@ onUnmounted(() => {
         <span v-if="item.count > 1" class="hud-repeat">{{ item.count }}×</span>
       </li>
     </ol>
-    <p v-else class="hud-empty">等待下一步…</p>
+    <p v-else class="hud-empty">正在准备…</p>
   </div>
 
   <div
@@ -481,10 +498,10 @@ onUnmounted(() => {
 }
 
 /*
- * 顶部操作过程面板：窗口就是卡片本身（560×116），透明区不拦截鼠标。
+ * 顶部操作过程面板：窗口就是卡片本身（560×140，v39.1 加了一行「下一步」），透明区不拦截鼠标。
  *
  * 设计目标是「安静的状态仪器」而不是聊天卡：
- * - 只留三层信息：状态行 / 当前步骤 / 最近两步；没有分隔线、没有色块；
+ * - 只留四层信息：状态行 / 当前步骤 / 下一步计划 / 最近两步；没有分隔线、没有色块；
  * - 唯一的签名元素是贴顶的一条 1px 光谱细线（与屏幕流光同源，不抢注意力）；
  * - 底色用 `--bg-overlay`（浅色档近白、深色档深灰），**不能用不存在的 `--bg-elevated`**
  *   （那个 fallback 是写死的深色，浅色主题下会变成黑板）。
@@ -626,6 +643,36 @@ onUnmounted(() => {
   font-size: 10px;
   font-variant-numeric: var(--num-tabular);
   line-height: 16px;
+}
+
+/* 「下一步」：模型给的一句话计划（v39.1）。弱化到副文本层级，不跟当前步骤抢注意力。 */
+.hud-next {
+  margin: 5px 0 0;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.hud-next-label {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.hud-next-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .hud-history {

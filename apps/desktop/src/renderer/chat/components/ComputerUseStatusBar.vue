@@ -27,8 +27,12 @@ const activeOther = computed(
 const visible = computed(() => activeHere.value || activeOther.value)
 
 const actionText = computed(() => {
-  if (props.status?.lastAction === undefined) return '等待下一步…'
-  return props.status.lastAction
+  if (props.status?.lastAction === undefined) return '正在准备…'
+  const next = props.status.nextAction
+  // 「下一步」一句话计划（v39.1）：与过程面板同一份数据，窄栏时按既有样式省略
+  return next === undefined || next === ''
+    ? props.status.lastAction
+    : `${props.status.lastAction} · 下一步：${next}`
 })
 
 /** 状态条左侧显示当前动作的语义图标（暂无动作时用鼠标指针兜底）。 */

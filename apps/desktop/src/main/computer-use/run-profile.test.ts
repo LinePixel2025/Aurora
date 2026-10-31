@@ -34,6 +34,9 @@ describe('Computer Use run profile', () => {
     expect(profile?.hiddenTools).not.toContain(COMPUTER_USE_START_TOOL_NAME)
     expect(profile?.runContext).toBe(COMPUTER_USE_UNAUTHORIZED_CONTEXT)
     expect(profile?.runContext).toContain('computer_start')
+    // v39.1：进入后**同一次请求的下一轮**就可用，且不许与入口同轮批量
+    expect(profile?.runContext).toContain('同一次请求的下一轮')
+    expect(profile?.runContext).toContain('不要在同一轮')
   })
 
   it('已授权：动作工具 + 退出工具可见，入口摘掉，并注入退出约定', () => {
@@ -41,6 +44,10 @@ describe('Computer Use run profile', () => {
     expect(profile?.hiddenTools).toEqual([COMPUTER_USE_START_TOOL_NAME])
     expect(profile?.runContext).toBe(COMPUTER_USE_RUN_CONTEXT)
     expect(profile?.runContext).toContain('computer_stop')
+    // v39.1：批量执行 / 每步 next / 不逐动作等待
+    expect(profile?.runContext).toContain('2–4 个动作')
+    expect(profile?.runContext).toContain('`next`')
+    expect(profile?.runContext).toContain('computer_wait')
   })
 
   it('组合运行档：上下文拼接、hiddenTools 并集、allowedTools 交集', () => {

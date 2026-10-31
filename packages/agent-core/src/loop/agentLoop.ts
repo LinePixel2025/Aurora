@@ -195,8 +195,21 @@ export interface AgentLoopOptions {
   /**
    * 本次可用的工具（注册表，或装配层按运行来源过滤后的**只读视图**，docs/06 §5.2）。
    * 循环只依赖 `get()` / `toLlmTools()`，因此视图与注册表可互换。
+   *
+   * **工具面每轮现取**（v39.1）：循环在每一轮发出请求前重新调用 `toLlmTools()`，
+   * 因此视图可以在**一次请求内**变化（Computer Use 的 `computer_start` 授权后，
+   * 动作工具下一轮立即进入请求体，不必等用户再发一条消息）。
    */
   tools: ToolSource
+  /**
+   * 出站线路名（`createToolNameCodec`）的**全集**（v39.1）：给出时用它建立
+   * 内部名 ⇄ 线路名的映射，而不是用**首轮可见工具**。
+   *
+   * 为什么需要：工具面在请求内增长时（见 `tools`），首轮不可见的工具没有进映射表，
+   * 同名的归一冲突（如 `plugin.a.b` 与 `plugin_a_b`）就会在后续轮次解错工具。
+   * 装配层传**完整注册表**即可；缺省 = 与从前一致（用首轮可见工具）。
+   */
+  toolNameScope?: readonly { name: string }[]
   sessionId: string
   signal?: AbortSignal
   maxRounds?: number
@@ -274,6 +287,15 @@ export interface AgentLoopOptions {
    */
   takePendingInput?: () => PendingUserInput | undefined
   /**
+   * 每轮开始（发出本轮请求**之前**）回调一次（v39.1）。
+   *
+   * 与 `onRoundComplete` 对称：那个负责"先把这一轮记下来，再决定要不要继续"，
+   * 这个负责"在问模型之前，把这一轮的工具面 / 能力刷新好"。装配层在这里按运行档
+   * **重新算一次**工具视图 —— Computer Use 的会话授权是同一次请求内建立的，
+   * 不重算就得让用户再发一条消息才能看到动作工具。
+   */
+  onRoundStart?(info: { round: number }): void
+  /**
    * 每轮结束（工具都跑完、结果都已回填）时回调一次：调用方在这里把**游标**落盘。
    *
    * 语义是"先把这一轮记下来，再决定要不要继续"——所以它在轮次/预算判定**之前**被调用，
@@ -332,13 +354,13 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     messages.push({ role: 'system', content: options.extraContext })
   }
 
-  // 工具数组走注册表的**唯一**实现：它按工具名排序返回（docs/06 §21.2），
-  // 顺序只取决于名字集合，与注册先后无关 —— 请求体的 tools 因此是稳定前缀的一部分。
-  const internalTools = options.tools.toLlmTools()
   // 出站线路名（docs/06 §21.5）：内部名里的点号（插件 / MCP）必须先归一成
   // `[A-Za-z0-9_-]`，否则严格网关会在调用模型之前整条请求 400。
-  const toolNames = createToolNameCodec(internalTools)
-  const llmTools = toolNames.toWireTools(internalTools)
+  //
+  // 映射表**整个请求只建一次**（v39.1）：工具面可能每轮变化（Computer Use 授权），
+  // 若跟着可见工具重建，后出现的名字在归一冲突时会被解错工具。装配层可传
+  // `toolNameScope`（完整注册表）把全集定死；缺省仍用首轮可见工具。
+  const toolNames = createToolNameCodec(options.toolNameScope ?? options.tools.toLlmTools())
   let pending = false
   let pendingReason: 'max-rounds' | 'aborted' | undefined
   /** 本次请求累计消耗（只累加 provider 回传的真实用量，不估算）—— v34 起**只统计、不做闸门** */
@@ -349,6 +371,15 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       yield { type: 'done', pending: true, pendingReason: 'aborted', round, usedTokens }
       return
     }
+
+    // 轮首刷新工具面（v39.1）：装配层在这里按运行档重新算一次视图 —— 同一个请求内
+    // 新建的能力（Computer Use 的 computer_start）下一轮就进请求体。提示词仍按请求
+    // 开始时的快照定稿（缓存边界不动），新增能力由工具结果文本告知模型。
+    options.onRoundStart?.({ round })
+    // 工具数组走注册表的**唯一**实现：它按工具名排序返回（docs/06 §21.2），
+    // 顺序只取决于名字集合，与注册先后无关 —— 请求体的 tools 是稳定前缀的一部分。
+    const internalTools = options.tools.toLlmTools()
+    const llmTools = toolNames.toWireTools(internalTools)
 
     // 本轮助手消息的 id 在**流开始之前**就领好：正文要边收边发（docs/06 §16.2），
     // 而落盘要等这条流结束 —— 见 `appendAssistant` 里把同一个 id 交给 append。

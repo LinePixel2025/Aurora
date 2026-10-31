@@ -1691,6 +1691,14 @@ async function bootstrap(): Promise<void> {
           if (event.type === 'started') {
             registerComputerUseStopHotkey()
             tray?.refresh()
+            // 预热输入宿主（v39.1，授权 ≠ 操作）：把 PowerShell 的启动成本付在模型思考 /
+            // 规划的那几秒里，第一次截图 / 动作不再额外等宿主就绪。只启动进程，不注入输入、
+            // 不建浮层；失败只 warn（真正的失败仍在第一次动作的 ensureReady 暴露）。
+            void computerUseHost?.ensureReady().catch((error: unknown) => {
+              logger?.warn('Computer Use 宿主预热失败（首次调用时会重试）', {
+                error: error instanceof Error ? error.message : String(error),
+              })
+            })
           } else if (event.type === 'ended') {
             unregisterComputerUseStopHotkey()
             tray?.refresh()
@@ -3808,7 +3816,7 @@ async function runCapture(dir: string): Promise<void> {
         file: 'computer-use-hud.png',
         query: { layer: 'hud', preview: '1' },
         check:
-          "(() => { const hud = document.querySelector('[data-field=\"computer-use.hud\"]'); const title = document.querySelector('[data-field=\"computer-use.hud-title\"]'); const text = document.querySelector('[data-field=\"computer-use.hud-text\"]'); const items = document.querySelectorAll('[data-field=\"computer-use.hud-step\"]'); const currentIcon = document.querySelector('.hud-current-icon'); const historyIcons = document.querySelectorAll('.hud-history-icon'); const repeats = document.querySelectorAll('.hud-repeat'); const timer = document.querySelector('.hud-time'); const dot = document.querySelector('.hud-dot'); const style = dot === null ? null : getComputedStyle(dot); const titleText = title === null ? '' : title.textContent || ''; const stepText = text === null ? '' : text.textContent || ''; return { pass: hud !== null && title !== null && titleText.indexOf('正在操作') !== -1 && text !== null && stepText.indexOf('正在') !== -1 && stepText.indexOf('(') === -1 && items.length >= 2 && currentIcon !== null && historyIcons.length >= 2 && repeats.length >= 1 && timer === null && style !== null && style.animationName.indexOf('computer-use-hud-heartbeat') !== -1, title: titleText, text: stepText, history: items.length, historyIcons: historyIcons.length, repeats: repeats.length, hasTimer: timer !== null, animation: style === null ? '' : style.animationName }; })()",
+          "(() => { const hud = document.querySelector('[data-field=\"computer-use.hud\"]'); const title = document.querySelector('[data-field=\"computer-use.hud-title\"]'); const text = document.querySelector('[data-field=\"computer-use.hud-text\"]'); const next = document.querySelector('[data-field=\"computer-use.hud-next\"]'); const items = document.querySelectorAll('[data-field=\"computer-use.hud-step\"]'); const currentIcon = document.querySelector('.hud-current-icon'); const historyIcons = document.querySelectorAll('.hud-history-icon'); const repeats = document.querySelectorAll('.hud-repeat'); const timer = document.querySelector('.hud-time'); const dot = document.querySelector('.hud-dot'); const style = dot === null ? null : getComputedStyle(dot); const titleText = title === null ? '' : title.textContent || ''; const stepText = text === null ? '' : text.textContent || ''; const nextText = next === null ? '' : next.textContent || ''; return { pass: hud !== null && title !== null && titleText.indexOf('正在操作') !== -1 && text !== null && stepText.indexOf('正在') !== -1 && stepText.indexOf('(') === -1 && next !== null && nextText.indexOf('下一步') !== -1 && nextText.indexOf('(') === -1 && items.length >= 2 && currentIcon !== null && historyIcons.length >= 2 && repeats.length >= 1 && timer === null && style !== null && style.animationName.indexOf('computer-use-hud-heartbeat') !== -1, title: titleText, text: stepText, next: nextText, history: items.length, historyIcons: historyIcons.length, repeats: repeats.length, hasTimer: timer !== null, animation: style === null ? '' : style.animationName }; })()",
         nativeCheck: () => {
           const hud = manager.getComputerUseDiagnostics().hud
           const display =

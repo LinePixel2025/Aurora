@@ -590,6 +590,32 @@ export class KernelAgentHost implements AgentHostContract {
     }
   }
 
+  /**
+   * 按运行档造一份工具视图（v20 / v39.1）：白名单先生效，再应用 `hiddenTools`。
+   *
+   * 两处消费、两种时机：
+   * - **请求开始**：结果同时喂给提示词（工具清单 / 使用规范）与循环的首个视图；
+   * - **每轮开始**（`onRoundStart`）：只重算视图 —— 运行档的 `hiddenTools` 可能因为
+   *   请求内的能力变化（Computer Use 授权 / 退出）而不同，提示词则保持请求开始时的快照。
+   *
+   * 拿不到运行档时退回**完整注册表**（既有降级口径，不在这一层加安全承诺：
+   * 执行级仍有 `computerUseService.ensureCallAllowed` 等端口闸门）。
+   */
+  private buildToolSurface(
+    sessionId: string,
+    origin: string,
+  ): { profile: RunProfile | undefined; tools: ToolSource } {
+    const profile = this.resolveRunProfile(sessionId, origin)
+    let tools: ToolSource = this.deps.tools
+    if (profile?.allowedTools !== undefined) {
+      tools = allowTools(tools, profile.allowedTools)
+    }
+    if (profile?.hiddenTools !== undefined && profile.hiddenTools.length > 0) {
+      tools = filterTools(tools, profile.hiddenTools)
+    }
+    return { profile, tools }
+  }
+
   private async run(input: {
     sessionId: string
     requestId: string
@@ -615,21 +641,21 @@ export class KernelAgentHost implements AgentHostContract {
     )
     const maxRoundsLimit = Math.max(1, this.deps.maxRounds?.() ?? RUNAWAY_MAX_ROUNDS)
     /**
-     * 本次运行的运行档（v20）：按 `origin` 现取值。取值失败一律降级为「无运行档」
-     * （提示词与工具面退回默认）——提示词细节永远不该让一次请求跑不起来。
+     * 本次请求的运行档与工具面快照（v20 / v39.1）：人设与「## 本次运行」按这里定稿，
+     * 而**工具面每轮现取**（见下面的 `loopTools`）—— Computer Use 的 `computer_start`
+     * 在同一次请求内建立授权，动作工具必须立刻可用，不能等用户再发一条消息。
      */
-    const profile = this.resolveRunProfile(sessionId, input.origin)
+    const { profile, tools } = this.buildToolSurface(sessionId, input.origin)
     /**
-     * 本次请求的工具面：有 `hiddenTools` 时是**过滤视图**（不污染全局注册表 ——
-     * 注册表是进程级、按时重建的，而"哪些工具能用"是请求级的）。三处消费
-     * （提示词工具清单 / 工具使用规范 / 循环执行）都走这一个来源，三处才同口径。
+     * 循环消费的**活**工具视图：`roundTools` 在每轮开始前由 `onRoundStart` 重建。
+     * 提示词（工具清单 / 使用规范）仍用上面那份请求级快照，缓存边界不动；
+     * 请求内新增的能力靠 `computer_start` 的结果文本告诉模型。
      */
-    let tools: ToolSource = this.deps.tools
-    if (profile?.allowedTools !== undefined) {
-      tools = allowTools(tools, profile.allowedTools)
-    }
-    if (profile?.hiddenTools !== undefined && profile.hiddenTools.length > 0) {
-      tools = filterTools(tools, profile.hiddenTools)
+    let roundTools: ToolSource = tools
+    const loopTools: ToolSource = {
+      get: (name) => roundTools.get(name),
+      list: () => roundTools.list(),
+      toLlmTools: () => roundTools.toLlmTools(),
     }
     /** 本请求的 job；未注入 `jobs` 时恒为 undefined，行为与 v15 之前完全一致 */
     let job: AgentJob | undefined
@@ -904,7 +930,11 @@ export class KernelAgentHost implements AgentHostContract {
           ? {}
           : { userImagePaths: input.images }),
         resolveImages,
-        tools,
+        // 循环消费**活**视图：每轮 `onRoundStart` 重建 `roundTools`（v39.1）
+        tools: loopTools,
+        // 线路名按**完整注册表**定死：请求内新增的工具（Computer Use 动作工具）
+        // 也必须沿用同一套内部名 ⇄ 线路名映射
+        toolNameScope: this.deps.tools.toLlmTools(),
         sessionId,
         signal: input.controller.signal,
         // 轮次上限 = 内核的防失控墙（v34 起不再来自设置），与 job 上记的那个数同一个来源
@@ -916,6 +946,11 @@ export class KernelAgentHost implements AgentHostContract {
         appendUserMessage,
         // 同轮并发度走上面的 getter：改设置后下一次请求即生效
         maxParallelCalls,
+        // 轮首重算工具面（v39.1）：请求内建立的能力（Computer Use 授权）下一轮立即生效。
+        // 提示词不跟着重算 —— 见 `buildToolSurface` 的注释。
+        onRoundStart: () => {
+          roundTools = this.buildToolSurface(sessionId, input.origin).tools
+        },
         // 每轮结束（工具都跑完、结果都回填）时把游标 / 进度 / 用量落盘，
         // **在决定是否继续之前**：顺序反过来的话，"暂停"会把最后一轮的进度一起丢掉，
         // 续跑只能重跑它

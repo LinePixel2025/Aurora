@@ -13,9 +13,10 @@
 
 **开发中：Computer Use（配置 Schema v39）**——让 Agent 在用户显式授权后截屏并操控真实
 鼠标 / 键盘 / 窗口 / UI Automation：常驻 PowerShell 输入宿主、虚拟光标与顶部光谱流光浮层、
-顶部操作过程面板 / 对话状态条、`/computer` 用户入口与 `computer_start` Agent 入口、独立设置页、
-按多模态模型与会话授权三层门控；Agent 任务完成调用 `computer_stop` 退出并把 Aurora 调回前台。
-设计见 [06 §28](./06-agent-core.md)、[07](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)。
+顶部操作过程面板 / 对话状态条（v39.1 起显示模型给的「下一步」计划）、`/computer` 用户入口与
+`computer_start` Agent 入口（授权后**同一次请求的下一轮**就可用动作工具，按 2–4 步批量执行）、
+独立设置页、按多模态模型与会话授权三层门控；Agent 任务完成调用 `computer_stop` 退出并把 Aurora
+调回前台。设计见 [06 §28](./06-agent-core.md)、[07](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)。
 未发布前不改变上一版安装包。
 
 **当前发布 v0.5.8：Center 页面型插件面板参数修复 + 页面断流**（配置 Schema 仍为

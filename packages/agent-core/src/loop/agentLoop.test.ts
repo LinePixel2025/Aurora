@@ -7,7 +7,7 @@ import {
   type LoopProvider,
 } from './agentLoop.js'
 import { ToolRegistry } from '../tools/registry.js'
-import type { ToolContext, ToolResult } from '../tools/registry.js'
+import type { ToolContext, ToolResult, ToolSource } from '../tools/registry.js'
 import { createFakeProvider } from '../testing/fakeProvider.js'
 import type { ChatEvent } from '../llm/types.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
@@ -1583,6 +1583,115 @@ describe('runAgentLoop · 续跑与暂停原因（v15 / v34）', () => {
     expect(rounds.every((item) => item.tools.includes('echo'))).toBe(true)
     // 游标数据在"决定继续之前"就已就绪（最后一轮同样回调过）
     expect(rounds[1]?.usedTokens).toBeGreaterThan(0)
+  })
+
+  it('工具面每轮现取（v39.1）：请求内注册的工具下一轮就进请求体', async () => {
+    const rec = createRecorder()
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'install',
+      description: '注册一个后置工具',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        tools.register({
+          name: 'late',
+          description: '后置工具',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => ({ content: 'late-ok', summary: 'late' }),
+        })
+        return { content: 'installed', summary: 'installed' }
+      },
+    })
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'install', arguments: '{}' }] },
+      { toolCalls: [{ id: 'c2', name: 'late', arguments: '{}' }] },
+      { text: '完成' },
+    ])
+    const roundTools: number[] = []
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools,
+        sessionId: 's1',
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+        onRoundStart: () => roundTools.push(tools.toLlmTools().length),
+      }),
+    )
+
+    // 首轮只有 install；第二轮起 late 进请求体（旧实现只在循环开始取一次，永远看不到它）
+    expect(provider.calls[0]?.tools?.map((tool) => tool.name)).toEqual(['install'])
+    expect(provider.calls[1]?.tools?.map((tool) => tool.name)).toEqual(['install', 'late'])
+    expect(roundTools[0]).toBe(1)
+    expect(roundTools[1]).toBe(2)
+    // 后置工具确实执行并回填（不是只出现在清单里）
+    expect(rec.messages.some((message) => message.content.includes('late-ok'))).toBe(true)
+  })
+
+  it('toolNameScope 定死线路名：请求内新增的工具不会与既有工具撞 wire 名', async () => {
+    const rec = createRecorder()
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'plugin.a.b',
+      description: '点号工具',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({ content: 'dot-ok', summary: 'dot' }),
+    })
+    tools.register({
+      name: 'plugin_a_b',
+      description: '下划线工具',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({ content: 'under-ok', summary: 'under' }),
+    })
+    let revealed = false
+    tools.register({
+      name: 'reveal',
+      description: '揭示点号工具',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        revealed = true
+        return { content: 'revealed', summary: 'revealed' }
+      },
+    })
+    const visible = (): string[] =>
+      revealed ? ['plugin.a.b', 'plugin_a_b', 'reveal'] : ['plugin_a_b', 'reveal']
+    /** 首轮看不见点号工具：模拟「请求内新增工具」 */
+    const view: ToolSource = {
+      get: (name) => (visible().includes(name) ? tools.get(name) : undefined),
+      list: () => tools.list().filter((tool) => visible().includes(tool.name)),
+      toLlmTools: () => tools.toLlmTools().filter((tool) => visible().includes(tool.name)),
+    }
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'reveal', arguments: '{}' }] },
+      // 模型照第二轮清单里的线路名调用：它必须解回点号工具
+      { toolCalls: [{ id: 'c2', name: 'plugin_a_b', arguments: '{}' }] },
+      { text: '完成' },
+    ])
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools: view,
+        toolNameScope: tools.toLlmTools(),
+        sessionId: 's1',
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+
+    // 首轮只有下划线工具；它的线路名由 scope 决定（点号工具排在前面，先占 plugin_a_b）
+    expect(provider.calls[0]?.tools?.map((tool) => tool.name)).toEqual(['plugin_a_b_2', 'reveal'])
+    const second = provider.calls[1]?.tools?.map((tool) => tool.name) ?? []
+    expect(second).toEqual(['plugin_a_b', 'plugin_a_b_2', 'reveal'])
+    expect(new Set(second).size).toBe(second.length)
+    expect(rec.messages.some((message) => message.content.includes('dot-ok'))).toBe(true)
   })
 })
 

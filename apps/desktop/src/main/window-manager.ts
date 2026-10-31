@@ -1683,8 +1683,10 @@ export class WindowManager {
   private computerUseHudBounds(): WindowBounds {
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
     // 置顶操作过程面板：贴在目标显示器顶部居中（不是底部）。窗口 = 卡片，透明区不拦截鼠标。
+    // 高度 140（v39.1）：状态行 / 当前步骤 / 「下一步」/ 最近 2 步四层信息；
+    // 继续加高之前先看截图是不是真需要（面板越高压到的桌面内容越多）。
     const width = 560
-    const height = 116
+    const height = 140
     return {
       x: Math.round(display.bounds.x + (display.bounds.width - width) / 2),
       y: Math.round(display.bounds.y + 20),

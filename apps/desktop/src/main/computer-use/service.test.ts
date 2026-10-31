@@ -99,6 +99,34 @@ describe('ComputerUseService', () => {
     expect(service.status().recentActions).toBeUndefined()
   })
 
+  it('下一步计划（v39.1）：写入 status、发 next 事件；空串清空；撤权后 no-op', async () => {
+    const settings = createDefaultSettings()
+    settings.computerUse.enabled = true
+    const { service, events } = makeService({ settings })
+    await service.start('main')
+    expect(service.status().nextAction).toBeUndefined()
+
+    service.noteNextStep('main', '  点击「保存」 ')
+    expect(service.status().nextAction).toBe('点击「保存」')
+    expect(events).toContain('next')
+    // 不计动作限额，也不因为它显示浮层（浮层仍由第一次动作调用触发）
+    expect(service.status().actions).toBe(0)
+
+    // 超长截断到 120（与端口摘要同口径，不因为是展示字段就无限长）
+    service.noteNextStep('main', 'x'.repeat(200))
+    expect(service.status().nextAction).toBe('x'.repeat(120))
+
+    service.noteNextStep('main', undefined)
+    expect(service.status().nextAction).toBeUndefined()
+
+    // 别的会话 / 已结束的会话：静默 no-op（调用点紧跟 ensureCallAllowed，这里不该抛）
+    service.noteNextStep('other', '不该出现')
+    expect(service.status().nextAction).toBeUndefined()
+    service.stop('user')
+    service.noteNextStep('main', '停止之后')
+    expect(service.status().nextAction).toBeUndefined()
+  })
+
   it('唯一会话：另一个会话 start 返回 E_CU_BUSY', async () => {
     const settings = createDefaultSettings()
     settings.computerUse.enabled = true

@@ -1954,6 +1954,14 @@ function onComputerUseEvent(event: ComputerUseEvent): void {
     void refreshComputerUseStatus()
     return
   }
+  if (event.type === 'next') {
+    // 「下一步」是模型在动作参数 `next` 里给的一句话计划（v39.1），只用于展示
+    const current = computerUseStatus.value
+    if (current === null) return
+    const text = event.text.trim()
+    computerUseStatus.value = { ...current, nextAction: text === '' ? undefined : text }
+    return
+  }
   if (event.type === 'action') {
     const current = computerUseStatus.value
     if (current === null) return

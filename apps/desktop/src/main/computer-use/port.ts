@@ -60,6 +60,15 @@ import {
  */
 const CURSOR_SETTLE_MS = 60
 
+/**
+ * 逐字输入的**总延迟预算**（毫秒，v39.1）。
+ *
+ * `typingDelayMs` 是「每字间隔」：500 字 × 10ms 就是 5 秒，用户看到的是「Agent 卡住了」。
+ * 这里按文本长度反推可用间隔，让整段输入最多多花约 1.2 秒；短文本（约 ≤120 字）
+ * 完全不受影响，仍是用户配置的逐字间隔（慢应用需要它）。
+ */
+const TYPE_TOTAL_DELAY_BUDGET_MS = 1200
+
 interface WindowInfo {
   windowId: string
   title: string
@@ -98,10 +107,16 @@ export class DesktopComputerUsePort implements ComputerUsePort {
 
   async screenshot(input: ComputerScreenshotInput): Promise<ToolResult> {
     this.options.service.ensureCallAllowed(input.sessionId)
+    this.noteNext(input)
     await this.options.host.ensureReady()
     const displays = listDisplayGeometries()
-    const windows = await this.windowList()
-    const foreground = windows.find((item) => item.foreground)
+    // 只有指定了 `windowId` 才需要全量窗口表；否则一次 `window_active` 就够 ——
+    // 截图是最频繁的动作，全量枚举（80 个窗口的标题 / pid / 矩形）在这里纯属浪费。
+    const windows = input.windowId === undefined ? [] : await this.windowList()
+    const foreground =
+      input.windowId === undefined
+        ? await this.foregroundWindow()
+        : windows.find((item) => item.foreground)
     const requested = input.windowId === undefined ? undefined : findWindow(windows, input.windowId)
     if (input.windowId !== undefined && requested === undefined) {
       return toolError(
@@ -167,6 +182,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
 
   async mouse(input: ComputerMouseInput): Promise<ToolResult> {
     this.options.service.ensureCallAllowed(input.sessionId)
+    this.noteNext(input)
     await this.options.host.ensureReady()
     const view = this.views.get(input.sessionId)
     if (input.action === 'position') {
@@ -327,6 +343,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
 
   async keyboard(input: ComputerKeyboardInput): Promise<ToolResult> {
     this.options.service.ensureCallAllowed(input.sessionId)
+    this.noteNext(input)
     await this.options.host.ensureReady()
     const view = this.views.get(input.sessionId)
     const foreground = await this.options.host.request<WindowInfo>('window_active')
@@ -350,7 +367,10 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       const response = await this.options.host.request<{ chars: number }>('key_type', {
         text,
         submit: input.submit === true,
-        delayMs: input.delayMs ?? this.options.settings().computerUse.typingDelayMs,
+        delayMs: this.typingDelayMs(
+          input.delayMs ?? this.options.settings().computerUse.typingDelayMs,
+          text.length,
+        ),
       })
       return {
         content:
@@ -372,6 +392,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
 
   async window(input: ComputerWindowInput): Promise<ToolResult> {
     this.options.service.ensureCallAllowed(input.sessionId)
+    this.noteNext(input)
     await this.options.host.ensureReady()
     const windows = await this.windowList()
     if (input.action === 'list') {
@@ -434,7 +455,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         content:
           `已启动 ${result?.process ?? name}（pid ${result?.pid ?? '?'}）` +
           (result?.window === undefined
-            ? '；5 秒内未检测到窗口，可能需要等待或手动激活。'
+            ? '；2 秒内未检测到窗口，可能需要等待或手动激活（可以先 computer_screenshot 看一眼）。'
             : `；窗口「${result.window.title}」（id ${result.window.windowId}）。`),
         summary: `已启动 ${result?.process ?? name}`,
       }
@@ -525,6 +546,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
 
   async ui(input: ComputerUiInput): Promise<ToolResult> {
     this.options.service.ensureCallAllowed(input.sessionId)
+    this.noteNext(input)
     await this.options.host.ensureReady()
     const windows = await this.windowList()
     const target =
@@ -598,6 +620,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
 
   async wait(input: ComputerWaitInput): Promise<ToolResult> {
     this.options.service.ensureCallAllowed(input.sessionId)
+    this.noteNext(input)
     const seconds = Math.max(0, Math.min(30, input.seconds ?? 1))
     this.options.service.noteStep(input.sessionId, 'wait', `正在等待 ${seconds} 秒`)
     await sleep(seconds * 1000, input.signal)
@@ -623,9 +646,12 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     return {
       content: [
         '已获得 Computer Use 授权（授权 ≠ 开始操作，浮层尚未显示）。',
-        '下一次请求开始可以使用 computer_screenshot / computer_mouse / computer_keyboard / computer_window / computer_ui / computer_wait。',
-        '请先 computer_screenshot 截图建立坐标空间；第一次动作调用才会显示顶部流光与过程面板。',
-        '任务完成后必须调用 computer_stop 退出（Aurora 会自动回到前台向用户汇报）。',
+        '动作工具（computer_screenshot / computer_mouse / computer_keyboard / computer_window / ' +
+          'computer_ui / computer_wait）**在同一次请求的下一轮立即可用**；' +
+          '不要在下一轮之前、也不要和本工具放在同一轮里发动作调用。',
+        '下一轮先想好 2–4 步，用 computer_screenshot 截图建立坐标空间，再按顺序批量下发动作；' +
+          '每个动作填 next（一句话的下一步计划，过程面板会显示）。',
+        '不要每个动作后都 computer_wait；任务完成后必须调用 computer_stop 退出（Aurora 会自动回到前台向用户汇报）。',
       ].join('\n'),
       summary: '已获得 Computer Use 授权',
     }
@@ -767,6 +793,30 @@ export class DesktopComputerUsePort implements ComputerUsePort {
   /** 用户关掉虚拟光标时不画动画，也就不该为「看不见的停顿」多等一程。 */
   private cursorSettleMs(): number {
     return this.options.settings().computerUse.showVirtualCursor === false ? 0 : CURSOR_SETTLE_MS
+  }
+
+  /**
+   * 有效逐字间隔（v39.1）：配置值 / 模型入参仍然是**上限**，总延迟另有封顶。
+   * 目标是「长文本不要变成几秒的静默等待」，而不是取消慢应用需要的逐字节奏。
+   */
+  private typingDelayMs(configured: number, length: number): number {
+    if (length <= 0) return 0
+    const budgeted = Math.floor(TYPE_TOTAL_DELAY_BUDGET_MS / length)
+    return Math.max(0, Math.min(Math.round(configured), budgeted))
+  }
+
+  /**
+   * 把动作参数里的 `next` 交给会话层（v39.1）：只进过程面板 / 状态条的「下一步」。
+   *
+   * 缺省时发空计划（清空上一行）——留着上一步的计划会让用户以为「下一步」还是那个
+   * 已经做完的动作。展示层的问题不该让系统动作失败，因此这里兜一层 warn。
+   */
+  private noteNext(input: { sessionId: string; next?: string }): void {
+    try {
+      this.options.service.noteNextStep(input.sessionId, input.next)
+    } catch (error) {
+      this.options.logger.warn('Computer Use 下一步计划记录失败', { error: String(error) })
+    }
   }
 
   /**

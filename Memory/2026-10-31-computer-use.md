@@ -140,3 +140,19 @@
 > 用户实测立刻指出「虚拟光标移动时我的鼠标也在动」。改成滑行阶段系统指针原地不动，等光环到位 +
 > 停 60ms 后才瞬移并点击。**别再把两者做成同步动画**；也别忘了这一下瞬移无法避免（点击只能在
 > 指针处发生），否则会误以为「可以让真实指针完全不动」。
+> 2026-10-31 五次修订（v39.1：请求内开放工具 / 批量执行 / 「下一步」/ 等待收敛）：
+> (1) **工具面每轮现取**：`AgentLoopOptions.onRoundStart`（每轮发请求前回调）+ 循环内每轮
+> `toLlmTools()`；`KernelAgentHost.buildToolSurface` 每轮按运行档重建视图，`toolNameScope` 传
+> **完整注册表**把线路名一次定死（否则请求内新增工具会与既有名归一冲突、解错工具）。
+> Agent 调 `computer_start` 后动作工具在**同一次请求的下一轮**进入请求体 —— 旧实现是请求级
+> 快照，必须等用户再发消息。提示词仍按请求开始定稿（前缀缓存），因此**不要**把
+> `computer_start` 与动作工具放在同一轮（那一轮工具面里还没有它们）。
+> (2) **批量执行**：运行说明 / systemPrompt 指引改成「先想 2–4 步 → 截图 → 同轮按顺序发 2–4 个动作
+> → 批后复核」；每个动作带可选 `next`（不执行，只展示），经
+> `service.noteNextStep` → 事件 `{type:'next'}` → HUD「下一步」一行（560×140）+ 对话状态条；
+> 缺 `next` 发空串清空，空状态文案「等待下一步…」→「正在准备…」。
+> (3) **等待收敛**：授权时预热 PowerShell 宿主（`emit` 的 `started` 分支，只启动不注入）；
+> 无 `windowId` 的截图只查 `window_active`（不再全量枚举窗口）；`typingDelayMs` 有 1.2s 总延迟
+> 预算（≤120 字不受影响）；`app_launch` 等窗 5s → 2s。160ms 光标滑行 + 60ms 停一拍**不动**
+> （视觉口径）。回归断言在 `run-profile.test.ts` / `service.test.ts` / `agentLoop.test.ts` /
+> `agentHost.test.ts` / `computer-use.test.ts`。

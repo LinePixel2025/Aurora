@@ -690,7 +690,7 @@ while ($true) {
                 } else {
                     $process = Start-Process -FilePath $commandPath -PassThru
                 }
-                $deadline = (Get-Date).AddSeconds(5)
+                $deadline = (Get-Date).AddSeconds(2)
                 $window = $null
                 while ((Get-Date) -lt $deadline) {
                     Start-Sleep -Milliseconds 150

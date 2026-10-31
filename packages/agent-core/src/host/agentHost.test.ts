@@ -1981,6 +1981,51 @@ describe('KernelAgentHost · 运行档（自动化会话）', () => {
     expect(harness.events.some((event) => event.type === 'done')).toBe(true)
     expect(harness.logger.entries.some((entry) => entry.includes('运行档解析失败'))).toBe(true)
   })
+
+  it('运行档每轮现取（v39.1）：请求内建立授权后，动作工具下一轮立即进请求体', async () => {
+    // 模拟 Computer Use：第 1 轮只有入口工具，调用后授权生效，第 2 轮动作工具立即可用
+    let authorized = false
+    const harness = await createHarness({
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'computer_start', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c2', name: 'computer_mouse', arguments: '{}' }] },
+        { text: '完成' },
+      ],
+      runProfileFor: () => ({ hiddenTools: authorized ? ['computer_start'] : ['computer_mouse'] }),
+    })
+    harness.tools.register({
+      name: 'computer_start',
+      description: '进入 Computer Use',
+      parameters: { type: 'object' },
+      execute: async () => {
+        authorized = true
+        return { content: '已授权', summary: '已授权' }
+      },
+    })
+    harness.tools.register({
+      name: 'computer_mouse',
+      description: '鼠标动作',
+      parameters: { type: 'object' },
+      execute: async () => ({ content: 'mouse-ok', summary: '鼠标动作' }),
+    })
+
+    await harness.send('帮我操作电脑', 'chat-1')
+    await harness.waitForDone()
+
+    const first = harness.provider.calls[0]?.tools?.map((tool) => tool.name) ?? []
+    const second = harness.provider.calls[1]?.tools?.map((tool) => tool.name) ?? []
+    // 请求开始时定稿：未授权 → 动作工具不在请求体
+    expect(first).toContain('computer_start')
+    expect(first).not.toContain('computer_mouse')
+    // 同一请求的下一轮：工具面按新的授权状态重建
+    expect(second).toContain('computer_mouse')
+    expect(second).not.toContain('computer_start')
+    // 请求内新增的工具真的被执行了（视图与执行走同一份 per-round 视图）
+    const stored = await harness.sessions.get('chat-1')
+    expect(
+      stored.some((message) => message.role === 'tool' && message.content.includes('mouse-ok')),
+    ).toBe(true)
+  })
 })
 
 describe('KernelAgentHost · 多模态输入（docs/06 §3.1，v22）', () => {

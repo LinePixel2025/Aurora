@@ -305,9 +305,9 @@
     "enabled": false, // 默认关闭；仅 Windows + 多模态模型 + 非只读档时生效
     "showVirtualCursor": true, // 虚拟光标（光环 + 拖尾，只跟 Agent 动作走）；原生指针保留
     "glow": true, // 操作期间屏幕顶部的光谱流光（与「流光提醒」同款）
-    "showHud": true, // 屏幕顶部操作过程面板（当前步骤 + 最近 3 步）
+    "showHud": true, // 屏幕顶部操作过程面板（当前步骤 + 下一步 + 最近 2 步）
     "moveDurationMs": 160, // 鼠标平滑移动（0–1000）；也是点击前「先滑过去」的时长
-    "typingDelayMs": 10, // 逐字符间隔（0–200）
+    "typingDelayMs": 10, // 逐字符间隔上限（0–200）；整段输入另有约 1.2s 总延迟预算
     "screenshotMaxWidth": 1280, // 截图最长边（640–2560）
     "maxActions": 300, // 单会话有副作用动作上限（10–2000）
     "idleStopMinutes": 10, // 无调用后自动结束（1–60）

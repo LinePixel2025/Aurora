@@ -121,6 +121,11 @@ export class ComputerUseService {
   /** 最近几步动作描述（新 → 旧），供过程面板挂载时补齐历史。 */
   private recentActions: ComputerUseStep[] = []
   /**
+   * 下一步计划（v39.1）：模型在动作参数 `next` 里写下的一句话，只用于过程面板 / 状态条。
+   * 与 `summary` 同口径（不含坐标 / 输入文字），不计动作限额、不触发浮层。
+   */
+  private nextAction: string | undefined
+  /**
    * 虚拟光标当前落点（显示器内 DIP，与 `cursor` 事件同一坐标空间）。
    *
    * **只由 `moveCursor()` 改**：这是 Agent 自己的光标，不跟随用户的鼠标。
@@ -170,6 +175,7 @@ export class ComputerUseService {
       ...(this.lastActionKind === undefined ? {} : { lastActionKind: this.lastActionKind }),
       ...(this.lastActionAt === undefined ? {} : { lastActionAt: this.lastActionAt }),
       ...(this.recentActions.length === 0 ? {} : { recentActions: [...this.recentActions] }),
+      ...(this.nextAction === undefined ? {} : { nextAction: this.nextAction }),
       overlay,
       stopHotkeyAvailable: this.stopHotkeyAvailable,
       ...(this.disabledReason(current) === undefined
@@ -210,6 +216,7 @@ export class ComputerUseService {
     this.lastActionKind = undefined
     this.lastActionAt = undefined
     this.recentActions = []
+    this.nextAction = undefined
     this.overlayShown = false
     this.cancelCursorMotion()
     this.virtualCursor = undefined
@@ -251,6 +258,7 @@ export class ComputerUseService {
     this.lastActionKind = undefined
     this.lastActionAt = undefined
     this.recentActions = []
+    this.nextAction = undefined
     this.cancelCursorMotion()
     this.virtualCursor = undefined
     this.cursorSeeded = false
@@ -347,6 +355,23 @@ export class ComputerUseService {
       maxSteps: cfg.maxActions,
       at,
     })
+  }
+
+  /**
+   * 记录「下一步计划」（v39.1）：模型在动作参数 `next` 里写的一句话，只用于展示。
+   *
+   * 三条口径：
+   * - **不执行**：它不碰系统、不计动作限额、也不触发浮层（浮层仍由第一次动作调用显示）；
+   * - **可清空**：`undefined` / 空串 = 这一步没给计划（或会话结束），发一条空 `next` 事件
+   *   让过程面板收起那一行 —— 留着上一步的计划会误导用户「下一步」还是旧动作；
+   * - **幂等**：会话已结束 / 不是持有者时静默返回（调用点紧跟 `ensureCallAllowed`，
+   *   正常路径不会走到这里；走到也只说明刚好被撤权，不该再抛错）。
+   */
+  noteNextStep(sessionId: string, text: string | undefined): void {
+    if (!this.isAuthorized(sessionId)) return
+    const next = text?.trim().slice(0, 120)
+    this.nextAction = next === undefined || next === '' ? undefined : next
+    this.emit({ type: 'next', text: this.nextAction ?? '' })
   }
 
   noteClick(input: {

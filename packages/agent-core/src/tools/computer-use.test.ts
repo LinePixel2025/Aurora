@@ -94,6 +94,49 @@ describe('Computer Use 工具定义', () => {
     )
   })
 
+  it('六个动作工具都透传 next（下一步计划），空串视为缺省', async () => {
+    const fake = port()
+    const tools = createComputerUseTools({ port: fake })
+    const at = (name: string) => tools.find((tool) => tool.name === name)!
+    await at('computer_screenshot').execute({ next: ' 点击搜索框 ' }, ctx)
+    expect(fake.screenshot).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 's1', next: '点击搜索框' }),
+    )
+    await at('computer_mouse').execute({ action: 'position', next: '输入关键词' }, ctx)
+    expect(fake.mouse).toHaveBeenCalledWith(expect.objectContaining({ next: '输入关键词' }))
+    await at('computer_keyboard').execute({ action: 'key', keys: ['Enter'], next: '看结果' }, ctx)
+    expect(fake.keyboard).toHaveBeenCalledWith(expect.objectContaining({ next: '看结果' }))
+    await at('computer_window').execute({ action: 'active', next: '切换窗口' }, ctx)
+    expect(fake.window).toHaveBeenCalledWith(expect.objectContaining({ next: '切换窗口' }))
+    await at('computer_ui').execute({ action: 'tree', next: '读控件' }, ctx)
+    expect(fake.ui).toHaveBeenCalledWith(expect.objectContaining({ next: '读控件' }))
+    await at('computer_wait').execute({ seconds: 0, next: '等加载' }, ctx)
+    expect(fake.wait).toHaveBeenCalledWith(expect.objectContaining({ next: '等加载' }))
+    // 空白 next = 没给计划（主进程据此清空面板的「下一步」一行）
+    await at('computer_mouse').execute({ action: 'position', next: '   ' }, ctx)
+    expect(fake.mouse).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ next: expect.anything() }),
+    )
+  })
+
+  it('next 超过 120 字折成工具错误（与其它参数同一口径，不静默截断）', async () => {
+    const fake = port()
+    const tool = createComputerUseTools({ port: fake }).find(
+      (item) => item.name === 'computer_mouse',
+    )!
+    const result = await tool.execute({ action: 'position', next: 'x'.repeat(121) }, ctx)
+    expect(result.isError).toBe(true)
+    expect(fake.mouse).not.toHaveBeenCalled()
+  })
+
+  it('computer_start 文案说明动作工具同请求下一轮可用，且不要同轮批量', () => {
+    const tool = createComputerUseTools({ port: port() }).find(
+      (item) => item.name === COMPUTER_USE_START_TOOL_NAME,
+    )!
+    expect(tool.description).toContain('同一次请求的下一轮')
+    expect(tool.description).toContain('不要在同一轮')
+  })
+
   it('非法枚举 / 缺必填参数折成工具错误', async () => {
     const fake = port()
     const tools = createComputerUseTools({ port: fake })

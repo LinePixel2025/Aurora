@@ -54,6 +54,18 @@ export type ComputerCoordinateSpace = 'image' | 'screen'
 export type ComputerMouseButton = 'left' | 'right' | 'middle'
 export type ComputerModifier = 'ctrl' | 'alt' | 'shift' | 'win'
 
+/**
+ * 每个动作都可以带一句「下一步计划」（v39.1）。
+ *
+ * 它**不执行**，只进顶部过程面板 / 对话状态条的「下一步」一行：模型批量下发动作时，
+ * 用户看到的不只是「正在点击」，还有「接下来要做什么」。与 `summary` 同口径 ——
+ * 不含坐标、输入文字、剪贴板内容。
+ */
+export interface ComputerActionHint {
+  /** 下一步计划（一句话，≤120 字；不执行） */
+  next?: string
+}
+
 export type ComputerScreenshotDisplay = 'auto' | 'primary' | 'cursor' | 'foreground'
 export type ComputerMouseAction =
   | 'move'
@@ -79,7 +91,7 @@ export type ComputerWindowAction =
 export type ComputerUiAction =
   'tree' | 'find' | 'invoke' | 'set_value' | 'focus' | 'expand' | 'collapse' | 'select'
 
-export interface ComputerScreenshotInput {
+export interface ComputerScreenshotInput extends ComputerActionHint {
   sessionId: string
   /** 目标显示器：auto（前台窗口所在屏，前台是 Aurora/受保护窗口时回落光标屏） */
   display?: ComputerScreenshotDisplay
@@ -92,7 +104,7 @@ export interface ComputerScreenshotInput {
   signal?: AbortSignal
 }
 
-export interface ComputerMouseInput {
+export interface ComputerMouseInput extends ComputerActionHint {
   sessionId: string
   action: ComputerMouseAction
   x?: number
@@ -111,7 +123,7 @@ export interface ComputerMouseInput {
   signal?: AbortSignal
 }
 
-export interface ComputerKeyboardInput {
+export interface ComputerKeyboardInput extends ComputerActionHint {
   sessionId: string
   action: ComputerKeyboardAction
   text?: string
@@ -124,7 +136,7 @@ export interface ComputerKeyboardInput {
   signal?: AbortSignal
 }
 
-export interface ComputerWindowInput {
+export interface ComputerWindowInput extends ComputerActionHint {
   sessionId: string
   action: ComputerWindowAction
   windowId?: string
@@ -143,7 +155,7 @@ export interface ComputerWindowInput {
   signal?: AbortSignal
 }
 
-export interface ComputerUiInput {
+export interface ComputerUiInput extends ComputerActionHint {
   sessionId: string
   action: ComputerUiAction
   windowId?: string
@@ -157,7 +169,7 @@ export interface ComputerUiInput {
   signal?: AbortSignal
 }
 
-export interface ComputerWaitInput {
+export interface ComputerWaitInput extends ComputerActionHint {
   sessionId: string
   seconds?: number
   signal?: AbortSignal
@@ -234,6 +246,18 @@ const BUTTONS = ['left', 'right', 'middle'] as const
 const MODIFIERS = ['ctrl', 'alt', 'shift', 'win'] as const
 const SPACES = ['image', 'screen'] as const
 
+/**
+ * 六个动作工具共用的 `next` 参数（v39.1）：一句「下一步做什么」，只进过程面板。
+ *
+ * 定义只写一份：六处各抄一遍描述，改口径时总会漏掉一两处。
+ */
+const NEXT_PROPERTY = {
+  type: 'string',
+  description:
+    '下一步计划（一句话，≤120 字）：只显示在过程面板的「下一步」，不执行；' +
+    '不要写坐标或输入的文字。批量下发动作时每一步都填它。',
+}
+
 export interface ComputerUseToolOptions {
   port: ComputerUsePort
 }
@@ -258,7 +282,9 @@ function startTool(port: ComputerUsePort): ToolDefinition {
     description:
       '由 Agent 主动建立 Computer Use 授权（用户已在设置里开启总开关时可用）。' +
       '仅在用户要求操作真实桌面 / 桌面应用、而结构化工具（文件 / 终端 / 内置浏览器）做不到时调用。' +
-      '授权本身不显示浮层；**下一次请求**才会出现 computer_* 动作工具，第一次动作调用才进入操作态。' +
+      '授权本身不显示浮层；**同一次请求的下一轮**动作工具（computer_screenshot / mouse / ' +
+      'keyboard / window / ui / wait）立即进入工具面 —— 不要在同一轮里同时调用本工具与动作工具' +
+      '（那些调用会报「工具不存在」）。进入前先想好后面 2–4 步，下一轮截图后按顺序批量下发动作。' +
       '任务完成后必须调用 computer_stop 退出，把桌面还给用户。',
     parameters: {
       type: 'object',
@@ -311,6 +337,7 @@ function screenshotTool(port: ComputerUsePort): ToolDefinition {
           maximum: 2560,
           description: '本次截图最长边像素；缺省用设置里的值',
         },
+        next: NEXT_PROPERTY,
       },
       required: [],
       additionalProperties: false,
@@ -349,6 +376,7 @@ function mouseTool(port: ComputerUsePort): ToolDefinition {
           description: '按住这些修饰键（如 ctrl + 点击）',
         },
         space: { type: 'string', enum: [...SPACES], description: '坐标空间，缺省 image' },
+        next: NEXT_PROPERTY,
       },
       required: ['action'],
       additionalProperties: false,
@@ -376,6 +404,7 @@ function keyboardTool(port: ComputerUsePort): ToolDefinition {
           description: 'key 的组合键，如 ["ctrl","s"] / ["alt","tab"]',
         },
         delayMs: { type: 'integer', minimum: 0, maximum: 200, description: '逐字符间隔覆盖值' },
+        next: NEXT_PROPERTY,
       },
       required: ['action'],
       additionalProperties: false,
@@ -405,6 +434,7 @@ function windowTool(port: ComputerUsePort): ToolDefinition {
         command: { type: 'string', description: 'launch 的可执行文件（.exe / .com）' },
         args: { type: 'array', items: { type: 'string' }, description: 'launch 的参数数组' },
         space: { type: 'string', enum: [...SPACES], description: '坐标空间，缺省 image' },
+        next: NEXT_PROPERTY,
       },
       required: ['action'],
       additionalProperties: false,
@@ -436,6 +466,7 @@ function uiTool(port: ComputerUsePort): ToolDefinition {
           maximum: 5000,
           description: 'tree 节点上限，缺省 1200',
         },
+        next: NEXT_PROPERTY,
       },
       required: ['action'],
       additionalProperties: false,
@@ -448,11 +479,15 @@ function uiTool(port: ComputerUsePort): ToolDefinition {
 function waitTool(port: ComputerUsePort): ToolDefinition {
   return {
     name: 'computer_wait',
-    description: '等待一段时间让应用 / 页面完成加载（0–30 秒，缺省 1 秒）。等待期间会话保持运行。',
+    description:
+      '等待一段时间让应用 / 页面完成加载（0–30 秒，缺省 1 秒）。等待期间会话保持运行。' +
+      '只在明确知道应用需要加载时用（如启动后、打开大文件后），**不要每个动作后都等**；' +
+      '连续动作直接排在同一轮里，界面变化用截图核对。',
     parameters: {
       type: 'object',
       properties: {
         seconds: { type: 'number', minimum: 0, maximum: 30, description: '等待秒数，缺省 1' },
+        next: NEXT_PROPERTY,
       },
       required: [],
       additionalProperties: false,
@@ -505,6 +540,7 @@ function parseScreenshot(input: unknown, ctx: ToolContext): ComputerScreenshotIn
   const maxWidth = optionalInt(record['maxWidth'], 'maxWidth', 640, 2560)
   return {
     sessionId: ctx.sessionId,
+    ...optionalNext(record),
     ...(display === undefined ? {} : { display }),
     ...(displayId === undefined ? {} : { displayId }),
     ...(windowId === undefined ? {} : { windowId }),
@@ -523,6 +559,7 @@ function parseMouse(input: unknown, ctx: ToolContext): ComputerMouseInput {
   return {
     sessionId: ctx.sessionId,
     action,
+    ...optionalNext(record),
     ...(optionalInt(record['x'], 'x', -1_000_000, 1_000_000) === undefined
       ? {}
       : { x: numberValue(record['x'], 'x') }),
@@ -564,6 +601,7 @@ function parseKeyboard(input: unknown, ctx: ToolContext): ComputerKeyboardInput 
   return {
     sessionId: ctx.sessionId,
     action,
+    ...optionalNext(record),
     ...(text === undefined ? {} : { text }),
     ...(record['submit'] === undefined ? {} : { submit: booleanValue(record['submit'], 'submit') }),
     ...(keys === undefined ? {} : { keys }),
@@ -585,6 +623,7 @@ function parseWindow(input: unknown, ctx: ToolContext): ComputerWindowInput {
   return {
     sessionId: ctx.sessionId,
     action,
+    ...optionalNext(record),
     ...(optionalString(record['windowId'], 'windowId', 128) === undefined
       ? {}
       : { windowId: stringValue(record['windowId'], 'windowId') }),
@@ -620,6 +659,7 @@ function parseUi(input: unknown, ctx: ToolContext): ComputerUiInput {
   return {
     sessionId: ctx.sessionId,
     action,
+    ...optionalNext(record),
     ...(optionalString(record['windowId'], 'windowId', 128) === undefined
       ? {}
       : { windowId: stringValue(record['windowId'], 'windowId') }),
@@ -656,6 +696,7 @@ function parseWait(input: unknown, ctx: ToolContext): ComputerWaitInput {
   }
   return {
     sessionId: ctx.sessionId,
+    ...optionalNext(record),
     ...(typeof seconds === 'number' ? { seconds } : {}),
     ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
   }
@@ -685,6 +726,16 @@ function optionalString(value: unknown, field: string, maxLength: number): strin
   if (typeof value !== 'string') throw new Error(`参数 ${field} 必须是字符串`)
   if (value.length > maxLength) throw new Error(`参数 ${field} 超过 ${maxLength} 字符`)
   return value
+}
+
+/**
+ * `next`（v39.1）→ 可直接展开的补丁：trim 后为空视为「没给计划」（清空面板的下一步），
+ * 超长仍按参数校验报错（与其它字段同一口径，不静默截断模型输入）。
+ */
+function optionalNext(record: Record<string, unknown>): Record<string, string> {
+  const raw = optionalString(record['next'], 'next', 120)
+  const next = raw?.trim()
+  return next === undefined || next === '' ? {} : { next }
 }
 
 function stringValue(value: unknown, field: string): string {
