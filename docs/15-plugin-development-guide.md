@@ -486,11 +486,26 @@ node scripts/verify-plugin.mjs ./hello.zip
 它会检查：清单 schema、`apiVersion`、工具名长度、`main` / Skill / 面板 / **小组件** / 图标路径、
 zip 路径安全、大小与压缩比、`manifest.json` 是否在包根。退出码 0 = 通过。
 
+### 10.1 不依赖仓库的工具包（`plugin-dev-kit/`）
+
+`plugin-dev-kit/` 是**可整体拷走**的插件开发工具包，三个工具都只用 Node 内置模块：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node <工具包>/tools/create-plugin.mjs <目录> --id <反向域名> --name "<名称>"` | 从模板生成插件：填好清单、附契约类型、立刻校验 |
+| `node <工具包>/tools/check-plugin.mjs <目录> [--json]` | 与宿主清单 schema 同口径的离线校验（失败退出码 1） |
+| `node <工具包>/tools/pack-plugin.mjs <目录> [--out <zip>]` | 先校验再打 zip，包根直接是 `manifest.json` |
+
+`check-plugin.mjs` 是**基础校验**（清单字段 / 权限成对 / 路径 containment / 主题令牌 / 声明式
+schema / 引用文件存在），安装器、市场与 `verify-plugin.mjs` 仍会用同一份 zod schema 再校验一次；
+在仓库里以 `verify-plugin.mjs` 为准。
+
 打包要点：
 
 - zip **根目录**必须直接是 `manifest.json`；
 - 不要带 `node_modules`（运行时不需要依赖目录；需要第三方库就打包进 `main.js`）；
-- 单文件 ≤ 10 MB、总量 ≤ 50 MB、条目 ≤ 2000。
+- 单文件 ≤ 10 MB、总量 ≤ 50 MB、条目 ≤ 2000（`pack-plugin.mjs` 已按这些上限检查并跳过
+  `node_modules` / `.git`）。
 
 ---
 

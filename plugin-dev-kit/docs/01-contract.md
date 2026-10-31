@@ -59,6 +59,13 @@ API 白名单、工具确认、安装 / 更新路径安全与页面渲染隔离�
 | 日志 | `<userData>/logs/plugins/<id>.log`（统一脱敏） |
 | 退出 | 先 `plugin.deactivate`（3s 超时），再 `kill()`；在途请求全部以 `E_PLUGIN_CRASHED` 拒绝 |
 
+- **窗口创建时机（2026-10-24）**：桌面小组件窗口必须等主进程 `registerIpc()` 完成后再创建
+  （`WidgetManager.markReady()`）。在此之前创建时，渲染层启动即调用的 `plugins:list` /
+  `settings:get` 还没有 handler，页面型小组件会永久停在「暂无内容」。
+- **`plugins:changed` 广播面**：chat / settings / edge-bar / plugin-config 与全部桌面小组件窗口
+  都会收到；页面型面板 / 小组件据此 reload webview，声明式面板据此重拉 schema
+  （插件重启按钮的可见效果依赖这条广播，不要再只发给 chat / settings）。
+
 ### 2.2 RPC 信封
 
 结构化克隆消息（不用 NDJSON）：
@@ -88,10 +95,6 @@ type PluginRpcMessage =
 
 **插件 → 宿主（按权限白名单）**：`storage.get/set/delete/list`、`net.fetch`、`notify`、`banner`、`log`、
 `emitEvent`、`ui.openPanel`、`ui.toast`、`ui.panelEvent`、`config.get/set`、`usage.summary`。
-
-> `banner`（v0.5.6 起）与 `notify` 同属 `notifications` 权限：`notify` 走系统通知中心（可点击打开
-> 文件 / 文件夹），`banner` 在屏幕顶端弹流光 + 置顶卡片（支持朗读 / 提示音，无可点入口）。
-> 两者的提示音 / 朗读都受用户在「设置 → 提醒」里的总闸约束，插件传 `true` 不能越过。
 
 ### 2.4 工具返回
 
@@ -176,9 +179,7 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 - 桌面小组件窗口：`windowLevel ∈ { "floating", "normal", "desktop" }`（默认 `"floating"`）；
   `windowMaterial ∈ { "none", "acrylic" }`（默认 `"none"`）。两者只对 `slot = "desktop"` 生效，
   提示条小组件声明非默认值时**清单校验直接拒绝**；不新增权限 / 宿主 API。
-- `hideCloseButton`（默认 `false`）：设为 `true` 时宿主不渲染标题栏右上角的「隐藏小组件」按钮；
-  只对 `slot = "desktop"` 生效，提示条小组件声明 `true` 会被清单校验拒绝。
-  使用这些字段时把 `minAuroraVersion` 设为支持它们的宿主版本（旧宿主会静默忽略未知字段）。
+  使用这两个字段时把 `minAuroraVersion` 设为支持它们的宿主版本（旧宿主会静默忽略未知字段）。
 - 主题 ≤ 8；令牌走白名单（§7），颜色只接受 `#rgb/#rrggbb/rgb()/rgba()/hsl()/hsla()`；单主题 ≤ 64 个令牌。
 - `apiVersion` 必须等于宿主 `PLUGIN_API_VERSION = 1`；`minAuroraVersion` 与宿主版本比较。
 - `main` / `skills` / `ui` / icon 路径 `resolve` 后必须仍在插件根内。
@@ -209,7 +210,7 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 | `usage` | 本机用量统计（`ctx.usage.summary`：Token / 缓存命中 / 生图 / 语音次数，只读聚合） |
 | `net` | `ctx.net.fetch`（只 http/https，响应 ≤ 5 MB） |
 | `net.private` | 允许 loopback / 私网（必须同时声明 `net`） |
-| `notifications` | 系统通知（`ctx.notify`）与流光提醒（`ctx.banner`） |
+| `notifications` | 系统通知 |
 | `logging` | 写插件日志（无权限也允许 warn/error，避免无法排障） |
 | `ui.panels` | 右栏面板 + `ui.openPanel` / `ui.toast` / `ui.panelEvent`（面板目标） |
 | `ui.widgets` | 注册 `contributes.widgets`、`invokeWidget`、`ui.panelEvent`（小组件目标） |
@@ -304,6 +305,10 @@ window.auroraPlugin = {
 `frame:false` / `transparent:true` / `skipTaskbar:true`、最小 120×80；位置与尺寸夹取到当前显示器
 `workArea`，屏幕变化时重新夹取。窗口层级由清单 `windowLevel` 声明，用户可在设置页逐 widget 覆盖：
 
+- 窗口**不可激活**（`focusable: false`，2026-10-30）：点击卡片 / 卡片内按钮不会把 Aurora 切成
+  前台应用，当前工作应用的焦点保持不变；代价是小组件内的文本输入拿不到键盘焦点
+  （桌面场景优先「不打断」）。标题栏拖动与卡片内点击不受影响。
+
 - `"floating"`（默认）：置顶浮动卡片（`alwaysOnTop: true`），与旧版本行为一致；
 - `"normal"`：不置顶，按普通无边框窗口参与 z-order；
 - `"desktop"`：不置顶；宿主把窗口的 Win32 owner 指向桌面 shell 视图（`SHELLDLL_DefView`），
@@ -312,10 +317,16 @@ window.auroraPlugin = {
 - 材质由 `windowMaterial` 声明：`"none"`（默认）保持现有不透明卡片；`"acrylic"` 使用原生 Acrylic，
   仅 Windows 11 22H2+ 且外观 `appearance.glass` 开启时逐 widget 生效，窗口 shape 按卡片四角圆角
   裁剪；不满足条件或启用失败时保持不透明卡片。
+- 标题栏右上角的「×」由宿主绘制；清单 `hideCloseButton: true`（默认 `false`）可隐藏它，
+  只对桌面小组件生效（提示条声明 `true` 会被拒绝）。
+- 标题栏另有一枚**固定按钮**（宿主绘制，不受清单控制）：点击固定 / 取消固定，只锁用户的
+  拖动与缩放（主进程 `setMovable` / `setResizable`），不动位置、层级与页面状态；
+  状态写布局条目的可选 `locked`（缺省 = 未固定），点击不抢前台（见上一条）。
+  默认未固定，即新 widget 创建后可以直接拖动 / 缩放。
 - 声明式 widget 复用 `PluginSchemaRenderer`；页面型复用 `aurora-plugin://` + 专用 preload
   （与 §5.2 完全同一套沙箱口径；widget 窗口只为它开启 `webviewTag`）。
 - 布局写 `<userData>/plugin-widget-layout.json`（**不进 settings、不升 `CONFIG_VERSION`**，
-  文件版本仍为 `1`；`windowLevelOverride` / `locked` 是可选扩展字段）：
+  文件版本仍为 `1`；`windowLevelOverride` 是可选扩展字段）：
 
 ```ts
 { "version": 1, "widgets": { "<pluginId>/<widgetId>": {
@@ -326,10 +337,9 @@ window.auroraPlugin = {
 ```
 
 - `windowLevelOverride` 记录用户在设置页选的层级，缺省 = 跟随清单；读取时丢弃非法值。
-- `locked` 记录用户点标题栏「固定」后的锁定状态（锁拖动 / 缩放），缺省 = 未固定。
-- 桌面小组件窗口不可激活：点击卡片 / 卡内按钮不抢前台焦点，卡内文本输入拿不到键盘焦点。
+- `locked` 记录用户点固定后的锁定状态，缺省 / 非 `true` 都按未固定处理。
 - 新 widget 默认可见，位置从工作区右上角级联；用户拖动 / 缩放 / 改层级后 250ms 防抖原子写。
-- 设置 → 插件详情里每个桌面 widget 一枚「显示在桌面」开关 + 一枚层级下拉
+- 插件配置窗口（`plugin-config`）里每个桌面 widget 一枚「显示在桌面」开关 + 一枚层级下拉
   （跟随插件 / 置顶 / 普通 / 桌面层）；关闭开关即销毁窗口、保留布局条目。
 - 插件停用 / 卸载 / 总开关关闭 / 崩溃反复超限：立即销毁窗口；布局文件保留用户位置。
 - 开发目录热重载：同 id widget 更新标题 / 入口，位置不丢；入口类型变化时重建窗口。
@@ -361,6 +371,34 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
   桌面声明式 widget → `plugins:widgetEvent` → `widgetData('event', ...)`；提示条同样订阅 `plugins:widgetEvent`。
 - 推送内容按纯数据（结构化克隆）传输，不做 HTML 拼接；渲染层仍禁止 `v-html`。
 
+### 5.6 插件配置窗口（`plugin-config`）
+
+- 设置 → 插件列表只保留总览、启停与「配置」入口；配置表单、桌面小组件显隐 / 层级、
+  权限与扩展点、重启 / 回滚 / 卸载等管理动作在单例独立窗口里（默认 880×760、最小 620×520，
+  关闭 = 隐藏）。
+
+### 5.7 Center 侧栏面板镜像
+
+插件**不需要任何额外声明**，桌面连上 Center 后，已启用插件的侧栏面板会自动出现在 Center
+工作台侧栏：
+
+- **只有侧栏面板**（`ui.panels`）会上 Center；桌面小组件与提示条小组件（`ui.widgets`）
+  **永不出现**，也不新增清单字段 / 权限；
+- 声明式面板：网页端用同构渲染器直接画，按钮 / 输入经 `plugin.panelData` → 客户端
+  `invokePanel` 实时执行并回传 schema；
+- 页面型面板：网页端在 `sandbox="allow-scripts"` 的 iframe 里打开
+  `/p/<pluginId>/<version>/<entry>`，资源**只从已发布到该 Center 的市场包取**（本机文件不
+  出机）；该版本未发布时面板明确提示，不白屏；页面里的 `window.auroraPlugin` 与桌面
+  §5.2 同名同形，只是底层从 `pageRpc` 换成 postMessage 桥；
+- 推送（§5.5）只在该面板被网页订阅时转发；Center 侧日志不记 payload。
+- 总闸是客户端的 `center.allowRemoteSession`：关闭后网页端不出现任何插件入口（目录不上报），
+  已打开的面板调用回 `E_REMOTE_DISABLED`。
+- 权限口径：只在**设备属主**自己的账号里可见 / 可操作，管理员不跨用户。
+- 打开链：`plugins:openWindow` → 主进程校验插件存在 → 复用窗口并等页面加载完成后经
+  `plugins:windowRequest` 推送 `{ requestId, pluginId }`；已打开时只重推参数。
+- 保存配置仍走 `plugins:setConfig`，插件侧收到 `config.changed`；重启成功后由
+  `plugins:changed` 触发全部已打开界面重载，窗口内给出成功提示。
+
 ---
 
 ## 6. 安全模型
@@ -384,6 +422,8 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 插件工具不参与 `agent.tools.enabled` 门控，但受 `plugins.enabled`、插件自身 enabled、
   只读档与信任开关约束；
 - 工具名天然带 `plugin.<id>.` 前缀，不会与内置 / MCP 工具撞名。
+- **出站名称**：发给 LLM 的线路名会把点号归一为下划线（`plugin.<id>.<name>` → `plugin_<id>_<name>`，
+  出站时会归一为下划线）；插件清单与插件进程仍只认原始工具名，不需要感知这一层。
 
 ### 6.3 事件推送的边界
 
@@ -470,7 +510,8 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 ## 11. 市场（Aurora Center）
 
 - 公开路由（无需登录）：`GET /api/plugins`（搜索 / 分页 / 排序）、`GET /api/plugins/:id`、
-  `GET /api/plugins/:id/download?version=`（带 `X-Checksum-Sha256`）、`GET /api/plugins/:id/icon`；
+  `GET /api/plugins/:id/download?version=`（带 `X-Checksum-Sha256`）、`GET /api/plugins/:id/icon`、
+  `GET|HEAD /p/:id/:version/<path>`（页面型面板静态资源，§5.7）；
 - 管理员：`GET /api/admin/plugins`、`POST /api/admin/plugins/upload`（zip → staging）、
   `POST /api/admin/plugins/publish`、`DELETE /api/admin/plugins/:id/:version`、
   `POST /api/admin/plugins/:id/icon`（PNG ≤ 256 KB）；
@@ -490,9 +531,10 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 端到端：`AURORA_SMOKE=1 pnpm dev` 覆盖安装 → 工具 / Skill / 命令 → 插件事件自动化 →
   面板 schema → **小组件窗口 / 面板事件推送** → 主题令牌 → 停用 / 启用 / 卸载；
 - 截图：`chat-plugin-panel.png` / `chat-plugin-page.png` / `settings-plugins-installed.png` /
-  `settings-plugins-marketplace.png` / `widget-desktop-plugin.png` / `edge-bar-plugin-widget.png` /
-  `chat-plugin-panel-push.png` + 设置页 `settings-plugins.png`；
-- Center：`verify:web` 的 `marketplace` / `plugins-admin` 场景；
+  `settings-plugins-detail.png` / `plugin-config.png` / `settings-plugins-marketplace.png` /
+  `widget-desktop-plugin.png` / `edge-bar-plugin-widget.png` / `chat-plugin-panel-push.png` +
+  设置页 `settings-plugins.png`；
+- Center：`verify:web` 的 `marketplace` / `plugins-admin` / `plugin-panel` / `plugin-page` 场景；
 - 独立校验：`node scripts/verify-plugin.mjs <目录|zip>`。
 
 已知限制：
@@ -503,6 +545,8 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 市场不提供签名 / 发布者认证；
 - 桌面小组件默认置顶，可声明 `normal` / `desktop` 层级；`desktop` 的桌面亲和是尽力而为
   （失败回落 `normal`），不做壁纸层嵌入 / 桌面图标层 / 点击穿透；
+- 桌面小组件窗口**不可激活**（点击不抢前台），因此卡内文本输入拿不到键盘焦点；
+  「固定」只锁拖动 / 缩放，不改变层级；
 - `windowMaterial: "acrylic"` 只在 Windows 11 22H2+ 且外观毛玻璃开启时生效，否则保持不透明卡片；
 - 提示条小组件只支持声明式 schema（并拒绝 `windowLevel` / `windowMaterial` 非默认值）；
 - 插件工具不参与 `agent.tools.enabled` 门控（与扩展工具六件套同口径），只受插件总开关 /

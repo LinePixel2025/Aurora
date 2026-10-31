@@ -1,6 +1,6 @@
 # 给编码 Agent 的插件开发规则
 
-你正在为 **Aurora v0.5.8**（插件 API v1）开发插件。先读：
+你正在为 **Aurora v0.5.9**（插件 API v1）开发插件。先读：
 
 1. `docs/01-contract.md`（契约与安全边界，SSOT）
 2. `docs/02-guide.md`（逐节 API 用法）
@@ -28,7 +28,9 @@
 
 ## 工作流
 
-1. 复制 `template/` 或参考 `examples/class-board/`；
+1. 生成插件目录（推荐，自动带契约类型）：
+   `node tools/create-plugin.mjs <插件目录> --id <反向域名> --name "<显示名>"`；
+   也可以手工复制 `template/` 或参考 `examples/class-board/`；
 2. 先写 `manifest.json`，再按名字实现 `main.js` 的处理器；
 3. 静态资源放 `ui/`，页面脚本用 `<script src="...">`；
 4. 每次改完运行：
@@ -37,8 +39,15 @@
 node tools/check-plugin.mjs <插件目录>
 ```
 
-5. 修到退出码 0；若在 Aurora 源码环境，再跑 `node scripts/verify-plugin.mjs <目录|zip>`；
-6. 交付时列出：插件 id、版本、权限、工具、面板 / 小组件、事件推送目标、验证命令与结果。
+5. 修到退出码 0；需要机器可读结果时加 `--json`；
+   若在 Aurora 源码环境，再跑 `node scripts/verify-plugin.mjs <目录|zip>`；
+6. 需要安装包 / 上架市场时运行：
+
+```bash
+node tools/pack-plugin.mjs <插件目录>
+```
+
+7. 交付时列出：插件 id、版本、权限、工具、面板 / 小组件、事件推送目标、验证命令与结果。
 
 ## 禁止
 

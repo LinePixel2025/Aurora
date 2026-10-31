@@ -6,7 +6,7 @@
 ## 1. 新建一个插件
 
 ```text
-你要为 Aurora v0.5.8（插件 API v1）开发一个插件，目录：<插件目录>。
+你要为 Aurora v0.5.9（插件 API v1）开发一个插件，目录：<插件目录>。
 
 先读（必须）：
 - <插件工具包路径>/AGENTS.md
@@ -17,13 +17,16 @@
 需求：<需求>。
 
 要求：
-1. 复制模板结构（manifest.json / main.js / ui/），先写清单再实现处理器；
+1. 先用脚手架生成目录：
+   node <插件工具包路径>/tools/create-plugin.mjs <插件目录> --id <com.example.xxx> --name "<显示名>"
+   （或手工复制 template/），再先写 manifest.json、最后实现处理器；
 2. 所有贡献（工具 / 命令 / 面板 / 小组件 / 配置）必须写在 manifest.json，运行期不得动态注册；
 3. 只声明真正需要的 permissions；界面只用白名单声明式组件；
 4. 工具返回 { content, isError?, summary? }，content 只能是文本；
 5. 如需即时刷新，使用 ctx.ui.panelEvent（panelId / widgetId 二选一，目标是清单里声明过的）；
-6. 完成后运行 node <插件工具包路径>/tools/check-plugin.mjs <插件目录>，修到退出码 0；
-7. 输出：插件 id、权限、工具、面板 / 小组件、推送目标、校验结果。
+6. 每改完运行 node <插件工具包路径>/tools/check-plugin.mjs <插件目录>，修到退出码 0；
+7. 最后运行 node <插件工具包路径>/tools/pack-plugin.mjs <插件目录> 产出安装包；
+8. 输出：插件 id、权限、工具、面板 / 小组件、推送目标、校验与打包结果。
 ```
 
 ## 2. 给已有插件加桌面 / 提示条小组件
@@ -74,7 +77,19 @@
 6. 页面型小组件只能放桌面槽位；提示条不允许 entry。
 ```
 
-## 5. 代码审查提示词
+## 5. 校验并打包
+
+```text
+在 <插件目录> 做提交前检查：
+
+1. node <插件工具包路径>/tools/check-plugin.mjs <插件目录>
+   退出码必须为 0；有 warning 逐条判断是否是拼写 / 多余字段；
+2. 在 Aurora 源码环境再跑 node scripts/verify-plugin.mjs <插件目录>；
+3. node <插件工具包路径>/tools/pack-plugin.mjs <插件目录>
+4. 输出：校验结果、警告列表、zip 路径与大小，并说明如何安装 / 上传市场。
+```
+
+## 6. 代码审查提示词
 
 ```text
 审查 <插件目录>，逐条检查并输出「问题 + 最小修复」：
@@ -83,6 +98,8 @@
 - id / 版本 / apiVersion=1；权限与贡献一一对应；路径都在包内；
 - 工具名 ≤ 25、最终名 plugin.<id>.<name> ≤ 64；参数是 type:"object"；
 - 面板 schema 与 entry 二选一；小组件 ≤ 4，提示条只有 schema；
+- 主题令牌只覆盖白名单里的表面 / 文字 / 边框 / 圆角 / 状态色；
+- 宿主事件只能从 settings.changed / message.* / tool.after / session.* / theme.changed 里选；
 
 运行期：
 - invokeTool 只返回文本，长任务监听 ctx.signal；

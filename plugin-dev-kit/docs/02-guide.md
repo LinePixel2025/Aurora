@@ -178,22 +178,36 @@ interface PluginContext {
 - 存储键 1–128 位 `[a-zA-Z0-9_.:-]`；超配额回 `E_PLUGIN_INVALID_ARGS`；
 - `emitEvent` 只允许清单里声明过的事件名。
 - **`ctx.notify` 与 `ctx.banner` 是两条独立通道**：前者走系统通知中心，后者在屏幕顶端弹
-  流光 + 置顶卡片（可选朗读 / 提示音）。两者都归 `notifications` 权限；`banner` 返回 `false`
-  表示没显示（同内容去重合并 / 队列满 / 窗口不可用），**不是错误**，不要重试。
+  流光 + 置顶卡片（可选朗读 / 提示音）。两者都归 `notifications` 权限，谁也不能降级成对方 ——
+  系统通知被关掉时，流光提醒仍然可用。`banner` 返回 `false` 表示没显示（同内容去重合并、
+  队列已满 8 条、窗口不可用），**不是错误**，不要重试。
 
-#### 4.1.1 `ctx.banner` 用法（流光提醒，v0.5.6+）
+#### 4.1.1 `ctx.banner`：流光提醒（v0.5.6 起）
 
 ```js
+// 最小用法：只给标题和正文（标题必填，正文允许空串 —— 此时卡片只显示标题）
 await ctx.banner({ title: '整理完成', body: `已归档 ${count} 个文件` })
-await ctx.banner({ title: '导出结束', body: '文件已保存到桌面', speak: false })
+
+// 可选：本条关闭语音 / 提示音
+await ctx.banner({ title: '后台任务结束', body: '导出已保存到桌面', speak: false, sound: false })
 ```
 
-- `title` 必填（≤120 字）、`body` 必填但允许空串（≤800 字）；`speak` / `sound` 可选。
-- 同一时刻只显示一条，其余排队（上限 8 条）；同内容 3 秒内合并。
-- **`speak` / `sound` 只能「再关」**：用户在「设置 → 提醒」关掉提示音 / 朗读后，
-  传 `true` 也不会响；朗读还需要用户配好 TTS，未配置时静默跳过。
-- 提示音 / 音量 / 卡片宽度 / 停留时长都在「设置 → 提醒」里由用户配置，插件不参与。
-- 需要「点一下就打开文件」用 `ctx.notify`；只需要醒目告知用 `ctx.banner`。
+| 入参 | 必填 | 说明 |
+| --- | --- | --- |
+| `title` | 是 | 标题（≤ 120 字，超出由宿主截断；空白时回落成插件名） |
+| `body` | 是 | 正文（≤ 800 字，超出截断；允许空串） |
+| `speak` | 否 | 是否朗读本条（缺省跟随用户设置） |
+| `sound` | 否 | 是否播提示音（缺省跟随用户设置） |
+
+- **返回 `boolean`**：`true` = 已排入展示（立刻显示或排在队列里），`false` = 没显示
+  （同内容 3 秒内被去重、队列已满 8 条、提醒窗口不可用）。**不要重试**，也不要把它当异常。
+- **宿主统一排队的**：同一时刻只显示一条，其余按到达顺序排队；提示音 / 音量 / 语音朗读 /
+  卡片宽度 / 停留时长都由用户在「设置 → 提醒」里配置，插件**不能**覆盖这些（见下一条）。
+- **`speak` / `sound` 是「只能再关」**：用户在提醒设置里关掉提示音或朗读后，
+  插件传 `sound: true` / `speak: true` 也不会响 —— 总闸优先；用户开着时，插件仍可让
+  某一条静音 / 不读。朗读还要求用户在「语音」页配好 TTS，未配置时静默跳过（不报错）。
+- **什么时候用哪个**：需要「用户点一下就打开某个文件 / 文件夹」用 `ctx.notify`（系统通知带点击）；
+  只需要「把结果醒目地告诉用户」用 `ctx.banner`（更醒目、支持朗读，但没有可点入口）。
 
 #### 4.1.2 `ctx.usage`：把用量展示在面板里（2026-10 起）
 
@@ -357,6 +371,22 @@ const off = window.auroraPlugin.onEvent((event, payload) => console.log(event, p
 - 页面 `request` 的 `method` ≤ 64 字符，params ≤ 256 KB；
 - 推荐自己带一份暗色 / 亮色 CSS（页面拿不到宿主令牌）；可参考示例 `ui/page.css`。
 
+### 7.1 在 Aurora Center 上的差异
+
+同一份页面也会被 Center 托管（`/p/<id>/<version>/<entry>`），差别：
+
+- **能力更窄**：iframe 固定 `sandbox="allow-scripts"`（opaque origin），没有 `localStorage` /
+  `sessionStorage` / cookie / IndexedDB，也没有 `alert` / `confirm` / `prompt` / `showModal`、
+  表单提交、弹窗、下载、Worker、音视频；CSP 为 `connect-src 'none'`，**不能自己 `fetch`
+  （连包内 JSON 也不行）**。需要的数据一律经 `request` 拿。
+- **资源只从市场包出**：页面版本必须已发布到该 Center 的市场，本机目录 / 未发布版本打不开；
+  不要引用外部 CDN / 字体。
+- **`params` 原样到达** `invokePanel`：与桌面 `request(method, params)` 完全一致，没有额外的
+  `{ params, values }` 包装（那是声明式面板的）。
+- **视图状态与桌面共享**：Center 的切视图 / 切周会写回同一份插件状态，等于改桌面视图；
+  需要两端即时同步就在写操作后 `ctx.ui.panelEvent`。
+- 页面自行导航离开（`pagehide`）后中继会断开，用户需要重新打开面板。
+
 ---
 
 ## 7.5 桌面 / 提示条小组件
@@ -375,10 +405,11 @@ const off = window.auroraPlugin.onEvent((event, payload) => console.log(event, p
 ```
 
 - `slot = "desktop"`：默认置顶浮动卡片，位置 / 尺寸 / 显隐由用户在设置页或拖动决定并持久化；
+  窗口**不可激活**（点击不抢前台，卡内文本输入拿不到键盘焦点），标题栏有宿主绘制的
+  「固定」按钮（锁拖动 / 缩放，默认未固定，状态写 `<userData>/plugin-widget-layout.json` 的 `locked`）；
 - `slot = "edge-bar"`：提示条展开面板底部的条目，**只允许声明式 schema**（不能 `entry`）。
 - schema 与面板同一套组件与限额；动作调用 `invokeWidget(widgetId, method, params, ctx)`；
-- 页面型桌面 widget 用 `entry`，内部仍走 `aurora-plugin://` + 专用 preload（无法在提示条使用）；
-  页面型 `invokeWidget` 可返回 `{ data?, message?, error? }`，三者原样交给页面。
+- 页面型桌面 widget 用 `entry`，内部仍走 `aurora-plugin://` + 专用 preload（无法在提示条使用）。
 
 桌面 widget 可选的窗口字段（只对 `slot = "desktop"` 生效，**不新增权限 / 宿主 API**）：
 
@@ -387,11 +418,10 @@ const off = window.auroraPlugin.onEvent((event, payload) => console.log(event, p
   `desktop` 是普通窗口 + Win32 owner 亲和 + 最小化恢复守护，不是壁纸嵌入 / 桌面图标层 / 点击穿透；
 - `windowMaterial`：`"none"`（默认，不透明卡片）/ `"acrylic"`（原生 Acrylic，需 Windows 11 22H2+
   且外观毛玻璃开启；不满足时保持不透明卡片）；
-- `hideCloseButton`：`true` 时宿主不渲染标题栏右上角的「隐藏小组件」按钮（默认 `false`）；
-- 这些字段只对桌面小组件有效：`slot = "edge-bar"` 声明非默认值会在清单校验被拒绝；
+- 两个字段只对桌面小组件有效：`slot = "edge-bar"` 声明非默认值会在清单校验被拒绝；
 - 用户在设置 → 插件详情可给每个桌面 widget 覆盖层级（跟随插件 / 置顶 / 普通 / 桌面层），
   覆盖值写在 `<userData>/plugin-widget-layout.json` 的 `windowLevelOverride`，不改清单；
-- 旧宿主会**静默忽略**未知字段：用这些字段时把 `minAuroraVersion` 设为支持它们的宿主版本，
+- 旧宿主会**静默忽略**未知字段：用这两个字段时把 `minAuroraVersion` 设为支持它们的宿主版本，
   否则旧宿主按默认 `floating` / `none` 渲染。
 
 ```js
@@ -456,11 +486,26 @@ node scripts/verify-plugin.mjs ./hello.zip
 它会检查：清单 schema、`apiVersion`、工具名长度、`main` / Skill / 面板 / **小组件** / 图标路径、
 zip 路径安全、大小与压缩比、`manifest.json` 是否在包根。退出码 0 = 通过。
 
+### 10.1 不依赖仓库的工具包（`plugin-dev-kit/`）
+
+`plugin-dev-kit/` 是**可整体拷走**的插件开发工具包，三个工具都只用 Node 内置模块：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node <工具包>/tools/create-plugin.mjs <目录> --id <反向域名> --name "<名称>"` | 从模板生成插件：填好清单、附契约类型、立刻校验 |
+| `node <工具包>/tools/check-plugin.mjs <目录> [--json]` | 与宿主清单 schema 同口径的离线校验（失败退出码 1） |
+| `node <工具包>/tools/pack-plugin.mjs <目录> [--out <zip>]` | 先校验再打 zip，包根直接是 `manifest.json` |
+
+`check-plugin.mjs` 是**基础校验**（清单字段 / 权限成对 / 路径 containment / 主题令牌 / 声明式
+schema / 引用文件存在），安装器、市场与 `verify-plugin.mjs` 仍会用同一份 zod schema 再校验一次；
+在仓库里以 `verify-plugin.mjs` 为准。
+
 打包要点：
 
 - zip **根目录**必须直接是 `manifest.json`；
 - 不要带 `node_modules`（运行时不需要依赖目录；需要第三方库就打包进 `main.js`）；
-- 单文件 ≤ 10 MB、总量 ≤ 50 MB、条目 ≤ 2000。
+- 单文件 ≤ 10 MB、总量 ≤ 50 MB、条目 ≤ 2000（`pack-plugin.mjs` 已按这些上限检查并跳过
+  `node_modules` / `.git`）。
 
 ---
 
