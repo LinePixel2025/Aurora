@@ -2656,7 +2656,8 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   `moveCursor()` 轨迹移动（显示器内 DIP、约 60fps、缓出），**不跟随用户的鼠标**；
   进入操作态时用真实指针位置播一次种子，收到第一个位置事件之前不画（避免左上角闪一下）。
   光环 `computer-use-cursor-pulse` + 拖尾；点击 / 拖拽 / 滚轮涟漪
-  `computer-use-click-ripple`（按显示器内 DIP 定位；**先滑到落点、停一拍再点击**）；
+  `computer-use-click-ripple`（按显示器内 DIP 定位；**光环先滑到落点、停一拍，系统指针才瞬移
+  过去并点击** —— 滑行阶段系统指针原地不动，不会把用户的鼠标拽着走）；
   **顶部光谱流光带**（与「流光提醒」同款：
   `.cu-glow-bloom` 呼吸 `computer-use-glow-breathe` + `.cu-glow-halo` / `.cu-glow-line`
   流转 `computer-use-glow-spectrum`）在操作期间持续播放，每个动作再短暂增亮一档；

@@ -53,7 +53,7 @@ import {
 } from './screenshots.js'
 
 /**
- * 光标到位后到合成点击之间的停顿（毫秒）。
+ * 虚拟光标到位后到点击之间的停顿（毫秒）。
  *
  * 浮层光标的 CSS 过渡约 42ms，这一步留出「看得见光标停住」的一拍，用户才会把
  * 「移动」和「点击」看成一个先后动作，而不是一次跳变。
@@ -236,14 +236,13 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         describeMouseAction({ action: input.action, button }),
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
-      // **先移动光标，再点击**（2026-10-31）：虚拟光标滑到落点、系统指针同步平滑移动，
-      // 两者都到位并停一拍后才合成点击 —— 屏幕上是「光环滑过去 → 涟漪亮起」。
+      // **先移动光标，再点击**（2026-10-31）：滑行阶段只动浮层上的虚拟光标，**系统指针原地不动**
+      // —— 否则用户会看到「Agent 移动虚拟光标时我的鼠标也跟着滑」。等光环到位、停一拍，
+      // 才把系统指针瞬移到落点并立刻点击（Windows 只能在指针所在处点击，这一步无法省）。
       const moveMs = this.options.settings().computerUse.moveDurationMs
-      const [, dip] = await Promise.all([
-        this.movePointer(start, moveMs),
-        this.glideCursor(start, moveMs),
-      ])
-      await sleep(CURSOR_SETTLE_MS, undefined)
+      const dip = await this.glideCursor(start, moveMs)
+      await sleep(this.cursorSettleMs(), undefined)
+      await this.movePointer(start, 0)
       await this.withModifiers(input.modifiers, async () => {
         const response = await this.options.host.request<CursorPoint>('mouse_click', {
           button,
@@ -272,9 +271,10 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         { displayId: view?.displayId, x: input.x, y: input.y },
       )
       const moveMs = this.options.settings().computerUse.moveDurationMs
-      // 先把光标移到起点（看得见「去抓东西」），再按住拖动
-      await Promise.all([this.movePointer(start, moveMs), this.glideCursor(start, moveMs)])
-      await sleep(CURSOR_SETTLE_MS, undefined)
+      // 先把**虚拟光标**移到起点（看得见「去抓东西」）；系统指针等光标到位后才瞬移过去。
+      await this.glideCursor(start, moveMs)
+      await sleep(this.cursorSettleMs(), undefined)
+      await this.movePointer(start, 0)
       const dragMs = moveMs * 2
       await this.withModifiers(input.modifiers, async () => {
         const drag = this.options.host.request('mouse_drag', {
@@ -306,8 +306,10 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       )
       if (start !== undefined) {
         const moveMs = this.options.settings().computerUse.moveDurationMs
-        await Promise.all([this.movePointer(start, moveMs), this.glideCursor(start, moveMs)])
-        await sleep(CURSOR_SETTLE_MS, undefined)
+        // 滚轮同样先让虚拟光标到位：系统指针只在真正滚动那一刻瞬移过去
+        await this.glideCursor(start, moveMs)
+        await sleep(this.cursorSettleMs(), undefined)
+        await this.movePointer(start, 0)
       }
       await this.withModifiers(input.modifiers, async () => {
         await this.options.host.request('mouse_scroll', {
@@ -760,6 +762,11 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     if (space === 'screen') return value
     if (view === undefined) throw new Error('尚未截图；窗口尺寸请先截图，或显式 space:"screen"')
     return axis === 'x' ? value / view.scaleX : value / view.scaleY
+  }
+
+  /** 用户关掉虚拟光标时不画动画，也就不该为「看不见的停顿」多等一程。 */
+  private cursorSettleMs(): number {
+    return this.options.settings().computerUse.showVirtualCursor === false ? 0 : CURSOR_SETTLE_MS
   }
 
   /**
