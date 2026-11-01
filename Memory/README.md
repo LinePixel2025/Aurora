@@ -12,6 +12,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-11-01 | v0.6.1 双投发布（DashScope 语音模型下架潮适配）与 Center 更新源探测路径的更正（/api/updates/&lt;文件名&gt;，current 是 JSON 视图） | 发布, 打包, 更新源, Center, GitHub, 记录, 坑, 口径 | [2026-11-01-v061-release.md](2026-11-01-v061-release.md) |
 | 2026-11-01 | DashScope TTS 模型下架潮：qwen-tts 已消失、qwen3-tts-flash 是唯一 HTTP 可用模型，端点容忍 compatible-mode 粘尾巴 | 语音, TTS, dashscope, 模型下架, 端点, 坑, 口径 | [2026-11-01-dashscope-tts-model-deprecation.md](2026-11-01-dashscope-tts-model-deprecation.md) |
 | 2026-11-01 | v0.6.0 双投发布（Computer Use v39.2 / 流光提醒大屏 / 设置页视觉）与发布正文校验的假乱码警报 | 发布, 打包, 更新源, Center, GitHub, 记录, 坑, 口径 | [2026-11-01-v060-release.md](2026-11-01-v060-release.md) |
 | 2026-10-31 | 设置页视觉重构（三组侧栏 / 单页头 / 发丝线区组）与左栏 Center 药丸溢出修复     | UI, 设置页, 左栏, Center, 药丸, 容器查询, 截图, 探针, 坑, 口径 | [2026-10-31-settings-visual-refresh-and-center-pill.md](2026-10-31-settings-visual-refresh-and-center-pill.md) |
