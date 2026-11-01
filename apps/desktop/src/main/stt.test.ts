@@ -268,7 +268,7 @@ describe('createSttService · dashscope-native（阿里云原生 ASR）', () => 
     ])
   })
 
-  it('baseUrl 的四种常见写法都落到同一个原生端点', async () => {
+  it('baseUrl 的常见写法都落到同一个原生端点', async () => {
     const cases: [string, string][] = [
       ['https://dashscope.aliyuncs.com', 'https://dashscope.aliyuncs.com'],
       ['https://dashscope.aliyuncs.com/', 'https://dashscope.aliyuncs.com'],
@@ -276,6 +276,8 @@ describe('createSttService · dashscope-native（阿里云原生 ASR）', () => 
       ['https://maas.example.com/api', 'https://maas.example.com'],
       ['https://maas.example.com/api/v1', 'https://maas.example.com'],
       ['https://maas.example.com/compatible-mode/v1', 'https://maas.example.com'],
+      // 少写 /v1 的残缺粘法（2026-11 实测用户配置里出现过）
+      ['https://maas.example.com/compatible-mode', 'https://maas.example.com'],
       // 已经贴了完整端点：不重复拼接
       [
         'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',

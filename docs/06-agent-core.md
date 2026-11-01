@@ -1606,14 +1606,19 @@ Content-Type: application/json
 （`https://maas.qianwenaiapi.com/api/v1`）实测**不提供** OpenAI 兼容的 `/audio/speech`，
 必须走多模态生成端点。设置页编辑卡用「接口类型」下拉切换（`tts.providers.<id>.type`）。
 
-- **端点**：`POST <base>/services/aigc/multimodal-generation/generation`，`base` 是 DashScope
-  原生根地址。主进程 `dashscopeEndpoint()` 拼接前先按 `normalizeDashscopeBaseUrl()` 规整
-  （剥尾与去尾斜杠复用 §13.2 的同一套规则），再按下面的规则补齐——已以完整生成端点结尾时
-  不重复拼（也不补 `/api/v1`）：
-  1. `pathname` 为空或 `/`（只填了域名根）→ 自动补 `/api/v1`；
-  2. 以 `/api` 结尾（如 `https://maas.qianwenaiapi.com/api`）→ 自动补 `/v1`
-     （少写 `/v1` 是该类网关的高频 404 来源，规则直接根治）；
-  3. 其余路径（`/api/v1` 等）尊重不动；URL 非法按原样拼接，错误交给服务端报（不在这里抛）。
+- **端点**：`POST <base>/api/v1/services/aigc/multimodal-generation/generation`，`base` 是
+  DashScope 原生根地址。主进程 `dashscopeEndpoint()` 与 stt.ts 的 `dashscopeAsrEndpoint()`
+  是**同一套容错**（2026-11 起拼完整路径，含 `/api/v1` 前缀）——已以生成端点结尾时原样用：
+  1. 尾上粘着 `/compatible-mode/v1` / `/compatible-mode` / `/api/v1` / `/api`（从 LLM /
+     生图那几栏照抄的习惯粘法，长短两截都见过）→ **整段换成完整原生路径**（原生路由只挂在
+     服务根的 `/api/v1` 下，`…/compatible-mode/services/...` 一律 404，
+     这是 2026-10-31 实测 404 的直接根因）；
+  2. 其余（裸域名、带其它路径）→ 直接拼完整路径：裸域名自然得到 `<根>/api/v1/...`，
+     Center 网关 base（`…/api/model-gateway/tts`）得到 `…/tts/api/v1/services/...`，
+     与 Center `routeKind` 接受的 rest 形状一致（dashscope 型 Center TTS 因此可用）；
+  3. URL 非法按原样拼接，错误交给服务端报（不在这里抛）。
+  `modelsEndpoint()` 的 `normalizeDashscopeBaseUrl()` 同步容忍 `/compatible-mode/v1` 与
+  `/compatible-mode` 尾巴（换成 `/api/v1` 再拼 `/models`）。
 - **请求头**：`Authorization: Bearer <apiKey>`、`Content-Type: application/json`，与 §13.2 同款。
 - **请求体**：
   ```json
@@ -1635,24 +1640,35 @@ Content-Type: application/json
   这条顺序是**必须的**而不是锦上添花：qianwenai 网关实测会**忽略 `audio.format`**（要求 mp3
   也回 `audio/x-wav`），mimeType 若照抄配置值就会以错误的 MIME 交给渲染层播放。
 - **模型列表**：与 openai-compat 共用 `tts:listModels` 通道；dashscope 用
-  `GET <base>/models`（同一套根地址规整，裸域名补 `/api/v1`、`/api` 结尾补 `/v1`）。
-  qianwenai 实测该端点是**分页**的（`output.total` 共 518 个模型、TTS 系列排在后段），
-  因此 dashscope 按 `?page_no=<n>&page_size=100` 翻页拉全（页数封顶 6，防失控；
+  `GET <base>/models`（同一套根地址规整，裸域名补 `/api/v1`、`/compatible-mode/v1` 与
+  `/api` 结尾都换成 `/api/v1`）。
+  qianwenai 实测该端点是**分页**的（2026-11 实测 `output.total` 共 371 个模型、TTS 系列
+  排在后段），因此 dashscope 按 `?page_no=<n>&page_size=100` 翻页拉全（页数封顶 6，防失控；
   `output.total` 拿满 / 空页即提前停）。解析按顺序认三种形状（防御式，畸形不抛）：
   OpenAI `data[].id` → DashScope 原生 `output.models[]`（条目形如 `{model, name, ...}`，
   `model` 是规范 id、`name` 是展示名）→ 顶层 `models` 数组回落；对象元素依次认
   `model` / `id` / `name` 字段，字符串元素原样收。
 - **404 文案按类型区分**：`describeHttpFailure` 的 404 提示按 `provider.type` 取词 ——
-  dashscope 为「请检查 baseURL 是否以 /api/v1 结尾（DashScope 原生地址）」，
+  dashscope 为「请检查 baseURL 主机名；模型已下架（Model not exist）时换用 qwen3-tts-flash」，
   openai-compat 维持 §13.2 的原文案；其余状态码文案两类型共用，404 同样带实际请求的 endpoint。
   另外 DashScope 式网关对「模型不在这个端点族」回 **400 + `url error`**（不是 404），
-  dashscope 的 4xx 文案识别到 `url error` 时会提示换模型或查 baseURL（见下条实测）。
-- **qianwenai 实测的模型适用面**（2026-09，供排障参考；`qwen-tts` / `qwen3-tts-flash` 实测
-  合成成功）：走本 HTTP 协议的是 `qwen-tts` / `qwen-tts-latest` / `qwen3-tts-flash` 等非实时
-  模型；**`qwen-audio-3.x-tts-*` 与 CosyVoice / Sambert 系列在该网关只走 WebSocket 实时**，
-  两个 HTTP 端点都会 400 `url error`；`qwen-tts` 只认内置音色（Cherry / Serena / Ethan 等），
-  声音复刻 id（如 `longanlufeng`）不被接受——复刻音色要在 HTTP 上可用，得等平台侧的
-  非实时复刻模型或 Aurora 支持 WebSocket 协议。
+  dashscope 的 4xx 文案识别到 `url error` 时会提示换 `qwen3-tts-flash` 或查 baseURL（见下条实测）。
+- **模型级失效自动回退**（2026-11）：dashscope 合成遇**模型级失效**——404 + `Model not exist`
+  （模型已下架）或 400 + `url error`（模型不在 HTTP 端点族）——且配置模型不是备用模型时，
+  自动改用 `qwen3-tts-flash` **重试一次**（只换模型，音色等其它配置不动）：
+  重试成功 → 正常返回音频，并 `settings.mutate()` 把该 provider 的 `model` 字段写回备用模型
+  （设置页同步可见；草稿 / 不存在的 providerId 写回自然 no-op）；重试也失败 → 折成一条
+  同时带「原模型为何不可用」与「备用模型失败原因」的中文错误。鉴权 / 限流 / 网络类失败
+  **不触发**回退（重试也不会好）。openai-compat 不做模型回退（各网关模型空间不同，
+  静默换模型没有依据）。
+- **qianwenai 实测的模型适用面**（2026-11 复测，供排障参考）：走本 HTTP 协议的**只剩
+  `qwen3-tts-flash`**（网关与官方 `dashscope.aliyuncs.com` 都实测 200）；旧 `qwen-tts` /
+  `qwen-tts-latest` / `qwen3-tts-plus` 已下架（网关模型目录从 518 缩到 371，
+  请求回 `Model not exist`）；**`qwen-audio-3.x-tts-*` 与 CosyVoice / Sambert 系列仍只走
+  WebSocket 实时**，HTTP 一律 400 `url error`。`qwen3-tts-flash` 只认内置音色
+  （Cherry / Serena / Ethan 等，实测 Cherry 可用）；声音复刻 id（如 `longanlufeng` /
+  `loongstella`）不被接受——复刻音色要在朗读里可用，得等平台侧的非实时复刻模型或
+  Aurora 支持 WebSocket 协议。
 - **边界**：CosyVoice 异步任务 API（`/services/audio/tts`，POST 建任务 + 轮询取结果）与
   WebSocket 实时合成**不在支持范围** —— 本协议只覆盖「一次 POST 拿 URL + 一次 GET 拿音频」
   的非实时路径；`output.audio.url` 的 24h 有效期对朗读场景（拿到即播）绰绰有余，

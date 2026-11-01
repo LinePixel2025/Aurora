@@ -232,16 +232,16 @@ const DASHSCOPE_ASR_PATH = '/api/v1/services/aigc/multimodal-generation/generati
 /**
  * `<baseUrl>` → 阿里云原生 ASR 端点。
  *
- * baseUrl 的**规范填法是服务根**（如 `https://dashscope.aliyuncs.com`），但三种常见写法都容忍：
- * ① 已经是完整端点 → 原样用；② 尾上挂着 `/api` / `/api/v1` / `/compatible-mode/v1`
- * （照 TTS / 生图那两栏的习惯粘过来的，尤其 MaaS 专属网关的 baseUrl 常写成 `…/api`）→ 换掉这段尾巴；
- * ③ 其余 → 拼上完整路径。**不猜 `/compatible-mode/v1` 之外的网关前缀**：
+ * baseUrl 的**规范填法是服务根**（如 `https://dashscope.aliyuncs.com`），但这些写法都容忍：
+ * ① 已经是完整端点 → 原样用；② 尾上挂着 `/api` / `/api/v1` / `/compatible-mode/v1` /
+ * `/compatible-mode`（照 TTS / 生图那几栏的习惯粘过来的，长短两截都见过）→ 换掉这段尾巴；
+ * ③ 其余 → 拼上完整路径。**不猜 `/compatible-mode` 之外的网关前缀**：
  * 原生路径就挂在其根上，换网关只要改 baseUrl。
  */
 function dashscopeAsrEndpoint(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, '')
   if (trimmed.endsWith(DASHSCOPE_ASR_PATH)) return trimmed
-  for (const suffix of ['/compatible-mode/v1', '/api/v1', '/api']) {
+  for (const suffix of ['/compatible-mode/v1', '/compatible-mode', '/api/v1', '/api']) {
     if (trimmed.endsWith(suffix)) {
       return `${trimmed.slice(0, trimmed.length - suffix.length)}${DASHSCOPE_ASR_PATH}`
     }

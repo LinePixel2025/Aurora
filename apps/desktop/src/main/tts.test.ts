@@ -398,6 +398,28 @@ describe('TtsSynthesizer · dashscope（docs/06 §13.6）', () => {
     )
   }
 
+  /**
+   * 在 `fakeSettings` 上拦截 `mutate`：备用模型写回断言用 ——
+   * 记录收到的 mutator，供用例在最小草稿上重放并断言「只改目标 provider 的 model」。
+   */
+  function fakeSettingsWithMutate(options: FakeSettingsOptions = {}): {
+    settings: SettingsStoreLike
+    mutations: Array<(draft: Settings) => void>
+  } {
+    const store = fakeSettings(options)
+    const mutations: Array<(draft: Settings) => void> = []
+    return {
+      settings: {
+        ...store,
+        mutate: (mutator: (draft: Settings) => void) => {
+          mutations.push(mutator)
+          return store.get()
+        },
+      } as SettingsStoreLike,
+      mutations,
+    }
+  }
+
   /** 借 synthesize 捕获 dashscope 实际请求的第一跳 URL：端点函数是模块内私有，从行为断言 */
   async function dashEndpointOf(baseUrl: string): Promise<string> {
     const { fetchImpl, requests } = sequenceFetch([
@@ -428,6 +450,42 @@ describe('TtsSynthesizer · dashscope（docs/06 §13.6）', () => {
   it('端点规整：已以完整生成端点结尾时不重复拼（也不补 /api/v1）', async () => {
     const full = `${DASH_BASE}${GENERATION_TAIL}`
     expect(await dashEndpointOf(`${full}/`)).toBe(full)
+  })
+
+  it('端点规整：粘着 /compatible-mode/v1 的 baseUrl 整段换成完整原生路径（2026-10-31 线上 404 根因）', async () => {
+    expect(await dashEndpointOf('https://maas.qianwenaiapi.com/compatible-mode/v1')).toBe(
+      `https://maas.qianwenaiapi.com/api/v1${GENERATION_TAIL}`,
+    )
+  })
+
+  it('端点规整：少写 /v1 的 /compatible-mode 残缺粘法同样容忍（2026-11 用户配置实测形态）', async () => {
+    expect(await dashEndpointOf('https://maas.qianwenaiapi.com/compatible-mode')).toBe(
+      `https://maas.qianwenaiapi.com/api/v1${GENERATION_TAIL}`,
+    )
+  })
+
+  it('端点规整：Center 网关 base 拼出 /api/v1 形状（与其 routeKind 接受的 rest 一致）', async () => {
+    expect(await dashEndpointOf('http://127.0.0.1:8787/api/model-gateway/tts')).toBe(
+      `http://127.0.0.1:8787/api/model-gateway/tts/api/v1${GENERATION_TAIL}`,
+    )
+  })
+
+  it('模型列表端点：粘着 /compatible-mode/v1 的 baseUrl 换成 /api/v1 再拼 /models', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    ])
+    await make(
+      fakeSettings({
+        provider: {
+          type: 'dashscope',
+          baseUrl: 'https://maas.qianwenaiapi.com/compatible-mode/v1',
+        },
+      }),
+      fetchImpl,
+    ).listModels({})
+    expect(requests[0]!.url).toBe(
+      'https://maas.qianwenaiapi.com/api/v1/models?page_no=1&page_size=100',
+    )
   })
 
   it('两段请求：POST body 含 input.text / input.voice，mp3 携带 audio.format；GET 下载不带 Authorization', async () => {
@@ -541,29 +599,144 @@ describe('TtsSynthesizer · dashscope（docs/06 §13.6）', () => {
     await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow('不是合法 JSON')
   })
 
-  it('POST 404：文案含实际请求的 endpoint 与 /api/v1 提示', async () => {
+  it('POST 404：文案含实际请求的 endpoint 与下架自查提示（Model not exist 之外的 404）', async () => {
     const { fetchImpl } = sequenceFetch([errorResponse(404, 'not found')])
     const tts = make(
       fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
       fetchImpl,
     )
     await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow(
-      /接口不存在.*maas\.qianwenaiapi\.com\/api\/v1\/services\/aigc\/multimodal-generation\/generation[\s\S]*以 \/api\/v1 结尾/,
+      /接口不存在.*maas\.qianwenaiapi\.com\/api\/v1\/services\/aigc\/multimodal-generation\/generation[\s\S]*模型已下架（响应含 Model not exist）时换用 qwen3-tts-flash/,
     )
   })
 
-  it('400 url error（模型不走 HTTP 合成端点）：文案提示更换模型而不是笼统失败', async () => {
-    const { fetchImpl } = sequenceFetch([
-      errorResponse(400, '{"code":"InvalidParameter","message":"url error, please check url！"}'),
+  it('POST 404 + Model not exist（模型已下架）：自动改用 qwen3-tts-flash 重试并写回设置', async () => {
+    const audio = [5, 6]
+    const { fetchImpl, requests } = sequenceFetch([
+      errorResponse(
+        404,
+        '{"code":"InvalidParameter","message":"Model not exist.","request_id":"r"}',
+      ),
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      new Response(new Uint8Array(audio), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/mpeg' },
+      }),
     ])
-    const tts = make(
-      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+    const hooked = fakeSettingsWithMutate({
+      provider: { type: 'dashscope', baseUrl: DASH_BASE, model: 'qwen-tts', voice: 'Cherry' },
+    })
+    const result = await make(hooked.settings, fetchImpl).synthesize({ text: '你好' })
+
+    expect(requests).toHaveLength(3)
+    const firstBody = JSON.parse(String(requests[0]!.init.body)) as {
+      model: string
+      input: { voice: string }
+    }
+    const retryBody = JSON.parse(String(requests[1]!.init.body)) as {
+      model: string
+      input: { voice: string }
+    }
+    expect(firstBody.model).toBe('qwen-tts')
+    expect(retryBody.model).toBe('qwen3-tts-flash')
+    // 只换模型：音色等其它字段原样保留
+    expect(retryBody.input.voice).toBe('Cherry')
+    expect(firstBody.input.voice).toBe('Cherry')
+    expect(requests[1]!.url).toBe(requests[0]!.url)
+
+    expect(result.bytes).toBe(audio.length)
+    // 成功即写回：mutate 收到一次调用，且只改该 provider 的 model 字段
+    expect(hooked.mutations).toHaveLength(1)
+    const draft = {
+      tts: { providers: { sf: { model: 'qwen-tts' } } },
+    } as unknown as Settings
+    hooked.mutations[0]!(draft)
+    expect((draft.tts.providers as Record<string, { model: string }>)['sf']?.model).toBe(
+      'qwen3-tts-flash',
+    )
+  })
+
+  it('POST 400 + url error（WebSocket 专用族）：自动重试成功', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      errorResponse(400, '{"code":"InvalidParameter","message":"url error, please check url！"}'),
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      audioResponse([1]),
+    ])
+    const result = await make(
+      fakeSettings({
+        provider: {
+          type: 'dashscope',
+          baseUrl: DASH_BASE,
+          model: 'qwen-audio-3.0-tts-plus',
+        },
+      }),
+      fetchImpl,
+    ).synthesize({ text: 'hi' })
+    expect(requests).toHaveLength(3)
+    expect(JSON.parse(String(requests[1]!.init.body)).model).toBe('qwen3-tts-flash')
+    expect(result.bytes).toBe(1)
+  })
+
+  it('模型级失效但备用模型也失败：报两段原因的中文错误', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      errorResponse(
+        404,
+        '{"code":"InvalidParameter","message":"Model not exist.","request_id":"r"}',
+      ),
+      errorResponse(400, '{"code":"InvalidParameter","message":"url error"}'),
+    ])
+    const error = (await make(
+      fakeSettings({
+        provider: { type: 'dashscope', baseUrl: DASH_BASE, model: 'qwen-tts' },
+      }),
       fetchImpl,
     )
-    await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow(/WebSocket 实时专用/)
+      .synthesize({ text: 'hi' })
+      .catch((reason: unknown) => reason)) as Error
+    expect(requests).toHaveLength(2)
+    expect(error.message).toContain('配置的模型「qwen-tts」不可用（HTTP 404')
+    expect(error.message).toContain('备用模型 qwen3-tts-flash 也失败')
+    expect(error.message).toContain('WebSocket 实时专用')
   })
 
-  it('listModels() 404：文案按 dashscope 取词（/api/v1 提示），不串用 openai-compat 文案', async () => {
+  it('非模型级失败（401 / 429 / 5xx）不触发备用模型重试', async () => {
+    for (const status of [401, 429, 500]) {
+      const { fetchImpl, requests } = sequenceFetch([errorResponse(status, 'boom')])
+      await expect(
+        make(
+          fakeSettings({
+            provider: { type: 'dashscope', baseUrl: DASH_BASE, model: 'qwen-tts' },
+          }),
+          fetchImpl,
+        ).synthesize({ text: 'hi' }),
+      ).rejects.toThrow()
+      expect(requests, `HTTP ${status}`).toHaveLength(1)
+    }
+  })
+
+  it('配置模型已是备用模型时不再重试（避免同模型二次白打）', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      errorResponse(400, '{"code":"InvalidParameter","message":"url error"}'),
+    ])
+    await expect(
+      make(
+        fakeSettings({
+          provider: { type: 'dashscope', baseUrl: DASH_BASE, model: 'qwen3-tts-flash' },
+        }),
+        fetchImpl,
+      ).synthesize({ text: 'hi' }),
+    ).rejects.toThrow(/WebSocket 实时专用/)
+    expect(requests).toHaveLength(1)
+  })
+
+  it('openai-compat 的 404 不触发模型回退（各网关模型空间不同）', async () => {
+    const { fetchImpl, requests } = stubFetch(errorResponse(404, 'model not exist'))
+    const tts = make(fakeSettings(), fetchImpl)
+    await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow(/404/)
+    expect(requests).toHaveLength(1)
+  })
+
+  it('listModels() 404：文案按 dashscope 取词（下架自查提示），不串用 openai-compat 文案', async () => {
     const { fetchImpl } = sequenceFetch([errorResponse(404, 'not found')])
     const tts = make(
       fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
@@ -571,7 +744,7 @@ describe('TtsSynthesizer · dashscope（docs/06 §13.6）', () => {
     )
     const result = await tts.listModels({})
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('/api/v1 结尾（DashScope 原生地址）')
+    expect(result.message).toContain('模型已下架（响应含 Model not exist）时换用 qwen3-tts-flash')
     expect(result.message).not.toContain('OpenAI 兼容端点')
   })
 

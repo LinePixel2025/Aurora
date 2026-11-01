@@ -107,7 +107,8 @@ type SynthesisOutcome =
 /** 404 时按接口类型给的自查提示（两类型的 404 根因不同，docs/06 §13.2 / §13.6）。 */
 const NOT_FOUND_HINTS: Record<TtsProviderType, string> = {
   'openai-compat': '请检查 baseURL 是否以 /v1 结尾、模型名是否正确；部分网关不支持 OpenAI 兼容端点',
-  dashscope: '请检查 baseURL 是否以 /api/v1 结尾（DashScope 原生地址）',
+  dashscope:
+    '请检查 baseURL 主机名与网络可达性；模型已下架（响应含 Model not exist）时换用 qwen3-tts-flash',
 }
 
 export class TtsSynthesizer {
@@ -386,61 +387,7 @@ export class TtsSynthesizer {
   ): Promise<SynthesisOutcome> {
     const { provider } = resolved
     if (provider.type === 'dashscope') {
-      const endpoint = dashscopeEndpoint(provider.baseUrl)
-      const response = await this.post(
-        resolved,
-        endpoint,
-        dashscopeSpeechBody(provider, input),
-        timeoutMs,
-      )
-      if (!response.ok) {
-        const detail = await this.readErrorDetail(response)
-        this.logger.warn(`TTS ${scene}失败`, { provider: provider.id, status: response.status })
-        return {
-          ok: false,
-          message: describeHttpFailure(response.status, detail, endpoint, 'dashscope'),
-          httpStatus: response.status,
-        }
-      }
-
-      // 2xx 响应体是 JSON，音频在 output.audio.url（24h 有效的签名地址），需要二次 GET 下载
-      const raw = await response.text()
-      let body: unknown
-      try {
-        body = JSON.parse(raw)
-      } catch {
-        return {
-          ok: false,
-          message: `合成响应不是合法 JSON（无法取出音频地址）：${sanitizeSignedQuery(tailOf(raw))}`,
-        }
-      }
-      const audioUrl = extractDashscopeAudioUrl(body)
-      if (audioUrl === null) {
-        return {
-          ok: false,
-          message: `合成响应缺少音频地址（output.audio.url）：${sanitizeSignedQuery(tailOf(raw))}`,
-        }
-      }
-
-      // 二次下载：OSS 签名 URL 带鉴权头可能被拒，**不带 Authorization**；独立一份超时预算。
-      // 签名参数不进日志与错误文案 —— 失败只报 host。
-      const download = await this.getUrl(audioUrl, {}, timeoutMs, '音频下载')
-      if (!download.ok) {
-        const host = new URL(audioUrl).host
-        this.logger.warn(`TTS ${scene}失败`, {
-          provider: provider.id,
-          status: download.status,
-          host,
-        })
-        return { ok: false, message: `音频下载失败（HTTP ${download.status}）：${host}` }
-      }
-      const buffer = Buffer.from(new Uint8Array(await download.arrayBuffer()))
-      return {
-        ok: true,
-        buffer,
-        mimeType: pickAudioMime(download.headers.get('content-type'), audioUrl, provider.format),
-        httpStatus: response.status,
-      }
+      return this.runDashscopeSynthesis(resolved, input, timeoutMs, scene)
     }
 
     // openai-compat：成功响应体就是音频二进制（docs/06 §13.2）
@@ -466,6 +413,133 @@ export class TtsSynthesizer {
       buffer,
       mimeType: MIME_BY_FORMAT[provider.format],
       httpStatus: response.status,
+    }
+  }
+
+  /**
+   * dashscope 合成主干（docs/06 §13.6）：先按配置模型发一次 POST；
+   * 遇**模型级失效**（404 `Model not exist` = 模型已下架 / 400 `url error` = 模型不在
+   * HTTP 端点族）时自动改用备用模型重试一次——只换模型，音色等其它配置不动；
+   * 重试成功把设置里的模型字段一并写回（设置页可见），重试也失败则把两段原因都报出来。
+   * 2xx 的解析与二次下载对所有尝试一致。
+   */
+  private async runDashscopeSynthesis(
+    resolved: ResolvedProvider,
+    input: string,
+    timeoutMs: number,
+    scene: '合成' | '连接测试',
+  ): Promise<SynthesisOutcome> {
+    const { provider } = resolved
+    const endpoint = dashscopeEndpoint(provider.baseUrl)
+    const postOnce = (model: string): Promise<Response> =>
+      this.post(
+        { ...resolved, provider: { ...provider, model } },
+        endpoint,
+        dashscopeSpeechBody({ ...provider, model }, input),
+        timeoutMs,
+      )
+
+    let response = await postOnce(provider.model)
+    if (!response.ok) {
+      const detail = await this.readErrorDetail(response)
+      if (
+        isDashscopeModelLevelFailure(response.status, detail) &&
+        provider.model !== DASHSCOPE_TTS_FALLBACK_MODEL
+      ) {
+        this.logger.warn(`TTS ${scene}：配置的模型不可用，改用备用模型重试`, {
+          provider: provider.id,
+          model: provider.model,
+          fallback: DASHSCOPE_TTS_FALLBACK_MODEL,
+          status: response.status,
+        })
+        const retry = await postOnce(DASHSCOPE_TTS_FALLBACK_MODEL)
+        if (retry.ok) {
+          this.persistFallbackModel(provider.id, provider.model)
+          response = retry
+        } else {
+          const retryDetail = await this.readErrorDetail(retry)
+          this.logger.warn(`TTS ${scene}失败`, {
+            provider: provider.id,
+            status: retry.status,
+            fallbackUsed: true,
+          })
+          return {
+            ok: false,
+            message:
+              `配置的模型「${provider.model}」不可用（HTTP ${response.status}：${detail.trim()}），` +
+              `备用模型 ${DASHSCOPE_TTS_FALLBACK_MODEL} 也失败：` +
+              describeHttpFailure(retry.status, retryDetail, endpoint, 'dashscope'),
+            httpStatus: retry.status,
+          }
+        }
+      } else {
+        this.logger.warn(`TTS ${scene}失败`, { provider: provider.id, status: response.status })
+        return {
+          ok: false,
+          message: describeHttpFailure(response.status, detail, endpoint, 'dashscope'),
+          httpStatus: response.status,
+        }
+      }
+    }
+
+    // 2xx 响应体是 JSON，音频在 output.audio.url（24h 有效的签名地址），需要二次 GET 下载
+    const raw = await response.text()
+    let body: unknown
+    try {
+      body = JSON.parse(raw)
+    } catch {
+      return {
+        ok: false,
+        message: `合成响应不是合法 JSON（无法取出音频地址）：${sanitizeSignedQuery(tailOf(raw))}`,
+      }
+    }
+    const audioUrl = extractDashscopeAudioUrl(body)
+    if (audioUrl === null) {
+      return {
+        ok: false,
+        message: `合成响应缺少音频地址（output.audio.url）：${sanitizeSignedQuery(tailOf(raw))}`,
+      }
+    }
+
+    // 二次下载：OSS 签名 URL 带鉴权头可能被拒，**不带 Authorization**；独立一份超时预算。
+    // 签名参数不进日志与错误文案 —— 失败只报 host。
+    const download = await this.getUrl(audioUrl, {}, timeoutMs, '音频下载')
+    if (!download.ok) {
+      const host = new URL(audioUrl).host
+      this.logger.warn(`TTS ${scene}失败`, {
+        provider: provider.id,
+        status: download.status,
+        host,
+      })
+      return { ok: false, message: `音频下载失败（HTTP ${download.status}）：${host}` }
+    }
+    const buffer = Buffer.from(new Uint8Array(await download.arrayBuffer()))
+    return {
+      ok: true,
+      buffer,
+      mimeType: pickAudioMime(download.headers.get('content-type'), audioUrl, provider.format),
+      httpStatus: response.status,
+    }
+  }
+
+  /**
+   * 备用模型重试成功后把该 provider 的 `model` 字段写回设置（docs/06 §13.6）：
+   * 设置页能看到实际生效的模型，下次合成不再多付一次失效请求。
+   * 写回目标不存在（草稿 providerId）时 mutate 自然 no-op；失败只记日志不阻断本次合成。
+   */
+  private persistFallbackModel(providerId: string, from: string): void {
+    const to = DASHSCOPE_TTS_FALLBACK_MODEL
+    try {
+      this.settings.mutate((draft) => {
+        const provider = draft.tts.providers[providerId]
+        if (provider !== undefined && provider.model === from) provider.model = to
+      })
+      this.logger.info('TTS 模型已失效，设置已改用备用模型', { provider: providerId, from, to })
+    } catch (error) {
+      this.logger.warn('TTS 备用模型写回设置失败（不影响本次合成）', {
+        provider: providerId,
+        error: String(error),
+      })
     }
   }
 
@@ -605,14 +679,53 @@ function speechEndpoint(baseUrl: string): string {
   return `${normalizeBaseUrl(trimmed)}/audio/speech`
 }
 
-/** DashScope 原生非实时合成端点的固定尾巴（docs/06 §13.6）。 */
+/**
+ * DashScope 原生非实时合成端点的完整路径（**含 `/api/v1` 前缀**，与 stt.ts 的
+ * `DASHSCOPE_ASR_PATH` 同一形状——原生路由只挂在服务根的 `/api/v1` 下）。
+ */
+const DASHSCOPE_GENERATION_PATH = '/api/v1/services/aigc/multimodal-generation/generation'
+/** 生成端点不含 `/api/v1` 的尾巴（识别「已经拼好端点」的 baseUrl 用）。 */
 const DASHSCOPE_GENERATION_TAIL = '/services/aigc/multimodal-generation/generation'
 
 /**
- * DashScope 原生根地址规整（docs/06 §13.6）：先走与 `normalizeBaseUrl` 同一套剥尾 / 去尾斜杠，再：
+ * `<baseUrl>` → DashScope 原生合成端点（docs/06 §13.6）。
+ *
+ * 与 stt.ts 的 `dashscopeAsrEndpoint` 同一套容错：baseUrl 的**规范填法是服务根**
+ * （如 `https://dashscope.aliyuncs.com`），但这些都容忍：
+ * ① 已以生成端点结尾（含或不含 `/api/v1` 前缀）→ 原样用；② 尾上粘着 `/compatible-mode/v1` /
+ * `/compatible-mode` / `/api/v1` / `/api`（从 LLM / 生图那几栏照抄的习惯粘法，长短两截都见过）
+ * → **整段换成完整原生路径**——原生路由不在 compatible-mode 下，挂错了就是 404
+ * （2026-10-31 线上 404 的直接根因）；
+ * ③ 其余 → 直接拼完整路径：裸域名自然得到 `<根>/api/v1/...`，Center 网关 base
+ * （`…/api/model-gateway/tts`）得到 `…/tts/api/v1/services/...`，与 Center `routeKind`
+ * 接受的 rest 形状一致（dashscope 型 Center TTS 因此可用）。
+ * URL 非法按原样拼接，错误交给服务端报（不在这里抛）。
+ */
+function dashscopeEndpoint(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, '')
+  if (trimmed.endsWith(DASHSCOPE_GENERATION_TAIL)) return trimmed
+  for (const suffix of ['/compatible-mode/v1', '/compatible-mode', '/api/v1', '/api']) {
+    if (trimmed.endsWith(suffix)) {
+      return `${trimmed.slice(0, trimmed.length - suffix.length)}${DASHSCOPE_GENERATION_PATH}`
+    }
+  }
+  return `${trimmed}${DASHSCOPE_GENERATION_PATH}`
+}
+
+/**
+ * DashScope 原生 TTS 的**当前可用**模型（docs/06 §13.6，2026-11 实测）：
+ * 网关与官方 DashScope 都只对 `qwen3-tts-flash` 开放本 HTTP 端点——旧 `qwen-tts` /
+ * `qwen-tts-latest` / `qwen3-tts-plus` 已下架（`Model not exist`），
+ * `qwen-audio-3.x-tts-*` / CosyVoice / Sambert 是 WebSocket 实时专用（HTTP 400 `url error`）。
+ */
+const DASHSCOPE_TTS_FALLBACK_MODEL = 'qwen3-tts-flash'
+
+/**
+ * DashScope 原生根地址规整（`modelsEndpoint` 用；合成端点已改走 `dashscopeEndpoint`
+ * 的整段替换算法，不走这里）：先走与 `normalizeBaseUrl` 同一套剥尾 / 去尾斜杠，再：
  * - `pathname` 为空或 `/`（只填域名根）→ 自动补 `/api/v1`；
- * - 以 `/api` 结尾（如 `https://maas.qianwenaiapi.com/api`）→ 自动补 `/v1`
- *   （少写 `/v1` 是该类网关的高频 404 来源，规则直接根治）；
+ * - 尾上粘着 `/compatible-mode/v1` / `/compatible-mode` 或 `/api` → 整段换成 `/api/v1`
+ *   （原生路由不挂在 compatible-mode 下，`/api` 少写 `/v1` 也是该类网关的高频 404 来源）；
  * - 其余路径（`/api/v1` 等）尊重不动；URL 非法按原样返回，错误交给服务端报（不在这里抛）。
  */
 function normalizeDashscopeBaseUrl(baseUrl: string): string {
@@ -620,18 +733,15 @@ function normalizeDashscopeBaseUrl(baseUrl: string): string {
   try {
     const url = new URL(trimmed)
     if (url.pathname === '' || url.pathname === '/') return `${trimmed}/api/v1`
-    if (url.pathname.endsWith('/api')) return `${trimmed}/v1`
+    for (const suffix of ['/compatible-mode/v1', '/compatible-mode', '/api']) {
+      if (url.pathname.endsWith(suffix)) {
+        return `${trimmed.slice(0, trimmed.length - suffix.length)}/api/v1`
+      }
+    }
   } catch {
     return trimmed
   }
   return trimmed
-}
-
-/** `<baseUrl>` 规整后拼 DashScope 原生合成端点（docs/06 §13.6）；已以完整端点结尾时不重复拼（也不补 /api/v1）。 */
-function dashscopeEndpoint(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, '')
-  if (trimmed.endsWith(DASHSCOPE_GENERATION_TAIL)) return trimmed
-  return `${normalizeDashscopeBaseUrl(trimmed)}${DASHSCOPE_GENERATION_TAIL}`
 }
 
 /** `<baseUrl>` 规整后拼 `/models`；dashscope 用原生根规整（docs/06 §13.6）。已以它结尾时不重复拼（也不补 /v1）。 */
@@ -737,6 +847,18 @@ function pickAudioMime(contentType: string | null, url: string, fallback: TtsFor
   return MIME_BY_FORMAT[fallback]
 }
 
+/**
+ * dashscope 的「模型级失效」判定（docs/06 §13.6）：404 + `Model not exist`（模型已下架）
+ * 或 400 + `url error`（模型不在 HTTP 端点族，如 WebSocket 实时专用模型）。
+ * 只有这两类换当前可用模型重试才有意义；鉴权 / 限流 / 网络类失败重试也不会好。
+ */
+function isDashscopeModelLevelFailure(status: number, detail: string): boolean {
+  return (
+    (status === 404 && /model not exist/i.test(detail)) ||
+    (status === 400 && /url error/i.test(detail))
+  )
+}
+
 /** 按状态码给中文前缀，并把服务端返回的 body 尾巴拼上（便于用户自查）。404 提示按 provider type 取词。 */
 function describeHttpFailure(
   status: number,
@@ -756,9 +878,9 @@ function describeHttpFailure(
           : status >= 500
             ? 'TTS 服务端错误'
             : type === 'dashscope' && /url error/i.test(detail)
-              ? // DashScope 式网关对「模型不在这个端点族」回 400 + url error（qianwenai 实测：
-                // qwen-audio-3.x-tts / CosyVoice 系列是 WebSocket 实时专用，不走本协议）
-                '该模型可能不走 HTTP 合成端点（如 WebSocket 实时专用模型），请更换模型（如 qwen-tts、qwen3-tts-flash）或检查 baseURL'
+              ? // DashScope 式网关对「模型不在这个端点族」回 400 + url error（2026-11 实测：
+                // qwen-audio-3.x-tts / CosyVoice / Sambert 系列是 WebSocket 实时专用，不走本协议）
+                '该模型不走 HTTP 合成端点（qwen-audio-3.x-tts / CosyVoice / Sambert 是 WebSocket 实时专用），请换用 qwen3-tts-flash 或检查 baseURL'
               : '语音合成失败'
   const suffix = detail.trim() === '' ? '' : `：${detail.trim()}`
   return `${prefix}（HTTP ${status}）${suffix}`
