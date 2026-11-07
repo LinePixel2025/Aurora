@@ -158,7 +158,8 @@
 > 缺 `next` 发空串清空，空状态文案「等待下一步…」→「正在准备…」。
 > (3) **等待收敛**：授权时预热 PowerShell 宿主（`emit` 的 `started` 分支，只启动不注入）；
 > 无 `windowId` 的截图只查 `window_active`（不再全量枚举窗口）；`typingDelayMs` 有 1.2s 总延迟
-> 预算（≤120 字不受影响）；`app_launch` 等窗 5s → 2s。160ms 光标滑行 + 60ms 停一拍**不动**
+> 预算（≤120 字不受影响）；`app_launch` 等窗 5s → 2s（**2026-11-07 改回 5s**：2s 实测把单实例
+> 应用误判成「没启动」，诱发了重复 launch；见 `2026-11-07-computer-use-launch-capture-next.md`）。160ms 光标滑行 + 60ms 停一拍**不动**
 > （视觉口径）。回归断言在 `run-profile.test.ts` / `service.test.ts` / `agentLoop.test.ts` /
 > `agentHost.test.ts` / `computer-use.test.ts`。
 > 2026-11-01 六次修订（v39.2：胶囊化 / 结束即回前台 / 提示词强化）：
