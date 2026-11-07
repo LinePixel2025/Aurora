@@ -26,6 +26,7 @@ import type { BannerCardSize, NotificationTestResult, ReminderChannel } from '@a
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
+import TimeDial from '../../shared/components/TimeDial.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 import { playBannerChime } from '../../shared/chime.js'
 
@@ -445,28 +446,24 @@ function describeTest(result: NotificationTestResult): string {
       <SettingField
         data-field="notifications.smartWindow.start"
         label="免打扰时段开始"
-        hint="格式 HH:mm；两端都填才生效，支持跨天"
+        hint="两端都填才生效，支持跨天"
       >
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
+        <TimeDial
+          :model-value="smartStart"
           placeholder="09:00"
-          :value="smartStart"
           :disabled="!smartEnabled"
-          @change="saveSmartWindow('start', ($event.target as HTMLInputElement).value)"
+          aria-label="免打扰时段开始"
+          @update:model-value="(value) => saveSmartWindow('start', value ?? '')"
         />
       </SettingField>
 
       <SettingField data-field="notifications.smartWindow.end" label="免打扰时段结束">
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
+        <TimeDial
+          :model-value="smartEnd"
           placeholder="11:30"
-          :value="smartEnd"
           :disabled="!smartEnabled"
-          @change="saveSmartWindow('end', ($event.target as HTMLInputElement).value)"
+          aria-label="免打扰时段结束"
+          @update:model-value="(value) => saveSmartWindow('end', value ?? '')"
         />
       </SettingField>
 
@@ -592,26 +589,24 @@ function describeTest(result: NotificationTestResult): string {
       <SettingField
         data-field="advanced.quietHours.start"
         label="勿扰时段开始"
-        hint="格式 HH:mm；留空表示不启用"
+        hint="点弹层里的清除即不启用"
       >
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
+        <TimeDial
+          :model-value="quietStart"
           placeholder="22:30"
-          :value="quietStart"
-          @change="saveQuiet('start', ($event.target as HTMLInputElement).value)"
+          clearable
+          aria-label="勿扰时段开始"
+          @update:model-value="(value) => saveQuiet('start', value ?? '')"
         />
       </SettingField>
 
       <SettingField data-field="advanced.quietHours.end" label="勿扰时段结束">
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
+        <TimeDial
+          :model-value="quietEnd"
           placeholder="07:00"
-          :value="quietEnd"
-          @change="saveQuiet('end', ($event.target as HTMLInputElement).value)"
+          clearable
+          aria-label="勿扰时段结束"
+          @update:model-value="(value) => saveQuiet('end', value ?? '')"
         />
       </SettingField>
     </section>

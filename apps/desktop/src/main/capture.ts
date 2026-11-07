@@ -6117,6 +6117,7 @@ export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
  * 把「定时提醒」卡片滚进视口再拍（勿扰区组紧随其后，同一屏内）。
  * 场景的 prepare 已把模式切成 ClassRoom 并保证课表至少一节，所以预期走「三控件」分支；
  * 判据仍写成「三控件或 data-empty 二选一」，与 §6.1 的门控口径一致、不吃夹具顺序。
+ * 2026-11-07：act 收尾点开勿扰「开始」的时间轮盘 —— 截图拍到弹出态钟面，check 量刻度并负责关闭。
  */
 export const SETTINGS_NOTIFICATIONS_SCHEDULE_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -6125,7 +6126,13 @@ export const SETTINGS_NOTIFICATIONS_SCHEDULE_ACT = `(async () => {
     if (section === null) return { ok: false, reason: '定时提醒区组不在 DOM' }
     section.scrollIntoView({ block: 'start' })
     await wait(220)
-    return { ok: true }
+    const trigger = document.querySelector(
+      '[data-field="advanced.quietHours.start"] button[data-dial-trigger]',
+    )
+    if (trigger === null) return { ok: false, reason: '勿扰时段时间轮盘触发器不在 DOM' }
+    trigger.click()
+    await wait(260)
+    return { ok: true, dialOpen: document.querySelector('[data-dial-popover]') !== null }
   } catch (error) {
     return { ok: false, reason: String(error) }
   }
@@ -6135,7 +6142,10 @@ export const SETTINGS_NOTIFICATIONS_SCHEDULE_ACT = `(async () => {
  * 定时提醒 + 勿扰时段区组的探针。
  *
  * 只量存在与取值范围：自动化总开关的复选框在、课前提醒「三控件或 data-empty 二选一」、
- * 提前分钟数落在 1～30、勿扰两个输入都在。判据只写一份（pass 取 conditions 的乘积）。
+ * 提前分钟数落在 1～30、勿扰两个时间轮盘触发器都在（2026-11-07 起控件是 TimeDial，
+ * docs/07 §2.5）；act 打开的轮盘弹出态额外量「钟面在、小时模式、外圈 24 刻度数字」，
+ * 收尾 Esc 关闭并断言弹层消失（不落盘，下一场景从干净状态开始）。
+ * 判据只写一份（pass 取 conditions 的乘积）。
  */
 export const SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -6156,16 +6166,26 @@ export const SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK = `(async () => {
       lead !== null &&
       count('[data-field="modes.classroom.preClassOpenFolder"] input[type="checkbox"]') === 1
     const emptyBranch = count('[data-empty="modes.classroom.preClassReminder"]') > 0
+    const dial = document.querySelector('[data-dial-popover]')
+    const face = dial === null ? null : dial.querySelector('[data-dial-face]')
+    const dialNums = dial === null ? 0 : dial.querySelectorAll('.dial-num').length
+    // 收尾：Esc 关闭轮盘（取消语义，不落盘）
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wait(200)
+    const dialClosed = document.querySelector('[data-dial-popover]') === null
     const conditions = {
       sectionPresent: sectionRect !== null && sectionRect.width > 300,
       automationsToggle: autoToggle !== null,
       preClassGating: controlsBranch || emptyBranch,
       leadInRange: !controlsBranch || (leadValue !== null && leadValue >= 1 && leadValue <= 30),
-      quietStart: count('[data-field="advanced.quietHours.start"] input') === 1,
-      quietEnd: count('[data-field="advanced.quietHours.end"] input') === 1,
+      quietStart: count('[data-field="advanced.quietHours.start"] button[data-dial-trigger]') === 1,
+      quietEnd: count('[data-field="advanced.quietHours.end"] button[data-dial-trigger]') === 1,
+      dialOpen: dial !== null && face !== null && face.getAttribute('data-dial-face-mode') === 'hour',
+      dialHourTicks: dialNums === 24,
+      dialClosed,
     }
     const pass = Object.keys(conditions).every((key) => conditions[key] === true)
-    return { section: sectionRect, controlsBranch, emptyBranch, conditions, pass }
+    return { section: sectionRect, controlsBranch, emptyBranch, dialNums, dialClosed, conditions, pass }
   } catch (error) {
     return { reason: String(error), pass: false }
   }
@@ -6175,6 +6195,8 @@ export const SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK = `(async () => {
  * 「提醒」页的**智慧提醒区组**（v40，docs/07 §4）：免打扰期 + 延迟汇总。
  * 出厂态总开关是关的 —— 整块置灰是**有意的**（同流光细节区的 dormant 口径），
  * 判据因此断言「开关关 + 子控件在但禁用 + 区组挂 dormant」，置灰态本身就是被验对象。
+ * 时段两字段是时间轮盘（2026-11-07，docs/07 §2.5）：dormant 下触发器禁用、弹层开不出来，
+ * 所以本场景只量触发器本身；弹出态钟面的断言在 settings-notifications-schedule 场景（勿扰轮盘可点）。
  */
 export const SETTINGS_NOTIFICATIONS_SMART_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -6193,24 +6215,25 @@ export const SETTINGS_NOTIFICATIONS_SMART_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     await wait(260)
-    const field = (id) => {
-      const element = document.querySelector('[data-field="notifications.' + id + '"]')
-      return element === null ? null : element.querySelector('input')
-    }
-    const section = document.querySelector('[data-field="notifications.smart"]')
+    const field = (id) => document.querySelector('[data-field="notifications.' + id + '"]')
+    const checkboxOf = (element) =>
+      element === null ? null : element.querySelector('input[type="checkbox"]')
+    const dialOf = (element) =>
+      element === null ? null : element.querySelector('button[data-dial-trigger]')
+    const section = field('smart')
     const sectionRect = section === null ? null : (() => {
       const rect = section.getBoundingClientRect()
       return { width: Math.round(rect.width), height: Math.round(rect.height) }
     })()
-    const enabled = field('smartEnabled')
-    const start = field('smartWindow.start')
-    const end = field('smartWindow.end')
-    const daily = field('smartWindow.daily')
-    const duringClass = field('smartDuringClass')
-    const summarize = field('smartSummarize')
+    const enabled = checkboxOf(field('smartEnabled'))
+    const start = dialOf(field('smartWindow.start'))
+    const end = dialOf(field('smartWindow.end'))
+    const daily = checkboxOf(field('smartWindow.daily'))
+    const duringClass = checkboxOf(field('smartDuringClass'))
+    const summarize = checkboxOf(field('smartSummarize'))
     // 子控件 = 除总开关外的全部（总开关自己保持可点，见 enabledClickable）
     const toggles = [daily, duringClass, summarize]
-    const inputs = [start, end]
+    const dials = [start, end]
     const conditions = {
       sectionPresent: sectionRect !== null && sectionRect.width > 300,
       // 出厂态：总开关关、总结默认开，其余布尔默认关
@@ -6221,17 +6244,18 @@ export const SETTINGS_NOTIFICATIONS_SMART_CHECK = `(async () => {
       dormantClass: section !== null && section.classList.contains('dormant'),
       enabledClickable: enabled !== null && enabled.disabled === false,
       subControlsDisabled: toggles
-        .concat(inputs)
+        .concat(dials)
         .every((element) => element !== null && element.disabled === true),
       togglesPresent: toggles.every((element) => element !== null && element.type === 'checkbox'),
-      windowInputsPresent: inputs.every((element) => element !== null && element.type === 'text'),
-      // 复选框是 16px（SettingField 统一外观）：量「能点中」的小下限；时段输入另量正常高度
+      // 时段控件是时间轮盘的触发器按钮（TimeDial，docs/07 §2.5）
+      windowDialsPresent: dials.every((element) => element !== null && element.tagName === 'BUTTON'),
+      // 复选框是 16px（SettingField 统一外观）：量「能点中」的小下限；轮盘触发器另量正常高度
       togglesClickable: toggles.every((element) => {
         if (element === null) return false
         const rect = element.getBoundingClientRect()
         return rect.height >= 12 && rect.width >= 12
       }),
-      windowInputsSized: inputs.every((element) => {
+      windowDialsSized: dials.every((element) => {
         if (element === null) return false
         const rect = element.getBoundingClientRect()
         return rect.height >= 24 && rect.width >= 120

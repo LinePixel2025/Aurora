@@ -15,6 +15,7 @@ import type { HotkeyStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
+import TimeDial from '../../shared/components/TimeDial.vue'
 import {
   usePerceptionStore,
   useSettingsStore,
@@ -436,28 +437,28 @@ async function toggleEdgeBar(): Promise<void> {
         <SettingField
           data-field="general.edgeBar.quietHours.start"
           label="提示条开始隐藏"
-          hint="格式 HH:mm；留空表示不限，仅影响提示条本身"
+          hint="点弹层里的清除即不限，仅影响提示条本身"
         >
-          <input
-            type="text"
-            spellcheck="false"
+          <TimeDial
+            :model-value="edgeQuietStart"
             placeholder="22:30"
-            :value="edgeQuietStart"
-            @change="saveEdgeQuiet('start', ($event.target as HTMLInputElement).value)"
+            clearable
+            aria-label="提示条开始隐藏"
+            @update:model-value="(value) => saveEdgeQuiet('start', value ?? '')"
           />
         </SettingField>
 
         <SettingField
           data-field="general.edgeBar.quietHours.end"
           label="提示条恢复显示"
-          hint="格式 HH:mm；跨午夜时开始时间大于结束时间"
+          hint="跨午夜时开始时间大于结束时间"
         >
-          <input
-            type="text"
-            spellcheck="false"
+          <TimeDial
+            :model-value="edgeQuietEnd"
             placeholder="07:00"
-            :value="edgeQuietEnd"
-            @change="saveEdgeQuiet('end', ($event.target as HTMLInputElement).value)"
+            clearable
+            aria-label="提示条恢复显示"
+            @update:model-value="(value) => saveEdgeQuiet('end', value ?? '')"
           />
         </SettingField>
       </template>
@@ -490,26 +491,24 @@ async function toggleEdgeBar(): Promise<void> {
       <SettingField
         data-field="advanced.quietHours.start"
         label="勿扰时段开始"
-        hint="格式 HH:mm；留空表示不启用"
+        hint="点弹层里的清除即不启用"
       >
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
+        <TimeDial
+          :model-value="settingsStore.settings?.advanced?.quietHours?.start ?? ''"
           placeholder="22:30"
-          :value="settingsStore.settings?.advanced?.quietHours?.start ?? ''"
-          @change="saveQuiet('start', ($event.target as HTMLInputElement).value)"
+          clearable
+          aria-label="勿扰时段开始"
+          @update:model-value="(value) => saveQuiet('start', value ?? '')"
         />
       </SettingField>
 
       <SettingField data-field="advanced.quietHours.end" label="勿扰时段结束">
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
+        <TimeDial
+          :model-value="settingsStore.settings?.advanced?.quietHours?.end ?? ''"
           placeholder="07:00"
-          :value="settingsStore.settings?.advanced?.quietHours?.end ?? ''"
-          @change="saveQuiet('end', ($event.target as HTMLInputElement).value)"
+          clearable
+          aria-label="勿扰时段结束"
+          @update:model-value="(value) => saveQuiet('end', value ?? '')"
         />
       </SettingField>
     </section>

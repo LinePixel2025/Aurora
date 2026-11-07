@@ -1067,7 +1067,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     门控同 §6.1 —— 非 ClassRoom 模式或课表无节次时控件不进 DOM，换成
     `data-empty="modes.classroom.preClassReminder"` 说明）；
     ④**「勿扰时段」**（`advanced.quietHours.start` / `.end`，与「通用」页同一字段与保存语义，
-    留空 = 不启用，只填开始按默认「07:00」补全）；⑤「发送测试提醒」按钮
+    留空 = 不启用，只填开始按默认「07:00」补全；起止用时间轮盘，见 07 §2.5）；⑤「发送测试提醒」按钮
     （细节见 07 §2.2.3 / §4）。锚点 `notifications.channel.<key>` /
     `notifications.sound` / `.volume` / `.speak` / `.size.<key>` / `.duration.<ms>` /
     `notifications.test`，截图场景 `settings-notifications.png`（通道）、
@@ -1261,7 +1261,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - **科目列表**：增 / 删 / 改名，每科可配**目标文件夹**与**分类关键词**；
   改科目名会同步改写引用它的课程表条目，删除时提示仍有多少节课引用该科目。
 - **课程表**：`schedule.provider`（manual / classisland）+ 课程行
-  （星期 0–6 中文、起止 `HH:mm`、科目下拉）。
+  （星期 0–6 中文、起止时刻用时间轮盘（见 07 §2.5）、科目下拉）。
   - **ClassIsland 联动（P6+）**：选中 `classisland` 时展开子配置 ——
     「数据来源」（JSON 文件 / 本地 HTTP 端点）、「端点 / 文件路径」、
     「读取超时」（毫秒）与「**测试连接**」按钮。

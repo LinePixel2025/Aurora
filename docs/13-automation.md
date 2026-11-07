@@ -414,7 +414,7 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
   - 编辑器（**独立 `automation` BrowserWindow**，单例；主界面只保留列表）：
     名称、模式单选（带图标）、**触发条件 = 图标磁贴网格**（7 类各带语义图标，
     description 走悬浮提示）、catalog 动态字段（`AutomationFieldInput.vue`：
-    `select` → 分段胶囊、`weekdays` → 星期胶囊，**编辑器内无原生下拉**）、
+    `select` → 分段胶囊、`weekdays` → 星期胶囊、`time` → 时间轮盘（07 §2.5），**编辑器内无原生下拉**）、
     **「调用次数」一行**（v0.2.8：上限数字输入 `data-field="automation.max-runs"`，
     **0 = 不限**；编辑既有定义时在旁显示「已调用 N 次」并提供「重置计数」按钮
     `data-action="automation.reset-runs"`，点击把草稿的计数置 0，保存后生效）、

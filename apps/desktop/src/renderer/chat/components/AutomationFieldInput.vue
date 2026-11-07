@@ -10,14 +10,16 @@
  * 控件的形态按 `field.type` 决定，**不再出现原生 `<select>`**：
  * - `select` → 分段胶囊（选项 ≤ 3 个，点一下即改，比下拉少一次点击）；
  * - `weekdays` → 星期胶囊多选（空 = 每天），不再用 checkbox；
- * - `time` → 原生 `type="time"`（带系统时间选择器，且天然产出 `HH:mm`，与校验口径一致）；
+ * - `time` → 时间轮盘（`TimeDial` 弹层钟面，确认才产出 `HH:mm`，与校验口径一致）；
  * - `number` / `text` → 原生输入，宽度受控。
  */
 import type { AutomationDescriptorField } from '@aurora/shared'
 import AppTooltip from '../../shared/components/AppTooltip.vue'
+import TimeDial from '../../shared/components/TimeDial.vue'
 import {
   Braces,
   CalendarDays,
+  Clock,
   Hash,
   Info,
   ListFilter,
@@ -39,7 +41,7 @@ const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '�
 
 const TYPE_ICONS = {
   text: TextCursorInput,
-  time: TextCursorInput,
+  time: Clock,
   number: Hash,
   weekdays: CalendarDays,
   select: ListFilter,
@@ -141,14 +143,15 @@ function inputValue(event: Event): string {
         @input="setValue(Number(inputValue($event)))"
       />
 
-      <input
-        v-else-if="props.field.type === 'time'"
-        class="input time"
-        type="time"
-        :value="value()"
-        :aria-label="props.field.label"
-        @input="setValue(inputValue($event))"
-      />
+      <!-- 时刻 → 时间轮盘（docs/07 §2.5）：定宽宿主约束触发器，确认才写回 -->
+      <span v-else-if="props.field.type === 'time'" class="time-host">
+        <TimeDial
+          :model-value="value().toString()"
+          :placeholder="props.field.placeholder ?? ''"
+          :aria-label="props.field.label"
+          @update:model-value="(next) => setValue(next ?? '')"
+        />
+      </span>
 
       <!-- 插件动作的 JSON 参数（v36）：多行文本，合法性由主进程按 8 KB 上限校验 -->
       <textarea
@@ -251,8 +254,10 @@ function inputValue(event: Event): string {
   width: 92px;
 }
 
-.input.time {
+.time-host {
+  display: inline-block;
   width: 116px;
+  min-width: 0;
 }
 
 /* JSON 参数：多行 + 等宽，高度可拖；内容上限由主进程校验，这里不管 */

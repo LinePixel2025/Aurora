@@ -21,6 +21,7 @@ import type {
 import AppButton from '../../../shared/components/AppButton.vue'
 import AppToast from '../../../shared/components/AppToast.vue'
 import SettingField from '../../../shared/components/SettingField.vue'
+import TimeDial from '../../../shared/components/TimeDial.vue'
 import type { ClassroomNotify, ClassroomPatch } from './types.js'
 
 const props = defineProps<{
@@ -374,18 +375,18 @@ async function removeLesson(index: number): Promise<void> {
       >
         <option v-for="(label, day) in WEEKDAYS" :key="day" :value="day">{{ label }}</option>
       </select>
-      <input
-        class="input"
-        type="time"
-        :value="lesson.startTime"
-        @change="updateLesson(index, { startTime: ($event.target as HTMLInputElement).value })"
+      <TimeDial
+        :model-value="lesson.startTime"
+        aria-label="开始时刻"
+        @update:model-value="
+          (value) => updateLesson(index, { startTime: value ?? lesson.startTime })
+        "
       />
       <span class="tiny muted dash">—</span>
-      <input
-        class="input"
-        type="time"
-        :value="lesson.endTime"
-        @change="updateLesson(index, { endTime: ($event.target as HTMLInputElement).value })"
+      <TimeDial
+        :model-value="lesson.endTime"
+        aria-label="结束时刻"
+        @update:model-value="(value) => updateLesson(index, { endTime: value ?? lesson.endTime })"
       />
       <select
         class="input"

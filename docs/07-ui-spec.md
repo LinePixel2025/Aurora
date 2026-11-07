@@ -1464,6 +1464,14 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   走主进程**同一条**提醒路由（`notifications:test`），因此验证的是真实生效路径，而不是另开一条演示通道。
   边界写进页面文案：它只管**默认**方式 —— `notify_banner` 与插件 `ctx.banner` 是显式请求流光，不受影响；
   流光提醒不支持点击打开文件夹，需要那个入口要选系统通知或两者都发。
+- **时刻输入统一用时间轮盘 `TimeDial`（2026-11-07）**：`renderer/shared/components/TimeDial.vue`，
+  桌面设置页与自动化编辑器共用。字段行是 36px 触发器按钮（Clock 图标 + `HH:mm` 等宽数字，
+  未设置时显示 muted 占位），点击经 `Teleport` 弹出锚定其下方的钟面弹层（SVG 直径 224：小时模式
+  外圈 24 刻度、分钟模式 12 个 5 分钟刻度 + 拖动按 1 分钟步进；顶部 `HH:mm` 两段可点切换，
+  选完小时自动切分钟；底部「清除」（仅 `clearable` 时）／「取消」／「确定」，确定才 emit 落盘；
+  Esc / 点外部 / 滚动即取消不落盘）。使用处：智慧提醒免打扰时段、勿扰时段（提醒 + 通用两页入口）、
+  提示条静默时段、课程表节次起止、自动化 `daily.at`；时长类（分钟 / 毫秒 / 秒）仍是数字框或滑杆。
+  `data-field` 锚点留在 `SettingField` 上不变，探针断言对象从 `input` 换成触发器按钮。
 - **「智能与工具（`agent`）」页「内置浏览器」区组（v35，见 06 §27 / 08 §6）**：与
   `agent.tools.*`、技能、MCP 同页折叠，顺序排「电脑操控」之后；六项锚点
   `agent.browser.enabled`（总开关）、`agent.browser.maxSessions`（并发上限，数字）、
