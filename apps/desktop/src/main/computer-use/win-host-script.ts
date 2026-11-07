@@ -27,8 +27,10 @@ public static class AuroraCu
     public const int SW_SHOWNORMAL = 1;
     public const int SW_SHOWMINIMIZED = 2;
     public const int SW_SHOWMAXIMIZED = 3;
+    public const int SW_SHOW = 5;
     public const int SW_RESTORE = 9;
     public const uint WM_CLOSE = 0x0010;
+    public const uint GA_ROOT = 2;
     public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -99,6 +101,20 @@ public static class AuroraCu
     static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")]
     static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    static extern bool BringWindowToTop(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    static extern IntPtr SetFocus(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    static extern bool IsWindow(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll")]
+    static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("user32.dll")]
+    static extern void SwitchToThisWindow(IntPtr hwnd, bool altTab);
+    [DllImport("kernel32.dll")]
+    static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")]
     static extern bool ShowWindow(IntPtr hwnd, int command);
     [DllImport("user32.dll")]
@@ -278,9 +294,40 @@ public static class AuroraCu
 
     public static bool Activate(IntPtr hwnd)
     {
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return false;
         if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-        SetForegroundWindow(hwnd);
-        return GetForegroundWindow() == hwnd;
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground == hwnd || GetAncestor(foreground, GA_ROOT) == hwnd) return true;
+        uint foregroundPid;
+        uint foregroundThread = GetWindowThreadProcessId(foreground, out foregroundPid);
+        uint currentThread = GetCurrentThreadId();
+        bool attached = false;
+        try
+        {
+            // 前台锁：调用进程不是前台时 SetForegroundWindow 会被系统拒绝。
+            // 把当前线程临时挂到前台线程上，才能把目标窗口真正带到前台。
+            if (foregroundThread != 0 && foregroundThread != currentThread)
+            {
+                attached = AttachThreadInput(currentThread, foregroundThread, true);
+            }
+            ShowWindow(hwnd, SW_SHOW);
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            SetFocus(hwnd);
+        }
+        finally
+        {
+            if (attached) AttachThreadInput(currentThread, foregroundThread, false);
+        }
+        foreground = GetForegroundWindow();
+        if (foreground != hwnd && GetAncestor(foreground, GA_ROOT) != hwnd)
+        {
+            // AttachThreadInput 仍被前台锁挡住时，最后一招是 SwitchToThisWindow（Alt+Tab 等价）。
+            // 它对部分 UWP / 系统壳窗口有效；失败就如实返回 false，由 PowerShell 侧再试 COM。
+            try { SwitchToThisWindow(hwnd, true); } catch { }
+            foreground = GetForegroundWindow();
+        }
+        return foreground == hwnd || GetAncestor(foreground, GA_ROOT) == hwnd;
     }
 
     public static bool Move(IntPtr hwnd, int x, int y, int width, int height)
@@ -378,6 +425,7 @@ function Get-VirtualKey($name) {
         'printscreen' { return 0x2C }
         '-' { return 0xBD }
         '=' { return 0xBB }
+        '+' { return 0xBB }
         '[' { return 0xDB }
         ']' { return 0xDD }
         '\' { return 0xDC }
@@ -658,15 +706,30 @@ while ($true) {
             'window_active' {
                 Write-Response $id $true (Get-WinObject ([AuroraCu]::Foreground())) $null $null
             }
+            'window_info' {
+                $info = Get-WindowInfoById $command.windowId
+                Write-Response $id $true (Get-WinObject $info) $null $null
+            }
             'window_activate' {
                 $info = Get-WindowInfoById $command.windowId
                 $ok = [AuroraCu]::Activate([IntPtr]$info.Hwnd)
-                Write-Response $id $ok (Get-WinObject ([AuroraCu]::Foreground())) ($(if ($ok) { $null } else { 'FOCUS_REFUSED' })) $null
+                if (-not $ok) {
+                    # UWP / 系统壳窗口有时连 AttachThreadInput + SwitchToThisWindow 都过不了
+                    # 前台锁；WScript.Shell.AppActivate 在实测里能覆盖这一类（模型曾用它成功）。
+                    try {
+                        $shell = New-Object -ComObject WScript.Shell
+                        if ($shell.AppActivate([int]$info.Pid)) { $ok = $true }
+                    } catch { }
+                }
+                $foreground = [AuroraCu]::Foreground()
+                $message = ''
+                if (-not $ok) { $message = '系统拒绝把窗口切到前台（前台锁）' }
+                Write-Response $id $true ([pscustomobject]@{ activated = [bool]$ok; foreground = (Get-WinObject $foreground); message = $message }) $null $null
             }
             'window_move' {
                 $info = Get-WindowInfoById $command.windowId
                 $ok = [AuroraCu]::Move([IntPtr]$info.Hwnd, [int]$command.x, [int]$command.y, [int]$command.width, [int]$command.height)
-                Write-Response $id $ok (Get-WinObject ([AuroraCu]::Info([IntPtr]$info.Hwnd))) ($(if ($ok) { $null } else { 'WINDOW_MOVE_FAILED' })) $null
+                Write-Response $id $ok (Get-WinObject ([AuroraCu]::Info([IntPtr]$info.Hwnd))) ($(if ($ok) { $null } else { 'WINDOW_MOVE_FAILED' })) ($(if ($ok) { $null } else { '系统拒绝移动 / 缩放窗口' }))
             }
             'window_show' {
                 $info = Get-WindowInfoById $command.windowId
@@ -675,36 +738,81 @@ while ($true) {
                 if ($state -eq 'minimize') { $commandCode = 6 }
                 elseif ($state -eq 'maximize') { $commandCode = 3 }
                 $ok = [AuroraCu]::Show([IntPtr]$info.Hwnd, $commandCode)
-                Write-Response $id $ok (Get-WinObject ([AuroraCu]::Info([IntPtr]$info.Hwnd))) ($(if ($ok) { $null } else { 'WINDOW_SHOW_FAILED' })) $null
+                Write-Response $id $ok (Get-WinObject ([AuroraCu]::Info([IntPtr]$info.Hwnd))) ($(if ($ok) { $null } else { 'WINDOW_SHOW_FAILED' })) ($(if ($ok) { $null } else { '系统拒绝切换窗口状态' }))
             }
             'window_close' {
                 $info = Get-WindowInfoById $command.windowId
                 $ok = [AuroraCu]::Close([IntPtr]$info.Hwnd)
-                Write-Response $id $ok ([pscustomobject]@{ windowId = [string]$info.Hwnd; closed = $ok }) ($(if ($ok) { $null } else { 'WINDOW_CLOSE_FAILED' })) $null
+                Write-Response $id $ok ([pscustomobject]@{ windowId = [string]$info.Hwnd; closed = $ok }) ($(if ($ok) { $null } else { 'WINDOW_CLOSE_FAILED' })) ($(if ($ok) { $null } else { '关闭请求发送失败' }))
             }
             'app_launch' {
-                $commandPath = [string]$command.command
+                $commandPath = ([string]$command.command).Trim().Trim('"')
                 $args = @($command.args)
-                if ($args.Count -gt 0) {
-                    $process = Start-Process -FilePath $commandPath -ArgumentList $args -PassThru
-                } else {
-                    $process = Start-Process -FilePath $commandPath -PassThru
+                $launchFailed = $false
+                if ([string]::IsNullOrWhiteSpace($commandPath)) {
+                    Write-Response $id $false $null 'APP_LAUNCH_FAILED' '启动命令为空'
+                    $launchFailed = $true
                 }
-                $deadline = (Get-Date).AddSeconds(2)
-                $window = $null
-                while ((Get-Date) -lt $deadline) {
-                    Start-Sleep -Milliseconds 150
-                    $process.Refresh()
-                    if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
-                        $window = Get-WinObject ([AuroraCu]::Info($process.MainWindowHandle))
-                        break
+                $baseName = Get-ShortExe $commandPath
+                # 启动前记录现有顶层 HWND：之后只认「新出现的窗口」，避免把旧窗口当成刚启动的
+                $before = @{}
+                if (-not $launchFailed) {
+                    foreach ($item in [AuroraCu]::GetWindows()) {
+                        if ($null -ne $item -and $item.Hwnd -ne 0) { $before[[long]$item.Hwnd] = $true }
                     }
                 }
-                Write-Response $id $true ([pscustomobject]@{
-                    pid = [int]$process.Id
-                    process = Get-ShortExe $commandPath
-                    window = $window
-                }) $null $null
+                $process = $null
+                if (-not $launchFailed) {
+                    try {
+                        $workDir = $null
+                        if ($commandPath -match '[\\/]') { $workDir = Split-Path -Parent $commandPath }
+                        if ($args.Count -gt 0) {
+                            if ($null -ne $workDir -and $workDir -ne '') {
+                                $process = Start-Process -FilePath $commandPath -WorkingDirectory $workDir -ArgumentList $args -PassThru
+                            } else {
+                                $process = Start-Process -FilePath $commandPath -ArgumentList $args -PassThru
+                            }
+                        } else {
+                            if ($null -ne $workDir -and $workDir -ne '') {
+                                $process = Start-Process -FilePath $commandPath -WorkingDirectory $workDir -PassThru
+                            } else {
+                                $process = Start-Process -FilePath $commandPath -PassThru
+                            }
+                        }
+                    } catch {
+                        Write-Response $id $false $null 'APP_LAUNCH_FAILED' ([string]$_.Exception.Message)
+                        $launchFailed = $true
+                    }
+                }
+                if (-not $launchFailed) {
+                    $processId = 0
+                    try { $processId = [int]$process.Id } catch { }
+                    $deadline = (Get-Date).AddSeconds(5)
+                    $window = $null
+                    while ((Get-Date) -lt $deadline) {
+                        Start-Sleep -Milliseconds 150
+                        $candidate = $null
+                        foreach ($info in [AuroraCu]::GetWindows()) {
+                            if ($null -eq $info) { continue }
+                            if (-not $info.Visible) { continue }
+                            if ($info.Width -le 1 -or $info.Height -le 1) { continue }
+                            if ([string]::IsNullOrWhiteSpace($info.Title)) { continue }
+                            if ($before.ContainsKey([long]$info.Hwnd)) { continue }
+                            $sameProcess = ($processId -ne 0 -and $info.Pid -eq $processId)
+                            $sameExe = ((Get-ShortExe $info.Exe) -ieq $baseName)
+                            if ($sameProcess -or $sameExe) { $candidate = $info; break }
+                        }
+                        if ($null -ne $candidate) { $window = Get-WinObject $candidate; break }
+                        try { $process.Refresh() } catch { }
+                    }
+                    # window 可能是 $null（单实例应用不产生新 HWND / 只在现有窗口里开标签）：
+                    # 这不是失败，TS 侧必须按 null 处理，并给「不要重复 launch」的结论。
+                    Write-Response $id $true ([pscustomobject]@{
+                        pid = $processId
+                        process = $baseName
+                        window = $window
+                    }) $null $null
+                }
             }
             'ui_tree' {
                 $element = Get-UiaElement $command.windowId

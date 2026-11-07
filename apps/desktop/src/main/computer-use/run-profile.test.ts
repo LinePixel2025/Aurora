@@ -54,6 +54,11 @@ describe('Computer Use run profile', () => {
     expect(profile?.runContext).toContain('截图验收')
     expect(profile?.runContext).toContain('computer_ui')
     expect(profile?.runContext).toContain('失败先重看')
+    // 2026-11-07 修复：启动复用 / 漏填 next 的兜底 / 小控件放大截图
+    expect(profile?.runContext).toContain('不要重复 launch')
+    expect(profile?.runContext).toContain('漏填时系统会用下一条动作补上')
+    expect(profile?.runContext).toContain('maxWidth')
+    expect(profile?.runContext).toContain('显示器几何变化')
   })
 
   it('组合运行档：上下文拼接、hiddenTools 并集、allowedTools 交集', () => {

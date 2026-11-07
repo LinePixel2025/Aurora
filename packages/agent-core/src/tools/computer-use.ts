@@ -254,8 +254,8 @@ const SPACES = ['image', 'screen'] as const
 const NEXT_PROPERTY = {
   type: 'string',
   description:
-    '下一步计划（一句话，≤120 字，用用户的语言）：只显示在过程面板的「下一步」，不执行；' +
-    '不要写坐标或输入的文字。批量下发动作时每一步都填它。',
+    '下一步计划（必填，一句话，≤120 字，用用户的语言）：只显示在过程面板的「下一步」，不执行；' +
+    '不要写坐标或输入的文字。批量下发动作时每一步都填它；漏填时系统会用下一条动作补上。',
 }
 
 export interface ComputerUseToolOptions {
@@ -286,7 +286,9 @@ function startTool(port: ComputerUsePort): ToolDefinition {
       '调用前先想好后面 2–4 步与目标窗口。授权本身不显示浮层；**同一次请求的下一轮**动作工具' +
       '（computer_screenshot / mouse / keyboard / window / ui / wait）立即进入工具面 —— ' +
       '不要在同一轮里同时调用本工具与动作工具（那些调用会报「工具不存在」）。' +
-      '下一轮先 computer_screenshot，再按顺序批量下发动作、每步填 next；' +
+      '下一轮先 computer_screenshot，再按顺序批量下发动作、**每个动作必填 next**；' +
+      '启动应用前先 computer_window list 查同 exe 是否已运行（已运行就 activate / restore，' +
+      '不要重复 launch）；launch 返回「没有检测到新窗口」时先截图确认，不要再次 launch。' +
       '桌面交互完成后必须调用 computer_stop 退出，把桌面还给用户。',
     parameters: {
       type: 'object',
@@ -321,7 +323,7 @@ function screenshotTool(port: ComputerUsePort): ToolDefinition {
       '截取当前显示器（或指定窗口）并**更新坐标空间**。任何坐标动作前先截图；' +
       '窗口被移动 / 缩放 / 激活、弹窗出现、显示器变化后必须重新截图（旧坐标会失效）。' +
       '其后的 computer_mouse 坐标默认是这张图的图片像素。' +
-      '结果给出显示器尺寸、图片尺寸、换算关系、前台窗口与鼠标位置，不需要自己换算物理坐标。' +
+      '结果给出本次图像覆盖的物理区域、图片尺寸、换算关系、前台窗口与鼠标位置，不需要自己换算物理坐标。' +
       '小控件看不清时用 windowId 只截目标窗口（同样 maxWidth 下细节更多），或调大 maxWidth。',
     parameters: {
       type: 'object',
@@ -334,7 +336,7 @@ function screenshotTool(port: ComputerUsePort): ToolDefinition {
         displayId: { type: 'integer', description: '指定显示器 id；给了它时忽略 display' },
         windowId: {
           type: 'string',
-          description: '只截这个窗口（来自 computer_window 的 list）；最小化窗口会失败',
+          description: '只截这个窗口（来自 computer_window 的 list / active）；最小化窗口会失败',
         },
         maxWidth: {
           type: 'integer',
@@ -344,10 +346,11 @@ function screenshotTool(port: ComputerUsePort): ToolDefinition {
         },
         next: NEXT_PROPERTY,
       },
-      required: [],
+      required: ['next'],
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    nextStepLabel: () => '截图确认',
     execute: async (input, ctx) => guard(() => port.screenshot(parseScreenshot(input, ctx))),
   }
 }
@@ -384,10 +387,11 @@ function mouseTool(port: ComputerUsePort): ToolDefinition {
         space: { type: 'string', enum: [...SPACES], description: '坐标空间，缺省 image' },
         next: NEXT_PROPERTY,
       },
-      required: ['action'],
+      required: ['action', 'next'],
       additionalProperties: false,
     },
     sensitivity: 'confirm',
+    nextStepLabel: mouseNextLabel,
     execute: async (input, ctx) => guard(() => port.mouse(parseMouse(input, ctx))),
   }
 }
@@ -413,10 +417,11 @@ function keyboardTool(port: ComputerUsePort): ToolDefinition {
         delayMs: { type: 'integer', minimum: 0, maximum: 200, description: '逐字符间隔覆盖值' },
         next: NEXT_PROPERTY,
       },
-      required: ['action'],
+      required: ['action', 'next'],
       additionalProperties: false,
     },
     sensitivity: 'confirm',
+    nextStepLabel: keyboardNextLabel,
     execute: async (input, ctx) => guard(() => port.keyboard(parseKeyboard(input, ctx))),
   }
 }
@@ -426,8 +431,10 @@ function windowTool(port: ComputerUsePort): ToolDefinition {
     name: 'computer_window',
     description:
       '列出 / 查询 / 激活 / 移动 / 缩放 / 最小化 / 最大化 / 还原 / 关闭窗口，或启动应用。' +
-      '窗口 id 来自 list，titleMatch 必须唯一。启动应用用 launch（只接受 .exe / .com，等窗约 2 秒），' +
-      '不要到桌面 / 开始菜单找图标。移动 / 缩放的 x/y/width/height 默认按最近截图换算。',
+      '窗口 id 来自 list（也可用 active 的 id），titleMatch 必须唯一。启动应用用 launch：' +
+      '只接受 .exe / .com；无 args 且同 exe 已在运行时会**直接激活**现有窗口（不重复起进程）；' +
+      '带 args（新窗口 / URL）才走启动，等窗 5 秒。返回「没有检测到新窗口」不代表失败，' +
+      '先截图确认、**不要重复 launch**。移动 / 缩放的 x/y/width/height 默认按最近截图换算。',
     parameters: {
       type: 'object',
       properties: {
@@ -444,10 +451,11 @@ function windowTool(port: ComputerUsePort): ToolDefinition {
         space: { type: 'string', enum: [...SPACES], description: '坐标空间，缺省 image' },
         next: NEXT_PROPERTY,
       },
-      required: ['action'],
+      required: ['action', 'next'],
       additionalProperties: false,
     },
     sensitivity: 'confirm',
+    nextStepLabel: windowNextLabel,
     execute: async (input, ctx) => guard(() => port.window(parseWindow(input, ctx))),
   }
 }
@@ -458,6 +466,7 @@ function uiTool(port: ComputerUsePort): ToolDefinition {
     description:
       '用 Windows UI Automation 读取控件树、按名称查找控件并直接操作 —— 比坐标点击稳，能用就优先用。' +
       '**先 find**（nameContains / role），不要每次都拉整棵树（可能上百节点）；' +
+      'windowId 可直接用 computer_window active 的 id / 快速设置等弹出窗的 HWND（不要求出现在 list 里）；' +
       'path 来自 find / tree，页面布局变化后会失效，需要重新查找。',
     parameters: {
       type: 'object',
@@ -477,10 +486,11 @@ function uiTool(port: ComputerUsePort): ToolDefinition {
         },
         next: NEXT_PROPERTY,
       },
-      required: ['action'],
+      required: ['action', 'next'],
       additionalProperties: false,
     },
     sensitivity: 'confirm',
+    nextStepLabel: () => '操作控件',
     execute: async (input, ctx) => guard(() => port.ui(parseUi(input, ctx))),
   }
 }
@@ -497,10 +507,11 @@ function waitTool(port: ComputerUsePort): ToolDefinition {
         seconds: { type: 'number', minimum: 0, maximum: 30, description: '等待秒数，缺省 1' },
         next: NEXT_PROPERTY,
       },
-      required: [],
+      required: ['next'],
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    nextStepLabel: () => '等待',
     execute: async (input, ctx) => guard(() => port.wait(parseWait(input, ctx))),
   }
 }
@@ -519,6 +530,7 @@ function stopTool(port: ComputerUsePort): ToolDefinition {
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    nextStepLabel: () => '退出操作模式',
     execute: async (_input, ctx) =>
       guard(() =>
         port.stop({
@@ -549,7 +561,7 @@ function parseScreenshot(input: unknown, ctx: ToolContext): ComputerScreenshotIn
   const maxWidth = optionalInt(record['maxWidth'], 'maxWidth', 640, 2560)
   return {
     sessionId: ctx.sessionId,
-    ...optionalNext(record),
+    ...optionalNext(record, ctx),
     ...(display === undefined ? {} : { display }),
     ...(displayId === undefined ? {} : { displayId }),
     ...(windowId === undefined ? {} : { windowId }),
@@ -568,7 +580,7 @@ function parseMouse(input: unknown, ctx: ToolContext): ComputerMouseInput {
   return {
     sessionId: ctx.sessionId,
     action,
-    ...optionalNext(record),
+    ...optionalNext(record, ctx),
     ...(optionalInt(record['x'], 'x', -1_000_000, 1_000_000) === undefined
       ? {}
       : { x: numberValue(record['x'], 'x') }),
@@ -610,7 +622,7 @@ function parseKeyboard(input: unknown, ctx: ToolContext): ComputerKeyboardInput 
   return {
     sessionId: ctx.sessionId,
     action,
-    ...optionalNext(record),
+    ...optionalNext(record, ctx),
     ...(text === undefined ? {} : { text }),
     ...(record['submit'] === undefined ? {} : { submit: booleanValue(record['submit'], 'submit') }),
     ...(keys === undefined ? {} : { keys }),
@@ -632,7 +644,7 @@ function parseWindow(input: unknown, ctx: ToolContext): ComputerWindowInput {
   return {
     sessionId: ctx.sessionId,
     action,
-    ...optionalNext(record),
+    ...optionalNext(record, ctx),
     ...(optionalString(record['windowId'], 'windowId', 128) === undefined
       ? {}
       : { windowId: stringValue(record['windowId'], 'windowId') }),
@@ -668,7 +680,7 @@ function parseUi(input: unknown, ctx: ToolContext): ComputerUiInput {
   return {
     sessionId: ctx.sessionId,
     action,
-    ...optionalNext(record),
+    ...optionalNext(record, ctx),
     ...(optionalString(record['windowId'], 'windowId', 128) === undefined
       ? {}
       : { windowId: stringValue(record['windowId'], 'windowId') }),
@@ -705,7 +717,7 @@ function parseWait(input: unknown, ctx: ToolContext): ComputerWaitInput {
   }
   return {
     sessionId: ctx.sessionId,
-    ...optionalNext(record),
+    ...optionalNext(record, ctx),
     ...(typeof seconds === 'number' ? { seconds } : {}),
     ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
   }
@@ -738,13 +750,74 @@ function optionalString(value: unknown, field: string, maxLength: number): strin
 }
 
 /**
- * `next`（v39.1）→ 可直接展开的补丁：trim 后为空视为「没给计划」（清空面板的下一步），
- * 超长仍按参数校验报错（与其它字段同一口径，不静默截断模型输入）。
+ * `next`（v39.1）→ 可直接展开的补丁。
+ *
+ * 模型给的 next 优先；空白视为「没给」，回落到 `ctx.nextStepHint`（同一轮下一条调用的
+ * `nextStepLabel`）。两层都没有才不传（清空面板的下一步）。超长仍按参数校验报错
+ * （与其它字段同一口径，不静默截断模型输入）。
  */
-function optionalNext(record: Record<string, unknown>): Record<string, string> {
+function optionalNext(record: Record<string, unknown>, ctx: ToolContext): Record<string, string> {
   const raw = optionalString(record['next'], 'next', 120)
-  const next = raw?.trim()
-  return next === undefined || next === '' ? {} : { next }
+  const modelNext = raw?.trim()
+  const hint = ctx.nextStepHint?.trim()
+  const next =
+    modelNext !== undefined && modelNext !== '' ? modelNext : hint === '' ? undefined : hint
+  return next === undefined ? {} : { next: next.slice(0, 120) }
+}
+
+/** 下一条动作的展示文案（只进 HUD 的「下一步」，不执行、不含坐标 / 输入文字）。 */
+function mouseNextLabel(input: unknown): string {
+  const action = stringField(input, 'action')
+  switch (action) {
+    case 'click':
+    case 'double_click':
+    case 'right_click':
+    case 'middle_click':
+      return '点击屏幕'
+    case 'drag':
+      return '拖拽'
+    case 'scroll':
+      return '滚动'
+    case 'move':
+      return '移动鼠标'
+    case 'position':
+      return '读取鼠标位置'
+    default:
+      return '鼠标操作'
+  }
+}
+
+function keyboardNextLabel(input: unknown): string {
+  return stringField(input, 'action') === 'type' ? '输入文字' : '按键'
+}
+
+function windowNextLabel(input: unknown): string {
+  switch (stringField(input, 'action')) {
+    case 'activate':
+      return '切换窗口'
+    case 'launch':
+      return '等待窗口出现'
+    case 'list':
+    case 'active':
+      return '查看窗口'
+    case 'move':
+    case 'resize':
+      return '调整窗口'
+    case 'minimize':
+    case 'maximize':
+    case 'restore':
+      return '切换窗口状态'
+    case 'close':
+      return '关闭窗口'
+    default:
+      return '窗口操作'
+  }
+}
+
+function stringField(input: unknown, field: string): string {
+  const record = asRecord(input)
+  const value = record?.[field]
+  return typeof value === 'string' ? value : ''
 }
 
 function stringValue(value: unknown, field: string): string {

@@ -2,9 +2,12 @@
  * Computer Use 截屏（主进程实现，docs/06 §28）。
  *
  * 与 `tools/screenshot-port.ts` 的区别：
- * - 这里是**坐标空间**的一部分 —— 返回图片尺寸与物理矩形，供端口构建 `ScreenView`；
+ * - 这里是**坐标空间**的一部分 —— 返回图片尺寸、实际覆盖的物理矩形与源图/物理比例，供端口构建
+ *   `ScreenView`；
  * - 按窗口裁剪、按最长边缩放、优先 JPEG（模型只看需要看清的文字，JPEG 更省 token）；
- * - 浮层由 `setContentProtection(true)` 排除在系统抓屏之外（见 window-manager）。
+ * - **不能假设缩略图像素等于物理像素**（Electron 文档明确写 depends on the scale of the
+ *   screen），裁剪/反算全部走 `planScreenCapture`；
+ * - 浮层不做内容保护（远程桌面 / 屏幕共享下要能看见，见 docs/06 §28）。
  *
  * Electron 的 `desktopCapturer` / `screen` 只在主进程可用；本文件没有单测，
  * 纯换算逻辑在 coordinates.ts，落盘 / 清理复用 image-store。
@@ -17,7 +20,7 @@ import type { Logger } from '@aurora/shared'
 import type { ToolImage } from '@aurora/agent-core'
 import { IMAGE_MAX_BYTES } from '../attachments.js'
 import { selectExpiredFiles } from '../tools/image-store.js'
-import type { DisplayGeometry, Rect } from './coordinates.js'
+import { planScreenCapture, type DisplayGeometry, type Rect } from './coordinates.js'
 
 const JPEG_QUALITY = 80
 const KEEP = 50
@@ -37,8 +40,17 @@ export interface CapturedImage {
   imageHeight: number
   path: string
   bytes: number
-  /** 实际截取的物理矩形（窗口裁剪后） */
+  /** 实际截取的物理矩形（窗口裁剪后，由源图实际裁剪反算） */
   physicalRect: Rect
+  /** Electron 返回的源图尺寸（可能不等于请求的 thumbnailSize / 物理尺寸） */
+  sourceWidth: number
+  sourceHeight: number
+  /** 源图 / 物理的换算比例（1 = 源图就是物理像素） */
+  captureScaleX: number
+  captureScaleY: number
+  cropped: boolean
+  /** 请求了窗口裁剪但没裁成（宽高比异常 / 窗口不在屏内） */
+  cropFailed: boolean
   mimeType: string
 }
 
@@ -126,10 +138,11 @@ function displayGeometryOf(display: Display): DisplayGeometry {
 }
 
 /**
- * 截一块显示器（可选按窗口裁剪），返回落盘后的图片与物理矩形。
+ * 截一块显示器（可选按窗口裁剪），返回落盘后的图片、实际覆盖的物理矩形与源图比例。
  *
- * `desktopCapturer` 一次只给一张缩略图；`thumbnailSize` 必须是物理像素，
- * 否则高分屏会被按逻辑分辨率缩掉，文字发虚、坐标也会偏。
+ * `desktopCapturer` 一次只给一张缩略图；`thumbnailSize` 传物理尺寸只是「尽量要原图」，
+ * **实际返回的尺寸可能被 Electron 按屏幕缩放改掉** —— 裁剪与 physicalRect 必须按实际
+ * `source.thumbnail.getSize()` 换算是 `planScreenCapture` 的职责。
  */
 export async function captureDisplay(options: CaptureDisplayOptions): Promise<CapturedImage> {
   const { display } = options
@@ -149,28 +162,23 @@ export async function captureDisplay(options: CaptureDisplayOptions): Promise<Ca
   if (image.isEmpty()) throw new Error('截屏得到空图片')
 
   const fullSize = image.getSize()
-  const physicalRect = clampRect(
-    options.windowRect ?? {
-      x: display.physicalOrigin.x,
-      y: display.physicalOrigin.y,
-      width: display.physicalSize.width,
-      height: display.physicalSize.height,
-    },
-    {
-      x: display.physicalOrigin.x,
-      y: display.physicalOrigin.y,
-      width: fullSize.width,
-      height: fullSize.height,
-    },
-  )
-  if (options.windowRect !== undefined) {
-    image = image.crop({
-      x: Math.round(physicalRect.x - display.physicalOrigin.x),
-      y: Math.round(physicalRect.y - display.physicalOrigin.y),
-      width: Math.max(1, Math.round(physicalRect.width)),
-      height: Math.max(1, Math.round(physicalRect.height)),
+  const plan = planScreenCapture({
+    display,
+    sourceWidth: fullSize.width,
+    sourceHeight: fullSize.height,
+    ...(options.windowRect === undefined ? {} : { windowRect: options.windowRect }),
+  })
+  if (plan.warning !== undefined) {
+    options.logger.warn('Computer Use 截屏裁剪回退整屏', {
+      displayId: display.id,
+      warning: plan.warning,
+      sourceWidth: fullSize.width,
+      sourceHeight: fullSize.height,
+      physicalWidth: display.physicalSize.width,
+      physicalHeight: display.physicalSize.height,
     })
   }
+  if (plan.crop !== undefined) image = image.crop(plan.crop)
 
   const maxWidth = Math.max(640, Math.min(2560, Math.round(options.maxWidth)))
   image = resizeToWidth(image, maxWidth)
@@ -200,8 +208,14 @@ export async function captureDisplay(options: CaptureDisplayOptions): Promise<Ca
   const finalSize = image.getSize()
   options.logger.info('Computer Use 已截屏', {
     displayId: display.id,
+    sourceWidth: fullSize.width,
+    sourceHeight: fullSize.height,
     width: finalSize.width,
     height: finalSize.height,
+    physicalWidth: Math.round(plan.physicalRect.width),
+    physicalHeight: Math.round(plan.physicalRect.height),
+    cropped: plan.cropped,
+    cropFailed: plan.cropFailed,
     bytes: encoded.byteLength,
   })
   return {
@@ -217,7 +231,13 @@ export async function captureDisplay(options: CaptureDisplayOptions): Promise<Ca
     imageHeight: finalSize.height,
     path: filePath,
     bytes: encoded.byteLength,
-    physicalRect,
+    physicalRect: plan.physicalRect,
+    sourceWidth: fullSize.width,
+    sourceHeight: fullSize.height,
+    captureScaleX: plan.sourceScaleX,
+    captureScaleY: plan.sourceScaleY,
+    cropped: plan.cropped,
+    cropFailed: plan.cropFailed,
     mimeType,
   }
 }
@@ -226,20 +246,6 @@ function resizeToWidth(image: NativeImage, maxWidth: number): NativeImage {
   const size = image.getSize()
   if (size.width <= maxWidth) return image
   return image.resize({ width: maxWidth, quality: 'good' })
-}
-
-function clampRect(rect: Rect, bounds: Rect): Rect {
-  const left = Math.max(bounds.x, Math.min(bounds.x + bounds.width, Math.round(rect.x)))
-  const top = Math.max(bounds.y, Math.min(bounds.y + bounds.height, Math.round(rect.y)))
-  const right = Math.max(
-    left + 1,
-    Math.min(bounds.x + bounds.width, Math.round(rect.x + rect.width)),
-  )
-  const bottom = Math.max(
-    top + 1,
-    Math.min(bounds.y + bounds.height, Math.round(rect.y + rect.height)),
-  )
-  return { x: left, y: top, width: right - left, height: bottom - top }
 }
 
 async function prune(dir: string, logger: Logger): Promise<void> {

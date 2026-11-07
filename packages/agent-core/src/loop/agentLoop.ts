@@ -498,6 +498,10 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
      */
     const roundImages: ToolImage[] = []
 
+    // 同一轮里「下一条工具调用」的展示文案：给 Computer Use 的 HUD 做「下一步」兜底
+    // （模型漏填动作参数 next 时也不空着）。只影响展示，不执行、不改参数。
+    const nextHints = buildNextHints(calls, options.tools)
+
     // 同轮多个工具调用：按**并发批次**执行（docs/06 §5「同轮工具并发」）。
     //
     // 批次只决定「什么时候一起起跑」，**不决定落盘顺序**：结算始终按 `calls` 的原始下标走，
@@ -520,7 +524,7 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       }
 
       // ① 起跑：把整批的 `running` 卡片先发出去，再边跑边转进度事件（子代理靠这一条）
-      const running = runToolGroup(options, group, assistant.id, round)
+      const running = runToolGroup(options, group, assistant.id, round, nextHints)
       let outcomes: ToolOutcome[] = []
       for (;;) {
         const step = await running.next()
@@ -913,6 +917,40 @@ function isParallelEligible(tool: ToolDefinition | undefined): boolean {
 }
 
 /**
+ * 同一轮里「下一条工具调用」的一行展示文案（Computer Use HUD 的「下一步」兜底）。
+ *
+ * 只取**紧邻的**下一条：中间隔了别的工具就不猜（猜错比空着更糟）。下一条工具没声明
+ * `nextStepLabel`、参数不是合法 JSON、或 label 抛错时一律跳过 —— 这是展示逻辑，
+ * 不能影响工具执行。
+ */
+export function buildNextHints(
+  calls: readonly StoredToolCall[],
+  tools: ToolSource,
+): Map<string, string> {
+  const hints = new Map<string, string>()
+  for (let index = 0; index < calls.length - 1; index += 1) {
+    const current = calls[index]
+    const next = calls[index + 1]
+    if (current === undefined || next === undefined) continue
+    const definition = tools.get(next.name)
+    if (definition?.nextStepLabel === undefined) continue
+    let parsed: unknown
+    try {
+      parsed = next.arguments.trim() === '' ? {} : JSON.parse(next.arguments)
+    } catch {
+      continue
+    }
+    try {
+      const label = definition.nextStepLabel(parsed)?.trim()
+      if (label !== undefined && label !== '') hints.set(current.id, label.slice(0, 120))
+    } catch {
+      // 展示文案生成失败不阻塞任何工具调用
+    }
+  }
+  return hints
+}
+
+/**
  * 把本轮的工具调用切成执行批次：**连续的**可并发调用并成一批，其余各自成批。
  *
  * 「连续」这一条是刻意的保守口径：非并发的调用是一道**串行屏障**，它后面的调用不会越过它
@@ -965,6 +1003,7 @@ async function* runToolGroup(
   group: readonly StoredToolCall[],
   messageId: string,
   round: number,
+  nextHints: ReadonlyMap<string, string>,
 ): AsyncGenerator<AgentLoopEvent, ToolOutcome[]> {
   for (const call of group) {
     yield { type: 'tool', round, messageId, call: toAgentToolCall(call) }
@@ -975,7 +1014,7 @@ async function* runToolGroup(
     if (only === undefined) return [MISSING_OUTCOME]
     // 工具执行与进度事件并行推进：`task` 子代理在执行期间持续上报进度快照，
     // 由 runToolStreaming 边收边转成 `subagent` 事件（否则要等工具跑完才看得到）
-    const streaming = runToolStreaming(options, only, messageId, round)
+    const streaming = runToolStreaming(options, only, messageId, round, nextHints.get(only.id))
     for (;;) {
       const step = await streaming.next()
       if (step.done === true) return [step.value]
@@ -1017,7 +1056,7 @@ async function* runToolGroup(
         continue
       }
       inFlight += 1
-      const streaming = runToolStreaming(options, call, messageId, round)
+      const streaming = runToolStreaming(options, call, messageId, round, nextHints.get(call.id))
       void (async () => {
         for (;;) {
           const step = await streaming.next()
@@ -1075,6 +1114,7 @@ async function* runToolStreaming(
   call: StoredToolCall,
   messageId: string,
   round: number,
+  nextStepHint?: string,
 ): AsyncGenerator<AgentLoopEvent, ToolOutcome> {
   const queue: ToolProgress[] = []
   let wake: (() => void) | undefined
@@ -1101,7 +1141,7 @@ async function* runToolStreaming(
     notify()
   }
 
-  void runTool(options, call, emitProgress).then(
+  void runTool(options, call, emitProgress, nextStepHint).then(
     (result) => {
       outcome = result
       finished = true
@@ -1152,6 +1192,7 @@ async function runTool(
   options: AgentLoopOptions,
   call: StoredToolCall,
   emitProgress?: (payload: ToolProgress) => void,
+  nextStepHint?: string,
 ): Promise<ToolOutcome> {
   const tool = options.tools.get(call.name)
   if (tool === undefined) {
@@ -1230,6 +1271,7 @@ async function runTool(
     signal: callController.signal,
     ...(emitProgress === undefined ? {} : { emitProgress }),
     ...(approvedByUser ? { approvedByUser: true } : {}),
+    ...(nextStepHint === undefined ? {} : { nextStepHint }),
   })
   // 超时之后这次调用可能仍在后台跑完：它的拒绝没有人接会变成 unhandledRejection，
   // 而循环此刻已经把「超时」回填给模型了 —— 挂一个 catch 只做兜底，不改变已给出的结果。

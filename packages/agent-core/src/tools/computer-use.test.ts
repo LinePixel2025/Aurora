@@ -129,6 +129,80 @@ describe('Computer Use 工具定义', () => {
     expect(fake.mouse).not.toHaveBeenCalled()
   })
 
+  it('六个动作工具的 next 必填（schema.required），入口 / 退出不要求', () => {
+    const tools = createComputerUseTools({ port: port() })
+    for (const name of [
+      'computer_screenshot',
+      'computer_mouse',
+      'computer_keyboard',
+      'computer_window',
+      'computer_ui',
+      'computer_wait',
+    ]) {
+      const tool = tools.find((item) => item.name === name)!
+      expect(tool.parameters.required).toContain('next')
+    }
+    expect(
+      tools.find((item) => item.name === COMPUTER_USE_START_TOOL_NAME)?.parameters.required,
+    ).not.toContain('next')
+    expect(tools.find((item) => item.name === 'computer_stop')?.parameters.required).not.toContain(
+      'next',
+    )
+  })
+
+  it('模型漏填 next 时用同一轮下一条动作的 nextStepHint 兜底；模型给了就以模型为准', async () => {
+    const fake = port()
+    const tools = createComputerUseTools({ port: fake })
+    const mouse = tools.find((tool) => tool.name === 'computer_mouse')!
+    await mouse.execute(
+      { action: 'click', x: 10, y: 20 },
+      { sessionId: 's1', nextStepHint: '输入文字' },
+    )
+    expect(fake.mouse).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: 's1', next: '输入文字' }),
+    )
+    await mouse.execute(
+      { action: 'click', x: 10, y: 20, next: '自己的计划' },
+      { sessionId: 's1', nextStepHint: '输入文字' },
+    )
+    expect(fake.mouse).toHaveBeenLastCalledWith(expect.objectContaining({ next: '自己的计划' }))
+    // 两层都没有：不传 next（主进程据此清空上一行）
+    await mouse.execute({ action: 'position' }, { sessionId: 's1' })
+    expect(fake.mouse).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ next: expect.anything() }),
+    )
+  })
+
+  it('每个动作工具声明 nextStepLabel，且文案不含坐标 / 输入文字', () => {
+    const tools = createComputerUseTools({ port: port() })
+    const label = (name: string, input: unknown) => {
+      const tool = tools.find((item) => item.name === name)!
+      return tool.nextStepLabel?.(input)
+    }
+    expect(label('computer_screenshot', {})).toBe('截图确认')
+    expect(label('computer_mouse', { action: 'click' })).toBe('点击屏幕')
+    expect(label('computer_mouse', { action: 'drag' })).toBe('拖拽')
+    expect(label('computer_keyboard', { action: 'type', text: '你好' })).toBe('输入文字')
+    expect(label('computer_keyboard', { action: 'key', keys: ['ctrl', 's'] })).toBe('按键')
+    expect(label('computer_window', { action: 'activate' })).toBe('切换窗口')
+    expect(label('computer_window', { action: 'launch' })).toBe('等待窗口出现')
+    expect(label('computer_ui', { action: 'find' })).toBe('操作控件')
+    expect(label('computer_wait', {})).toBe('等待')
+    expect(label('computer_stop', {})).toBe('退出操作模式')
+    expect(label('computer_keyboard', { action: 'type', text: '你好' })).not.toContain('你好')
+  })
+
+  it('launch / ui 描述包含复用与弹出窗口径', () => {
+    const tools = createComputerUseTools({ port: port() })
+    const windowDescription = tools.find((item) => item.name === 'computer_window')!.description
+    expect(windowDescription).toContain('直接激活')
+    expect(windowDescription).toContain('不要重复 launch')
+    expect(windowDescription).toContain('5 秒')
+    const uiDescription = tools.find((item) => item.name === 'computer_ui')!.description
+    expect(uiDescription).toContain('弹出窗')
+    expect(uiDescription).toContain('windowId')
+  })
+
   it('computer_start 文案说明动作工具同请求下一轮可用，且不要同轮批量', () => {
     const tool = createComputerUseTools({ port: port() }).find(
       (item) => item.name === COMPUTER_USE_START_TOOL_NAME,

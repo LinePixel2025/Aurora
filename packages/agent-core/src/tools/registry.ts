@@ -25,6 +25,14 @@ export interface ToolContext {
   /** 进度上报端口；未注入时（直接调用工具）静默丢弃 */
   emitProgress?(payload: ToolProgress): void
   /**
+   * 同一轮里**下一条工具调用**的一行展示文案（例如「点击屏幕」「输入文字」）。
+   *
+   * 只用于 Computer Use 过程面板的「下一步」兜底：模型漏填动作参数 `next` 时，
+   * 内核用下一条调用的 `ToolDefinition.nextStepLabel` 补上，保证 HUD 不会空着。
+   * 它**不执行**任何东西，也不参与权限 / 参数解析；缺省（直接调用工具）为 undefined。
+   */
+  nextStepHint?: string
+  /**
    * 「这次调用已经获得用户批准」（docs/06 §11.2 三档权限）。
    *
    * 由**内核**（`loop/agentLoop.ts`）置位，且只在工具 `sensitivity === 'confirm'`
@@ -127,6 +135,13 @@ export interface ToolDefinition {
    * 缺省即可，不必重复声明 —— 两道计时器抢同一次调用只会让归因变模糊。
    */
   timeoutMs?: number
+  /**
+   * 这一步的「一句话说明」，只给**上一条**调用的 `nextStepHint` 用（不展示、不执行）。
+   *
+   * 目前只有 Computer Use 的动作 / 退出工具声明；返回的文案不得包含坐标 / 输入文字 / 剪贴板内容。
+   * 缺省 = 这条调用不为上一步提供兜底。
+   */
+  nextStepLabel?: (input: unknown) => string | undefined
   execute(input: unknown, ctx: ToolContext): Promise<ToolResult>
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildNextHints,
   planParallelGroups,
   runAgentLoop,
   type AgentLoopEvent,
@@ -2257,5 +2258,96 @@ describe('同轮工具并发（docs/06 §5）', () => {
         (event) => event.snapshot.taskId === 'task-sub-b' && event.snapshot.status === 'success',
       ),
     ).toBe(true)
+  })
+})
+
+describe('buildNextHints（Computer Use 下一步兜底）', () => {
+  function hintRegistry(captured: ToolContext[]): ToolRegistry {
+    const tools = new ToolRegistry()
+    const register = (name: string, label: string | undefined): void => {
+      tools.register({
+        name,
+        description: name,
+        parameters: { type: 'object', properties: {} },
+        ...(label === undefined ? {} : { nextStepLabel: () => label }),
+        execute: async (_input, ctx) => {
+          captured.push(ctx)
+          return { content: name, summary: name }
+        },
+      })
+    }
+    register('first', '点击屏幕')
+    register('second', '输入文字')
+    return tools
+  }
+
+  function call(id: string, name: string, args = '{}'): StoredToolCall {
+    return { id, name, arguments: args, state: 'running' }
+  }
+
+  it('为每条调用取紧邻下一条的 nextStepLabel；最后一条没有', () => {
+    const hints = buildNextHints(
+      [call('c1', 'first', '{"x":1}'), call('c2', 'second', '{"text":"a"}')],
+      hintRegistry([]),
+    )
+    expect(hints.get('c1')).toBe('输入文字')
+    expect(hints.has('c2')).toBe(false)
+  })
+
+  it('下一条工具没有 label / 参数不是合法 JSON 时跳过（不阻塞执行）', () => {
+    const withoutLabel = new ToolRegistry()
+    withoutLabel.register({
+      name: 'plain',
+      description: 'plain',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({ content: 'plain' }),
+    })
+    withoutLabel.register({
+      name: 'second',
+      description: 'second',
+      parameters: { type: 'object', properties: {} },
+      nextStepLabel: () => '输入文字',
+      execute: async () => ({ content: 'second' }),
+    })
+    expect(
+      buildNextHints([call('c1', 'second'), call('c2', 'plain')], withoutLabel).has('c1'),
+    ).toBe(false)
+    expect(
+      buildNextHints(
+        [call('c1', 'second'), call('c2', 'second', '{bad json')],
+        hintRegistry([]),
+      ).has('c1'),
+    ).toBe(false)
+  })
+
+  it('循环把下一条调用的 label 放进上一条的 ToolContext，最后一条没有', async () => {
+    const contexts: ToolContext[] = []
+    const tools = hintRegistry(contexts)
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      {
+        toolCalls: [
+          { id: 'c1', name: 'first', arguments: '{}' },
+          { id: 'c2', name: 'second', arguments: '{}' },
+        ],
+      },
+      { text: '收尾' },
+    ])
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools,
+        sessionId: 's',
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+    expect(contexts).toHaveLength(2)
+    expect(contexts[0]?.nextStepHint).toBe('输入文字')
+    expect(contexts[1]?.nextStepHint).toBeUndefined()
   })
 })

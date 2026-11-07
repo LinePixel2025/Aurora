@@ -2825,17 +2825,19 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 | 工具 | 状态 | sensitivity | 关键约束 |
 |---|---|---|---|
 | `computer_start` | **未授权时唯一可见** | confirm | Agent 自行建立授权；只授权不建浮层；受总开关 / 平台 / 视觉 / 只读档 / 会话资格门控；**动作工具在同一次请求的下一轮立即可用**（不要与动作同轮） |
-| `computer_screenshot` | 已授权 | safe | 默认取前台窗口所在屏；前台是受保护窗口时回落光标屏；未指定窗口时只查前台（不做全量窗口枚举） |
-| `computer_mouse` | 已授权 | confirm | 坐标默认按最近截图图片像素；点击前做命中测试与指针回执 |
-| `computer_keyboard` | 已授权 | confirm | Unicode 输入 + 组合键；输入前校验前台窗口；逐字间隔有**总延迟上限**（约 1.2s） |
-| `computer_window` | 已授权 | confirm | 窗口 id 来自 list；titleMatch 必须唯一；launch 只接受 .exe / .com；等窗上限 2s |
-| `computer_ui` | 已授权 | confirm | 基于 UI Automation；path 来自 tree / find，布局变化后失效 |
+| `computer_screenshot` | 已授权 | safe | 默认取前台窗口所在屏；前台是受保护窗口时回落光标屏；未指定窗口时只查前台（不做全量窗口枚举）；窗口裁剪按**实际源图尺寸**换算 |
+| `computer_mouse` | 已授权 | confirm | 坐标默认按最近截图图片像素；点击前做命中测试与指针回执；目标窗口移动 / 显示器几何变化会拒绝并要求重截；同一 exe 的其他窗口视为同一目标 |
+| `computer_keyboard` | 已授权 | confirm | Unicode 输入 + 组合键；输入前校验前台窗口（同一 exe 的不同 pid 也放行）；逐字间隔有**总延迟上限**（约 1.2s） |
+| `computer_window` | 已授权 | confirm | 窗口 id 来自 list（也可用 active 的 id）；titleMatch 必须唯一；launch 只接受 .exe / .com，已运行同 exe 直接激活、等窗 **5s**；args 用于新窗口 / URL |
+| `computer_ui` | 已授权 | confirm | 基于 UI Automation；path 来自 tree / find，布局变化后失效；windowId 可直接用 active / 弹出窗的 HWND（不要求出现在 list 里） |
 | `computer_wait` | 已授权 | safe | 等待期间会话保持运行；**不是**每步的固定动作（见下面的等待口径） |
 | `computer_stop` | 已授权 | safe | 任务完成 / 用户要求停止时调用；撤销本会话授权、收起浮层并把 Aurora 调回前台（幂等） |
 
-六个动作工具（截图 / 鼠标 / 键盘 / 窗口 / UI / 等待）都接受可选的 **`next`**（一句话，≤120 字）：
+六个动作工具（截图 / 鼠标 / 键盘 / 窗口 / UI / 等待）的 **`next` 是必填参数**（一句话，≤120 字）：
 它**不执行**，只进顶部状态胶囊与对话状态条的「下一步」一行 —— 模型批量下发动作时，用户看到的
-不只是「正在点击」，还有「接下来要做什么」。缺省 / 空白 = 清空上一行（不显示旧计划）。
+不只是「正在点击」，还有「接下来要做什么」。模型漏填时，内核用**同一轮下一条工具调用**的
+`nextStepLabel` 补上（`ToolContext.nextStepHint`，只用于展示）；连下一条也没有时才清空
+（不显示旧计划）。
 
 - **三层门控（缺一不可）**：
   1. **注册级**：`process.platform === 'win32'` + `computerUse.enabled` + 当前全局模型
@@ -2872,33 +2874,47 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   判据唯一一份在 `main/computer-use/foreground.ts`。
 
 - **坐标协议**：模型读的是**最近一张截图的图片像素**。主进程记录 `ScreenView`
-  （displayId / 物理 origin / image 尺寸 / scaleX / scaleY / 目标窗口 pid）；动作层用
-  `physical = origin + image / scale` 换算。没有截图却传坐标 → `E_CU_NO_VIEW`；显示器几何
-  变化 → 要求重新截图。`computer_screenshot` 结果固定给出物理尺寸、图片尺寸、换算关系、
-  前台窗口与光标坐标（物理 + 图片），模型不需要自己做除法。
+  （displayId / 显示器物理几何 / 本次图像覆盖的物理矩形 / image 尺寸 / scaleX / scaleY /
+  目标窗口 id、exe、矩形）；动作层用 `physical = origin + image / scale` 换算。
+  **缩略图尺寸不保证等于请求的 `thumbnailSize`**（Electron 文档明确写 depends on the scale of
+  the screen），所以有窗口裁剪时先把窗口物理矩形乘 `sourceScale` 换算成**源图像素**再
+  `crop()`，`physicalRect` 由实际裁剪反算；源图接近 1:1 时用源图宽高校正 Electron
+  1px 级的物理尺寸取整误差。截图结果固定给出「显示器物理尺寸 / **本次图像覆盖的物理区域** /
+  图片尺寸 / origin / scale / 1 图片像素对应的物理像素数」。
+  没有截图却传坐标 → `E_CU_NO_VIEW`；显示器分辨率 / 缩放 / 增删 → `E_CU_VIEW_STALE`，
+  目标窗口在截图后被移动 / 缩放 / 最小化 → `E_CU_TARGET_MOVED`，都要求重新截图；
+  目标窗口被换成**其他应用** → `E_CU_TARGET_CHANGED`（同一 exe 的另一个窗口视为同一目标）。
+  `computer_screenshot` 结果固定给出物理尺寸、图片尺寸、换算关系、前台窗口与光标坐标（物理 + 图片），
+  模型不需要自己做除法；小控件建议 `computer_ui` 或 `windowId` + `maxWidth` 放大截图。
 
 - **批量执行、下一步提示与等待口径（v39.1，v39.2 强化）**：
   - **操作循环**：运行说明与工具描述统一写成「截图看清现状 → 定位 → 同轮批量执行 2–4 步 →
-    截图验收」。定位优先级：`computer_ui` 控件（先 `find` 再操作，不拉整棵树）→
-    `computer_window activate` + 快捷键 → 最后才坐标点击；启动应用用 `computer_window launch`，
-    不要去桌面 / 开始菜单找图标。键盘输入前必须确认前台是最近截图的目标窗口
-    （`computer_keyboard` 会直接拒绝不一致的情况）。
+    截图验收」。定位优先级：`computer_ui` 控件（先 `find` 再操作，不拉整棵树；`windowId`
+    可直接用 `computer_window active` 的 id / 弹出窗 HWND）→ `computer_window activate` +
+    快捷键 → 最后才坐标点击。启动应用用 `computer_window launch`：**先 `list` 查同 exe
+    是否已运行，已运行就 activate / restore，不要重复 launch**；`launch` 在无 args 且已运行时
+    会直接激活并返回，带 args（新窗口 / URL）时才走启动。键盘输入前必须确认前台是最近截图的
+    目标窗口（`computer_keyboard` 直接拒绝不一致；同一 exe 的不同 pid 放行）。
   - **批量执行**：运行说明与工具指引要求模型先想 2–4 步，截图确认界面后**在同一条回复里
     按顺序发出 2–4 个动作**（如 点击输入框 → 输入 → Enter），一批做完再截图核对；
     只有弹窗 / 界面与预期不符 / 目标窗口被换掉时才停下单独判断。computer 工具全部
     `parallel` 缺省（串行）：同轮多个调用按模型写下的顺序依次执行，不并发。
-  - **下一步提示**：每个动作的参数 `next` 写入 `ComputerUseStatus.nextAction` 并广播
-    `{ type: 'next', text }`；顶部状态胶囊显示「下一步：…」一行，对话状态条同步。
-    它不执行、不计动作限额、不触发浮层；动作没给 `next` 时发空串清空（不留旧计划）。
-  - **失败先重看**：目标窗口变了 / 命中测试失败 / 指针没落位 / 输入被拦时，提示词要求
-    先重新截图确认现状再调整，同一手段连续两次失败就换（UIA / 快捷键 / 请用户处理 UAC），
-    不要盲重试同一个坐标。
+  - **下一步提示**：每个动作的参数 `next` **必填**（≤120 字），写入
+    `ComputerUseStatus.nextAction` 并广播 `{ type: 'next', text }`；顶部状态胶囊显示
+    「下一步：…」一行，对话状态条同步。它不执行、不计动作限额、不触发浮层；模型漏填时内核用
+    同一轮下一条调用的 `nextStepLabel` 补上（`ToolContext.nextStepHint`），下一条也没有才发
+    空串清空。
+  - **失败先重看**：目标窗口变了 / 命中测试失败 / 指针没落位 / 输入被拦 / 目标窗口在截图后
+    移动或缩放时，提示词要求先重新截图确认现状再调整，同一手段连续两次失败就换
+    （UIA / 快捷键 / 请用户处理 UAC），不要盲重试同一个坐标。
   - **等待收敛**：不做「每步一次 LLM 往返 + 每步 `computer_wait`」。模型只在明确知道要加载时
     等待（尽量 ≤1s）；Code 侧另有四处固定开销治理：授权时**预热 PowerShell 宿主**（把冷启动
     付在模型思考期间，只启动进程、不注入输入）、无 `windowId` 的截图只查前台（不再全量枚举
     窗口）、逐字输入有**总延迟预算**（短文本不受影响，长文本最多多花约 1.2s）、`launch`
-    等窗上限 2s（未检测到窗口就让模型截图确认）。动作本身的 160ms 虚拟光标滑行 + 60ms 停一拍
-    是**视觉口径，保留**。
+    等窗上限 **5s**（2s 会把单实例应用误判成「没启动」而诱发重复 launch；5s 内检测不到新窗口
+    时返回「可能仍在加载 / 已交给现有实例，先截图确认，不要重复 launch」，**不报错**；
+    同 command+args 在「没检测到窗口」后还有 **8s 冷却**，冷却内只返回提示、不再启动）。
+    动作本身的 160ms 虚拟光标滑行 + 60ms 停一拍是**视觉口径，保留**。
   - **授权结果带屏幕几何**：`computer_start` 的结果回传各显示器 id / 物理尺寸 / 缩放 / 物理原点，
     模型规划点击位置与窗口摆放时不必为了尺寸先截一张图；截图结果还会说明「顶部胶囊与光环是
     Aurora 的浮层、不是被测应用」，避免模型把它们当成点击目标。
@@ -2907,8 +2923,12 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   `Add-Type` 编译 C# P/Invoke 一次并设置 per-monitor DPI awareness；脚本写入
   `<userData>/computer-use/win-host.ps1` 后用 `-File` 启动（不用 `-EncodedCommand`，避免
   32K 命令行上限）。鼠标用 `SendInput` / `SetCursorPos`，键盘用 `KEYEVENTF_UNICODE`，
-  窗口用 `EnumWindows` / `SetWindowPos` / `WM_CLOSE`，UI Automation 走
-  `UIAutomationClient`。宿主崩溃 / 超时 / 握手失败 → 失败关闭当前会话，不假装成功。
+  窗口用 `EnumWindows` / `SetWindowPos` / `WM_CLOSE` / `window_info`，UI Automation 走
+  `UIAutomationClient`。窗口激活用 `BringWindowToTop` + `AttachThreadInput` +
+  `SetForegroundWindow` + `SetFocus`（前台锁下仍可能失败，失败时返回可读的
+  `FOCUS_REFUSED`，不冒充成功）。`app_launch` 启动前先记录现有顶层 HWND 集合，启动后
+  5s 内按「新 HWND + 同 pid 或同 exe」检测窗口，单实例交接（新进程退出）也按 exe 继续找。
+  宿主崩溃 / 超时 / 握手失败 → 失败关闭当前会话，不假装成功。
   v39.1 起**授权时就预热**（只启动进程，不注入输入），第一次动作不再付冷启动成本。
 
 - **安全边界**：
@@ -2918,7 +2938,9 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
     除保护目标与禁止项外全部允许。
   - 指针回执：`GetCursorPos` 校验落点，失败用 `SetCursorPos` 重试一次，仍失败 →
     `E_CU_POINTER_NOT_LANDED`，绝不在错误位置点击。
-  - 目标校验：截图记录的目标窗口被换掉 → `E_CU_TARGET_CHANGED`，单次动作取消但不结束会话。
+  - 目标校验：截图记录的目标窗口被换掉 → `E_CU_TARGET_CHANGED`，单次动作取消但不结束会话；
+    同一 exe 的另一个窗口（多进程应用 / 应用重建窗口）视为同一目标。目标窗口在截图后
+    移动 / 缩放 / 最小化 → `E_CU_TARGET_MOVED`；显示器几何变化 → `E_CU_VIEW_STALE`。
   - `SendInput` 返回 0（UIPI / 管理员窗口）→ `E_CU_INPUT_BLOCKED`，明确失败。
   - 不暴露 `mouse_down/up`、`key_down/up` 给模型；点击 / 拖拽 / 组合键在一条命令内完成，
     宿主退出前 `release_all`。
@@ -2952,8 +2974,9 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   不显示坐标、尺寸、输入文字或截图内容。每一步带机器可读 `action`，面板与对话状态条据此显示
   语义图标；**连续的同一 `action + summary` 合并为 `×N`**，`ComputerUseStatus.recentActions`
   是 `{ action, summary, count }[]`（新 → 旧）。状态胶囊（窗口 520×88、贴在显示器顶边 6px、
-  卡片宽 ≤520、高 36–54）只有两行：当前步骤 + 可选的**「下一步」计划**
-  （`ComputerUseStatus.nextAction`，与动作描述同口径，不显示坐标 / 输入文字）；v39.2 起
+  卡片宽 ≤520、高 36–54）只有两行：当前步骤 + **「下一步」计划**
+  （`ComputerUseStatus.nextAction`：模型必填；缺失时内核用同一轮下一条动作补上；
+  与动作描述同口径，不显示坐标 / 输入文字）；v39.2 起
   **不再在屏幕上列最近两步历史**（遮挡面积换信息密度，历史看对话状态条）。浮层在
   **第一次工具调用**时出现，**进入操作模式后持续在场、每个动作实时更新**（不再为截图隐藏）。
   两者 `showInactive()`；**不做 `setContentProtection`**（远程桌面 / 屏幕共享下会完全看不到），
@@ -2976,5 +2999,7 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 | `allowedApps` / `deniedApps` | `[]` | 允许 / 禁止的应用（deny 优先） |
 
 - **已知边界**：UIPI 下无法驱动提权窗口；UAC 安全桌面 / 锁屏不可见；独占全屏与部分反作弊
-  游戏可能吞输入并遮住浮层；多屏不同 DPI 跨屏移动窗口后需重新截图；原生系统指针始终保留
+  游戏可能吞输入并遮住浮层；多屏不同 DPI 跨屏移动窗口后需重新截图；单实例应用（微信 / Edge /
+  设置）的 `launch` 可能不产生新 HWND（交给现有实例）—— 5s 内检测不到时**不是失败**，
+  返回「先截图确认，不要重复 launch」；原生系统指针始终保留
   （虚拟光标是光环 + 拖尾，不替换系统光标）；截图会发送给模型，可能包含敏感屏幕内容。

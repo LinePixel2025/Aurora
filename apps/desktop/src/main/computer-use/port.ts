@@ -24,14 +24,25 @@ import type {
 import type { ComputerUseInputHost } from './input-host.js'
 import {
   buildScreenView,
+  displayAtPhysicalPoint,
   displayAtPoint,
   imageToPhysical,
   physicalToImage,
   rectContains,
+  targetBoundsMoved,
+  viewMatchesDisplay,
   type DisplayGeometry,
   type Point,
   type ScreenView,
 } from './coordinates.js'
+import {
+  LAUNCH_WINDOW_WAIT_MS,
+  describeActivateFailure,
+  describeLaunchResult,
+  launchKey,
+  planLaunch,
+  type LaunchHostResult,
+} from './launch.js'
 import {
   buttonLabel,
   describeKeyboardAction,
@@ -69,6 +80,9 @@ const CURSOR_SETTLE_MS = 60
  */
 const TYPE_TOTAL_DELAY_BUDGET_MS = 1200
 
+/** 目标窗口矩形允许的漂移（像素）：超过就认为截图后窗口被移动 / 缩放了。 */
+const TARGET_BOUNDS_TOLERANCE_PX = 6
+
 interface WindowInfo {
   windowId: string
   title: string
@@ -100,6 +114,13 @@ export interface ComputerUsePortOptions {
 export class DesktopComputerUsePort implements ComputerUsePort {
   private readonly options: ComputerUsePortOptions
   private readonly views = new Map<string, ScreenView>()
+  /**
+   * 每个会话最近一次「没检测到窗口」的启动（key = command + args）。
+   *
+   * 只用于 8s 冷却，防止模型因为「没看到窗口」立刻再 launch 一次（实测会重复打开同一应用）。
+   * 产生窗口 / 换了 command 参数都不受冷却影响。
+   */
+  private readonly launchAttempts = new Map<string, Map<string, { key: string; at: number }>>()
 
   constructor(options: ComputerUsePortOptions) {
     this.options = options
@@ -110,24 +131,27 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     this.noteNext(input)
     await this.options.host.ensureReady()
     const displays = listDisplayGeometries()
-    // 只有指定了 `windowId` 才需要全量窗口表；否则一次 `window_active` 就够 ——
-    // 截图是最频繁的动作，全量枚举（80 个窗口的标题 / pid / 矩形）在这里纯属浪费。
-    const windows = input.windowId === undefined ? [] : await this.windowList()
-    const foreground =
-      input.windowId === undefined
-        ? await this.foregroundWindow()
-        : windows.find((item) => item.foreground)
-    const requested = input.windowId === undefined ? undefined : findWindow(windows, input.windowId)
+    // 指定窗口时直接按 HWND 查（快速设置这类弹出窗不一定在 window_list 里），不必全量枚举；
+    // 未指定窗口时只查前台（截图是最频繁的动作，全量枚举在这里纯属浪费）。
+    const requested =
+      input.windowId === undefined ? undefined : await this.windowInfo(input.windowId)
     if (input.windowId !== undefined && requested === undefined) {
       return toolError(
         'E_CU_WINDOW_NOT_FOUND',
-        `找不到窗口 ${input.windowId}，请先用 computer_window list。`,
+        `找不到窗口 ${input.windowId}，请先用 computer_window list / active 确认。`,
       )
     }
     if (requested !== undefined) this.assertOperable(requested)
+    if (requested?.visible === false) {
+      return toolError(
+        'E_CU_WINDOW_NOT_VISIBLE',
+        '目标窗口当前不可见，请先 computer_window restore。',
+      )
+    }
     if (requested?.minimized === true) {
       return toolError('E_CU_WINDOW_MINIMIZED', '目标窗口已最小化，请先 computer_window restore。')
     }
+    const foreground = input.windowId === undefined ? await this.foregroundWindow() : undefined
 
     const display = await this.pickDisplay(displays, input, requested ?? foreground)
     // 截图是「只读步骤」：不进动作限额，但过程面板要能看见 Agent 正在看屏幕。
@@ -154,23 +178,41 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       imageWidth: captured.imageWidth,
       imageHeight: captured.imageHeight,
       physicalRect: captured.physicalRect,
-      ...(target === undefined ? {} : { targetWindowId: target.windowId, targetPid: target.pid }),
+      ...(target === undefined
+        ? {}
+        : {
+            targetWindowId: target.windowId,
+            targetPid: target.pid,
+            targetExe: normalizeExeName(target.exe),
+            targetBounds: target.bounds,
+          }),
     })
     this.views.set(input.sessionId, view)
     const cursor = await this.options.host.request<CursorPoint>('cursor_get')
     const cursorImage = physicalToImage(view, cursor)
+    const area = captured.physicalRect
     const targetText =
-      target === undefined
-        ? '前台窗口：读取失败（仍可截图，但点击前会重新做命中测试）'
-        : `前台窗口：「${target.title}」（${normalizeExeName(target.exe)}，id ${target.windowId}）`
+      requested !== undefined
+        ? `目标窗口：「${requested.title}」（${normalizeExeName(requested.exe)}，id ${requested.windowId}）`
+        : foreground === undefined
+          ? '前台窗口：读取失败（仍可截图，但点击前会重新做命中测试）'
+          : this.isOperable(foreground)
+            ? `前台窗口：「${foreground.title}」（${normalizeExeName(foreground.exe)}，id ${foreground.windowId}）`
+            : `前台窗口：「${foreground.title}」（${normalizeExeName(foreground.exe)}，受保护，不作为操作目标）`
     const text = [
-      `截图：显示器 ${display.id}，物理 ${display.physicalSize.width}×${display.physicalSize.height}，` +
-        `图片 ${captured.imageWidth}×${captured.imageHeight}（坐标空间 = 图片像素）。`,
+      `截图：显示器 ${display.id}（物理 ${display.physicalSize.width}×${display.physicalSize.height}），` +
+        `本次图像覆盖物理区域 (${Math.round(area.x)}, ${Math.round(area.y)}) ` +
+        `${Math.round(area.width)}×${Math.round(area.height)}，图片 ${captured.imageWidth}×${captured.imageHeight}` +
+        '（坐标空间 = 本次图片像素）。' +
+        (captured.cropFailed ? '（窗口裁剪不可用，已改截整屏）' : ''),
       targetText,
       `鼠标：物理 (${Math.round(cursor.x)}, ${Math.round(cursor.y)}) → 图片 (${Math.round(cursorImage.x)}, ${Math.round(cursorImage.y)})。`,
       '浮层上的光环是 Agent 自己的虚拟光标（上次落点），可能与真实指针不同；动作仍按你给的坐标执行。',
-      `换算：physical = origin(${view.origin.x}, ${view.origin.y}) + 图片像素 / scale(${view.scaleX.toFixed(4)}, ${view.scaleY.toFixed(4)})。` +
+      `换算：physical = origin(${view.origin.x.toFixed(2)}, ${view.origin.y.toFixed(2)}) + 图片像素 / ` +
+        `scale(${view.scaleX.toFixed(4)}, ${view.scaleY.toFixed(4)})；` +
+        `1 图片像素 ≈ ${(1 / view.scaleX).toFixed(2)}×${(1 / view.scaleY).toFixed(2)} 物理像素。` +
         ' computer_mouse 默认按图片像素给坐标。',
+      '小控件建议先用 computer_ui find，或用 windowId + maxWidth=2560 放大截图后再点。',
       '截图顶部的 Aurora 状态胶囊 / 光环是 Aurora 自己的浮层，不属于被测应用，不要把它们当作点击目标。',
       `截图路径：${captured.path}`,
     ].join('\n')
@@ -205,6 +247,10 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       }
     } else {
       requirePoint(input.x, input.y)
+    }
+    if (input.space !== 'screen' && (input.x !== undefined || input.toX !== undefined)) {
+      // 图片坐标只对「最近的显示器几何」成立：分辨率 / 缩放 / 显示器增删后必须重截。
+      this.assertViewFresh(view)
     }
     const start =
       input.x !== undefined && input.y !== undefined
@@ -313,7 +359,14 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     }
 
     if (input.action === 'scroll') {
-      const at = start ?? (await this.cursorDipPoint())
+      // 带坐标时 start 是物理（已换算）；不带坐标时**必须**读宿主的物理指针 ——
+      // `screen.getCursorScreenPoint()` 是 DIP，拿去给 `WindowFromPoint` 会命中错误窗口。
+      let at = start
+      if (at === undefined) {
+        const cursor = await this.options.host.request<CursorPoint>('cursor_get')
+        if (cursor === undefined) throw new Error('读取鼠标位置失败，已拒绝滚动。')
+        at = cursor
+      }
       await this.assertTargetAt(view, at)
       this.options.service.beginAction(
         input.sessionId,
@@ -347,16 +400,17 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     this.noteNext(input)
     await this.options.host.ensureReady()
     const view = this.views.get(input.sessionId)
-    const foreground = await this.options.host.request<WindowInfo>('window_active')
+    const foreground = await this.foregroundWindow()
     if (foreground === undefined) {
       throw new Error('读取前台窗口失败，已拒绝键盘输入。')
     }
     this.assertOperable(foreground)
-    if (view?.targetPid !== undefined && foreground.pid !== view.targetPid) {
+    if (!this.isSameTarget(view, foreground)) {
       throw new Error(
         `前台窗口已变成「${foreground.title}」(${normalizeExeName(foreground.exe)})，` +
-          '与最近截图的目标不一致；已拒绝输入。请先 computer_screenshot 确认现状，' +
-          '用 computer_window activate 或点击目标窗口把焦点切回去，再输入。',
+          `与最近截图的目标「${view?.targetExe ?? '未知'}」不一致；已拒绝输入。` +
+          '请先 computer_screenshot 确认现状，用 computer_window activate 或点击目标窗口把焦点切回去，再输入。' +
+          '（E_CU_TARGET_CHANGED）',
       )
     }
     if (input.action === 'type') {
@@ -396,7 +450,12 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     this.options.service.ensureCallAllowed(input.sessionId)
     this.noteNext(input)
     await this.options.host.ensureReady()
-    const windows = await this.windowList()
+    let windows = await this.windowList()
+    if (input.windowId !== undefined && findWindow(windows, input.windowId) === undefined) {
+      // 快速设置 / 系统弹出窗可能不在 EnumWindows 的可见窗口表里；直接按 HWND 补一条。
+      const direct = await this.windowInfo(input.windowId)
+      if (direct !== undefined) windows = [direct, ...windows]
+    }
     if (input.action === 'list') {
       this.options.service.noteStep(input.sessionId, 'window.list', '正在查看窗口列表')
       const filter = (input.filter ?? '').trim().toLowerCase()
@@ -426,7 +485,7 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     }
     if (input.action === 'active') {
       this.options.service.noteStep(input.sessionId, 'window.active', '正在查看前台窗口')
-      const foreground = windows.find((item) => item.foreground)
+      const foreground = await this.foregroundWindow()
       return {
         content:
           foreground === undefined
@@ -443,24 +502,79 @@ export class DesktopComputerUsePort implements ComputerUsePort {
       }
       const name = normalizeExeName(command)
       this.assertAppName(name)
+      const args = input.args ?? []
+      const attempts = this.launchAttempts.get(input.sessionId)
+      const lastAttempt = attempts?.get(launchKey(command, args))
+      const plan = planLaunch({
+        command,
+        args,
+        windows,
+        ...(lastAttempt === undefined ? {} : { lastAttempt }),
+        now: Date.now(),
+      })
+      if (plan.kind === 'cooldown') {
+        return {
+          content:
+            `刚刚已尝试启动「${name}」（${plan.seconds} 秒内冷却）；可能仍在加载，` +
+            '先 computer_screenshot 确认，**不要重复 launch**。',
+          summary: `等待 ${name} 启动`,
+        }
+      }
+      if (plan.kind === 'reuse') {
+        const reused = plan.window
+        this.options.service.beginAction(
+          input.sessionId,
+          'window.launch',
+          `正在切换到已运行的「${name}」`,
+        )
+        let restored = false
+        if (reused.minimized) {
+          try {
+            await this.options.host.request('window_show', {
+              windowId: reused.windowId,
+              state: 'restore',
+            })
+            restored = true
+          } catch {
+            // 还原失败仍继续尝试激活；失败会落进 activationFailed
+          }
+        }
+        let activationFailed = false
+        try {
+          const activation = await this.options.host.request<{
+            activated?: boolean
+            message?: string
+          }>('window_activate', { windowId: reused.windowId })
+          activationFailed = activation?.activated !== true
+        } catch {
+          activationFailed = true
+        }
+        return describeLaunchResult({
+          name,
+          reused,
+          ...(restored ? { restored: true } : {}),
+          ...(activationFailed ? { activationFailed: true } : {}),
+        })
+      }
+
       this.options.service.beginAction(
         input.sessionId,
         'window.launch',
         describeWindowAction({ action: 'launch', title: name }),
       )
-      const result = await this.options.host.request<{
-        pid: number
-        process: string
-        window?: WindowInfo
-      }>('app_launch', { command, args: input.args ?? [] })
-      return {
-        content:
-          `已启动 ${result?.process ?? name}（pid ${result?.pid ?? '?'}）` +
-          (result?.window === undefined
-            ? '；2 秒内未检测到窗口，可能需要等待或手动激活（可以先 computer_screenshot 看一眼）。'
-            : `；窗口「${result.window.title}」（id ${result.window.windowId}）。`),
-        summary: `已启动 ${result?.process ?? name}`,
+      // 启动失败（路径 / 权限）直接回错误，不记冷却：模型可能只是命令写错，
+      // 换对路径后应当立刻允许重试。
+      const result = await this.options.host.request<LaunchHostResult>('app_launch', {
+        command,
+        args,
+      })
+      const launchedWindow = result?.window ?? undefined
+      if (launchedWindow === undefined) {
+        this.noteLaunchAttempt(input.sessionId, launchKey(command, args))
+      } else {
+        this.clearLaunchAttempt(input.sessionId, launchKey(command, args))
       }
+      return describeLaunchResult({ name, result })
     }
 
     const target = this.resolveWindow(windows, input)
@@ -472,17 +586,27 @@ export class DesktopComputerUsePort implements ComputerUsePort {
         'window.activate',
         describeWindowAction({ action: 'activate', title }),
       )
-      const foreground = await this.options.host.request<WindowInfo>('window_activate', {
-        windowId: target.windowId,
-      })
-      if (foreground === undefined || foreground.windowId !== target.windowId) {
-        throw new Error('系统拒绝把目标窗口切到前台（可能是前台锁 / 权限不足）。')
+      const activation = await this.options.host.request<{ activated?: boolean; message?: string }>(
+        'window_activate',
+        { windowId: target.windowId },
+      )
+      if (activation?.activated !== true) {
+        throw new Error(`${describeActivateFailure(activation?.message)}（E_CU_ACTIVATE_FAILED）`)
       }
       return { content: `已激活「${title}」。`, summary: '已激活窗口' }
     }
     if (input.action === 'move' || input.action === 'resize') {
       const view = this.views.get(input.sessionId)
       const space = input.space ?? 'image'
+      if (
+        space !== 'screen' &&
+        (input.x !== undefined ||
+          input.y !== undefined ||
+          input.width !== undefined ||
+          input.height !== undefined)
+      ) {
+        this.assertViewFresh(view)
+      }
       const x =
         input.x === undefined ? target.bounds.x : this.scalarToPhysical(view, space, input.x, 'x')
       const y =
@@ -550,14 +674,21 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     this.options.service.ensureCallAllowed(input.sessionId)
     this.noteNext(input)
     await this.options.host.ensureReady()
-    const windows = await this.windowList()
+    // 传了 windowId 就直接按 HWND 取（快速设置这类弹出窗不在 window_list 里，不能因此拒绝）；
+    // 没传才取前台。两条路都失败时给出能区分的错误文案。
     const target =
       input.windowId === undefined
-        ? windows.find((item) => item.foreground)
-        : findWindow(windows, input.windowId)
-    if (target === undefined) throw new Error('读取前台窗口失败，请先传 windowId。')
+        ? await this.foregroundWindow()
+        : await this.windowInfo(input.windowId)
+    if (target === undefined) {
+      throw new Error(
+        input.windowId === undefined
+          ? '读取前台窗口失败；请传 windowId（来自 computer_window list / active）。'
+          : `找不到窗口 ${input.windowId}；请重新 computer_window list / active 确认 id。`,
+      )
+    }
     this.assertOperable(target)
-    const windowId = target?.windowId
+    const windowId = target.windowId
     if (input.action === 'tree') {
       this.options.service.noteStep(input.sessionId, 'ui.tree', '正在读取界面控件')
       const tree = await this.options.host.request<{
@@ -669,7 +800,13 @@ export class DesktopComputerUsePort implements ComputerUsePort {
           'computer_ui / computer_wait）**在同一次请求的下一轮立即可用**；' +
           '不要在下一轮之前、也不要和本工具放在同一轮里发动作调用。',
         '下一轮先想好 2–4 步，用 computer_screenshot 截图建立坐标空间，再按顺序批量下发动作；' +
-          '每个动作填 next（一句话的下一步计划，过程面板会显示）。',
+          '每个动作**必须填 next**（一句话的下一步计划，过程面板会显示；漏填时系统用下一条动作补）。',
+        '启动应用前先 computer_window list 查同一 exe 是否已运行；已运行就 activate / restore，' +
+          '**不要重复 launch**。launch 返回「' +
+          `${LAUNCH_WINDOW_WAIT_MS / 1000} 秒内没有检测到新窗口」时也不代表失败：先截图确认，` +
+          '不要再次 launch（可能是单实例应用把窗口交给了现有进程）。',
+        '小控件定位：先用 computer_ui find，或用 windowId + maxWidth=2560 放大截图后再坐标点击；' +
+          '截图后窗口被移动 / 缩放 / 显示器变化，旧坐标作废，要重新截图。',
         '不要每个动作后都 computer_wait；桌面交互完成后必须调用 computer_stop 退出（Aurora 会回到前台）。',
       ].join('\n'),
       summary: '已获得 Computer Use 授权',
@@ -720,11 +857,37 @@ export class DesktopComputerUsePort implements ComputerUsePort {
 
   clearSession(sessionId: string): void {
     this.views.delete(sessionId)
+    this.launchAttempts.delete(sessionId)
   }
 
   private async windowList(): Promise<WindowInfo[]> {
     const result = await this.options.host.request<{ windows: WindowInfo[] }>('window_list', {})
     return result?.windows ?? []
+  }
+
+  /** 按 HWND 直接查一个窗口（弹出窗 / 目标 bounds 校验用）；查不到返回 undefined。 */
+  private async windowInfo(windowId: string): Promise<WindowInfo | undefined> {
+    try {
+      return await this.options.host.request<WindowInfo>('window_info', { windowId })
+    } catch {
+      return undefined
+    }
+  }
+
+  private noteLaunchAttempt(sessionId: string, key: string): void {
+    let attempts = this.launchAttempts.get(sessionId)
+    if (attempts === undefined) {
+      attempts = new Map()
+      this.launchAttempts.set(sessionId, attempts)
+    }
+    attempts.set(key, { key, at: Date.now() })
+  }
+
+  private clearLaunchAttempt(sessionId: string, key: string): void {
+    const attempts = this.launchAttempts.get(sessionId)
+    if (attempts === undefined) return
+    attempts.delete(key)
+    if (attempts.size === 0) this.launchAttempts.delete(sessionId)
   }
 
   private async pickDisplay(
@@ -751,7 +914,8 @@ export class DesktopComputerUsePort implements ComputerUsePort {
           x: foreground.bounds.x + foreground.bounds.width / 2,
           y: foreground.bounds.y + foreground.bounds.height / 2,
         }
-        const display = displays.find((item) => rectContains(item.bounds, center))
+        // 窗口 rect 是物理像素，display.bounds 是 DIP —— 必须用物理矩形命中。
+        const display = displayAtPhysicalPoint(displays, center, primaryDisplayId())
         if (display !== undefined) return display
       }
       if (mode === 'foreground') throw new Error('读取前台窗口所在显示器失败')
@@ -761,7 +925,14 @@ export class DesktopComputerUsePort implements ComputerUsePort {
 
   private async foregroundWindow(): Promise<WindowInfo | undefined> {
     try {
-      return await this.options.host.request<WindowInfo>('window_active')
+      const active = await this.options.host.request<WindowInfo | null>('window_active')
+      if (active != null) return active
+    } catch {
+      // window_active 偶发拿不到（前台切换瞬间 / 系统弹层），回落到列表里的 foreground 项
+    }
+    try {
+      const windows = await this.windowList()
+      return windows.find((item) => item.foreground)
     } catch {
       return undefined
     }
@@ -884,17 +1055,67 @@ export class DesktopComputerUsePort implements ComputerUsePort {
     return second
   }
 
+  /** 图片坐标只对最近截图的显示器几何成立；分辨率 / 缩放 / 显示器增删后必须重新截图。 */
+  private assertViewFresh(view: ScreenView | undefined): void {
+    if (view === undefined) return
+    const display = listDisplayGeometries().find((item) => item.id === view.displayId)
+    if (display === undefined || !viewMatchesDisplay(view, display)) {
+      throw new Error(
+        '显示器几何已变化（分辨率 / 缩放 / 显示器增删），最近截图的坐标空间已失效；' +
+          '请重新 computer_screenshot。（E_CU_VIEW_STALE）',
+      )
+    }
+  }
+
+  /**
+   * 目标匹配：同一窗口 / 同一 pid / **同一 exe** 都算同一目标。
+   *
+   * 多进程应用（微信 / 浏览器）会为同一个应用开不同 pid 的窗口；只比 pid 会把合法点击误判成
+   * 「目标被换掉」。真正要拒绝的是「换成别的应用」。
+   */
+  private isSameTarget(view: ScreenView | undefined, hit: WindowInfo): boolean {
+    if (view === undefined) return true
+    if (view.targetWindowId === undefined && view.targetPid === undefined) return true
+    if (view.targetWindowId !== undefined && hit.windowId === view.targetWindowId) return true
+    if (view.targetPid !== undefined && hit.pid === view.targetPid) return true
+    if (view.targetExe !== undefined && normalizeExeName(hit.exe) === view.targetExe) return true
+    return false
+  }
+
   private async assertTargetAt(view: ScreenView | undefined, point: Point): Promise<void> {
+    // 截图后目标窗口被移动 / 缩放 / 最小化 → 旧图片坐标不再对应原来的控件位置。
+    if (
+      view !== undefined &&
+      view.targetWindowId !== undefined &&
+      view.targetBounds !== undefined
+    ) {
+      const current = await this.windowInfo(view.targetWindowId)
+      if (current !== undefined) {
+        if (current.minimized) {
+          throw new Error(
+            '目标窗口在截图后已最小化，旧坐标失效；请先 computer_window restore 并重新截图。' +
+              '（E_CU_TARGET_MOVED）',
+          )
+        }
+        if (targetBoundsMoved(view.targetBounds, current.bounds, TARGET_BOUNDS_TOLERANCE_PX)) {
+          throw new Error(
+            '目标窗口在截图后已移动 / 缩放，旧图片坐标不再对应原来的控件位置；' +
+              '请重新 computer_screenshot，不要重试同一个坐标。（E_CU_TARGET_MOVED）',
+          )
+        }
+      }
+    }
     const hit = await this.options.host.request<WindowInfo>('hit_test', {
       x: Math.round(point.x),
       y: Math.round(point.y),
     })
     if (hit === undefined || hit.windowId === '0') throw new Error('目标点下没有窗口。')
     this.assertOperable(hit)
-    if (view?.targetPid !== undefined && hit.pid !== view.targetPid) {
+    if (!this.isSameTarget(view, hit)) {
       throw new Error(
-        `目标点当前属于「${hit.title}」(${normalizeExeName(hit.exe)})，与最近截图的目标不一致；` +
-          '已取消点击。请重新 computer_screenshot 确认目标窗口，不要重试同一个坐标。',
+        `目标点当前属于「${hit.title}」(${normalizeExeName(hit.exe)})，与最近截图的目标` +
+          `（${view?.targetExe ?? '未知'}）不是同一个应用；已取消点击。` +
+          '请重新 computer_screenshot 确认目标窗口，不要重试同一个坐标。（E_CU_TARGET_CHANGED）',
       )
     }
   }
