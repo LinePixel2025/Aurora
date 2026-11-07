@@ -37,6 +37,12 @@ const props = defineProps<{
   sessionId: string
   /** 当前会话绑定的项目名（未绑定 / 孤儿绑定时 undefined）：目录条据此换标题 */
   projectName?: string
+  /**
+   * 外部请求打开某个文件（2026-11-07，docs/07 §2.3）：对话尾部「本次改动文件」卡片点击后，
+   * 由 `App.vue` 打开「文件」标签并把 `{ path, token }` 传进来。`token` 单调递增 ——
+   * 同一路径再次请求也必须重新预览（只比 path 会漏掉「又来了一次」）。
+   */
+  openRequest?: { path: string; token: number } | null
 }>()
 
 /** 标签标题上报（docs/07 §2.3）：预览态 = 文件名，列表态 = 当前目录名 */
@@ -364,6 +370,20 @@ async function previewPath(path: string): Promise<void> {
   // 预加载它所在目录：预览态点「返回列表」时列表已就绪，面包屑也与文件位置一致
   if (dir !== currentDir.value) void loadDir(dir)
 }
+
+/**
+ * 外部打开请求（对话尾部改动文件卡片，2026-11-07）：`token` 变化才执行一次。
+ * 预览失败（越界 / 已删除）由 `readFile` 把原因写进面板错误行，这里不额外弹窗。
+ */
+watch(
+  () => props.openRequest?.token,
+  () => {
+    const request = props.openRequest
+    if (request === undefined || request === null || request.path.trim() === '') return
+    pathInput.value = request.path
+    void previewPath(request.path)
+  },
+)
 
 async function refresh(): Promise<void> {
   const here = trail.value[cursor.value]

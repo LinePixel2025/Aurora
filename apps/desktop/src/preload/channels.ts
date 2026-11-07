@@ -143,6 +143,8 @@ const CHANNELS = {
     sessionDeleted: 'chat:sessionDeleted',
     // 会话自动标题推送（docs/06 §4）：生成成功后广播 { sessionId, title }
     sessionTitleChanged: 'chat:sessionTitleChanged',
+    // 轮终改动汇总推送（2026-11-07，docs/06 §4.2）：主进程 → chat 渲染层，只在内存
+    turnChanges: 'chat:turnChanges',
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
     cancelJob: 'chat:cancelJob',
@@ -185,6 +187,8 @@ const CHANNELS = {
     show: 'banner:show',
     dismiss: 'banner:dismiss',
     measure: 'banner:measure',
+    // 点击带 sessionId 的卡片 → 主进程校验当前 id 后跳会话（2026-11-07）
+    activate: 'banner:activate',
   },
   // 默认提醒方式（v37，docs/07 §4）：设置页「试一下」按当前方式投递一条示例提醒
   notifications: {

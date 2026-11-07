@@ -238,11 +238,12 @@ export const DEFAULT_PLUGINS = {
 } as const
 
 /**
- * 默认提醒方式与提醒细节（v37 / v38 / v40，docs/07 §4）：
+ * 默认提醒方式与提醒细节（v37 / v38 / v40 / v41，docs/07 §4）：
  * `channel` 缺省 `system` = 与 v37 之前完全一致（系统通知中心）；
  * 五项流光细节只作用于流光提醒（提示音 / 音量 / 朗读 / 卡宽 / 停留时长），缺省值与
  * 各实现里的历史常量一致，因此升级不改变观感；
- * 四项智慧提醒（v40）缺省**全关**，升级后行为与 v39 逐字一致。
+ * 四项智慧提醒（v40）缺省**全关**，升级后行为与 v39 逐字一致；
+ * 任务完成提醒（v41）缺省**开** + **仅主界面不在前台时发**：用户正看着回复时不再打断。
  */
 export const DEFAULT_NOTIFICATIONS = {
   channel: 'system',
@@ -255,6 +256,8 @@ export const DEFAULT_NOTIFICATIONS = {
   smartWindow: null,
   smartDuringClass: false,
   smartSummarize: true,
+  taskDoneEnabled: true,
+  taskDoneBackgroundOnly: true,
 } as const
 
 /**

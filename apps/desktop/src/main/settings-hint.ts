@@ -26,6 +26,7 @@ export const SETTINGS_HINT = [
   '- notifications.channel（默认提醒方式：system 系统通知 / banner 流光提醒 / both 两者都发 / off 不打扰）',
   '- notifications.sound / volume / speak / size / durationMs（流光提醒的提示音、音量 0–100、语音朗读、卡片大小 compact/standard/large、停留时长毫秒）',
   '- notifications.smartEnabled / smartWindow / smartDuringClass / smartSummarize（智慧提醒：免打扰总开关；时段 start/end "HH:mm" + daily 每天重复 / armedDate YYYY-MM-DD 一次性；上课期间不提醒；结束后由 Agent 总结）',
+  '- notifications.taskDoneEnabled / taskDoneBackgroundOnly（任务完成提醒开关；是否仅在主界面不在前台时提醒）',
   '- modes.current（切换当前模式）',
   '- modes.classroom.*（课堂模式设置：watchDir、subjects、schedule.*、preClassReminder、preClassLeadMinutes、preClassOpenFolder、classification.*）',
   // `agent.tools` 一律逐条列举，**不用通配写法**：`terminal` 下现在还有**只读**的

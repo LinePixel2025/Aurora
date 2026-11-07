@@ -247,4 +247,26 @@ describe('BannerService', () => {
       vi.useRealTimers()
     }
   })
+
+  it('带 sessionId 的提醒把会话写进载荷；没有时不带这个键（点卡片 = 关闭）', () => {
+    const { service, shown } = createHarness()
+    service.show({ title: '任务完成', body: '已完成', sessionId: 'main' })
+    expect(shown[0]?.sessionId).toBe('main')
+    expect(service.currentSessionId()).toBe('main')
+
+    service.dismiss(shown[0]?.id ?? '')
+    service.show({ title: '普通提醒', body: '' })
+    expect(shown[1]?.sessionId).toBeUndefined()
+    expect(Object.prototype.hasOwnProperty.call(shown[1], 'sessionId')).toBe(false)
+    expect(service.currentSessionId()).toBe('')
+  })
+
+  it('currentSessionId 只跟当前这一条：排队的那条不算', () => {
+    const { service, shown } = createHarness()
+    service.show({ title: '第一条', body: '', sessionId: 'first' })
+    service.show({ title: '第二条', body: '', sessionId: 'second' })
+    expect(service.currentSessionId()).toBe('first')
+    service.dismiss(shown[0]?.id ?? '')
+    expect(service.currentSessionId()).toBe('second')
+  })
 })

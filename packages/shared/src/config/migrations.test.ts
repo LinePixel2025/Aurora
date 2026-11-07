@@ -1121,6 +1121,7 @@ describe('配置迁移链', () => {
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
+        'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1173,6 +1174,7 @@ describe('配置迁移链', () => {
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
+        'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1605,6 +1607,7 @@ describe('配置迁移链', () => {
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
+        'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2170,6 +2173,8 @@ describe('配置迁移链', () => {
         smartWindow: null,
         smartDuringClass: false,
         smartSummarize: true,
+        taskDoneEnabled: true,
+        taskDoneBackgroundOnly: true,
       })
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
     })
@@ -2193,6 +2198,44 @@ describe('配置迁移链', () => {
       })
       const twice = migrate({ ...fromPresent.data, version: 39 })
       expect(twice.data['notifications']).toEqual(fromPresent.data['notifications'])
+    })
+  })
+
+  describe('v40 → v41（任务完成提醒，docs/07 §4）', () => {
+    it('为老配置补任务完成提醒默认值（开 + 仅主界面不在前台时），已有提醒字段原样保留', () => {
+      const outcome = migrate({
+        version: 40,
+        notifications: { channel: 'banner', smartEnabled: true, volume: 30 },
+      })
+      expect(outcome.applied[0]).toContain('v40 → v41')
+      expect(outcome.data['notifications']).toEqual({
+        channel: 'banner',
+        sound: true,
+        volume: 30,
+        speak: true,
+        size: 'standard',
+        durationMs: 6000,
+        smartEnabled: true,
+        smartWindow: null,
+        smartDuringClass: false,
+        smartSummarize: true,
+        taskDoneEnabled: true,
+        taskDoneBackgroundOnly: true,
+      })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('显式关掉任务完成提醒 / 关掉「仅后台」时不被默认值覆盖', () => {
+      const outcome = migrate({
+        version: 40,
+        notifications: { taskDoneEnabled: false, taskDoneBackgroundOnly: false },
+      })
+      expect(outcome.data['notifications']).toMatchObject({
+        taskDoneEnabled: false,
+        taskDoneBackgroundOnly: false,
+      })
+      const twice = migrate({ ...outcome.data, version: 40 })
+      expect(twice.data['notifications']).toEqual(outcome.data['notifications'])
     })
   })
 })

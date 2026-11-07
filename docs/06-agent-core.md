@@ -372,6 +372,24 @@ export interface LlmProvider {
   （v33 之前的第 ④ 条「预算触顶落 paused + `pendingReason='budget'`」随预算退役删除；
   轮次上限不再来自设置，冒烟用 `AURORA_SMOKE_MAX_ROUNDS=2` 压小它才能跑到 `paused`，见 §4.1。）
 
+### 4.2 轮终改动汇总（2026-11-07）
+
+界面上「本次修改了哪些文件」的卡片**不是内核产的**：`AgentEvent` 形状不变，汇总在**主进程**完成，
+经 `chat:turnChanges` 推给 chat 渲染层（契约见 02 §6、UI 见 07 §2.3）。
+
+- **触发**：`job` 事件落 `status: 'done'`（正常收敛）时汇总本轮；`paused`（轮次上限）、
+  `aborted`（用户取消）、`error` 都不出卡片。主进程从 `chat:event` 的 `tool` 事件里按
+  `requestId` 收集**已结算**的写文件调用（`write_file` / `edit_file` / `office_create` /
+  `office_edit` / `office_raw_edit` / `office_pdf` 的显式 `outputPath`），不读会话文件。
+- **before / after**：复用写前快照（§11.8）—— 按工具调用 id 找到本轮最早的那条 `SnapshotRef`
+  作为 before（`exists:false` = 新建），轮末读一次盘上内容作为 after；文本按行对比算
+  `added` / `removed`，二进制（含 NUL / Office 扩展名）标 `binary`，超 2 MiB 或无快照标
+  `oversized` / `unknown` 且不计行数（**不假装 0**）。内容相同的路径不列。
+- **生命周期**：只存在于主进程与渲染层内存（有界缓存），**不落 `sessions/<id>.json`、
+  不进 Center 协议，重启后旧轮次没有卡片**——与 DSH 的既定行为一致。子代理（`task`）内部的
+  写入不进父会话本轮卡片；`run_command` 间接改的文件也不列（没有 git 依赖）。
+- **失败口径**：汇总任何一步失败只 warn，`done` / 「任务完成」提醒照常；卡片缺一张不影响收尾。
+
 ## 5. 工具调用循环（Agent Loop）
 
 - **系统提示词组装**：小节顺序固定为「**静态在前、易变在后**」——基础人设 → 当前模式（IMode.systemPrompt）

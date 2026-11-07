@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { matchUserMessageEcho, USER_MESSAGE_ECHO_WINDOW_MS, type ChatMessage } from './useChat.js'
+import type { ChangedFileInfo } from '@aurora/shared'
+import {
+  cacheTurnChanges,
+  matchUserMessageEcho,
+  readTurnChanges,
+  USER_MESSAGE_ECHO_WINDOW_MS,
+  type ChatMessage,
+} from './useChat.js'
 
 /**
  * `user-message` 广播去重判定的回归用例（P2-19）。
@@ -72,5 +79,52 @@ describe('matchUserMessageEcho（user-message 广播去重键）', () => {
   it('文本不同不匹配', () => {
     const local = userMessage('继续', T0)
     expect(matchUserMessageEcho([local], '好', T0 + 100)).toBe(-1)
+  })
+})
+
+describe('轮终改动缓存（chat:turnChanges）', () => {
+  const file = (path: string): ChangedFileInfo => ({
+    path,
+    display: path,
+    status: 'modified',
+    added: 1,
+    removed: 0,
+  })
+
+  it('按 (sessionId, requestId) 缓存：同一会话 / 请求读到同一份；别的会话读不到', () => {
+    cacheTurnChanges({
+      sessionId: 'cache-a',
+      requestId: 'req-1',
+      files: [file('D:\\proj\\a.txt')],
+    })
+    expect(readTurnChanges('cache-a').get('req-1')?.length).toBe(1)
+    expect(readTurnChanges('cache-b').size).toBe(0)
+  })
+
+  it('同一 requestId 后写的覆盖前一份（不重复累积）', () => {
+    cacheTurnChanges({ sessionId: 'cache-c', requestId: 'req-1', files: [file('a')] })
+    cacheTurnChanges({ sessionId: 'cache-c', requestId: 'req-1', files: [file('b'), file('c')] })
+    expect(
+      readTurnChanges('cache-c')
+        .get('req-1')
+        ?.map((item) => item.path),
+    ).toEqual(['b', 'c'])
+  })
+
+  it('空清单不入缓存（没有改动 = 不渲染卡片）', () => {
+    cacheTurnChanges({ sessionId: 'cache-d', requestId: 'req-1', files: [] })
+    expect(readTurnChanges('cache-d').size).toBe(0)
+  })
+
+  it('有界：超过 200 条时最旧的被淘汰', () => {
+    for (let index = 0; index < 205; index += 1) {
+      cacheTurnChanges({
+        sessionId: `cache-evict-${index}`,
+        requestId: 'req',
+        files: [file('a')],
+      })
+    }
+    expect(readTurnChanges('cache-evict-0').size).toBe(0)
+    expect(readTurnChanges('cache-evict-204').size).toBe(1)
   })
 })

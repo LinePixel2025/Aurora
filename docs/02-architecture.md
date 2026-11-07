@@ -221,9 +221,14 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
 - **流光提醒通道（2026-10-24，docs/07 §2.2.3）**：独立于系统通知（`NotificationService`）与
   ClassIsland 提醒的第三条提醒通道 —— 屏幕顶端流光 + 置顶卡片。
   `banner:show`（主进程 → banner 渲染层，推送，on/off 成对）携带 `BannerShowPayload`
-  （`id` / `title` / `body` / 已解算的 `speak` / `sound` / `durationMs` / `level`）；
+  （`id` / `title` / `body` / 已解算的 `speak` / `sound` / `durationMs` / `level` /
+  可选的 `sessionId`）；
   `banner:dismiss`（渲染层 → 主进程，invoke）带回本次展示的 `id`，主进程**只认当前那一条**
   （迟到 / 重复回执返回 `dismissed: false`，否则上一张卡片的超时回执会关掉刚弹出的新卡片）。
+  **2026-11-07 起卡片可点击跳会话**：`banner:activate`（渲染层 → 主进程，invoke，`{ id }`）
+  只在 `id` 匹配当前那一条、且该条带 `sessionId` 时生效 —— 主进程自己从服务里取 sessionId
+  （**不信任渲染层传入的会话 id**），先 `dismiss` 再打开主界面并推 `chat:remoteActivate`；
+  返回 `Result<boolean>`，不抛错。带 `sessionId` 的提醒只有「任务完成」一类。
   三个来源（Agent 工具 `notify_banner`、插件 `ctx.banner`、`ask_user` 的旁路播报）全部汇聚到
   主进程 `main/banner.ts` 的 `BannerService.show()`；排队 / 去重 / 超时兜底只在那一处实现。
   两个内部窗口由 `WindowManager.showBanner()` 驱动（光带窗整屏穿透、卡片窗可点），
@@ -233,6 +238,12 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
 - **`chat:event` 事件带 `seq` 与 `round`**（2026-09）：`seq` 是会话内单调序号（主进程 `emit`
   统一分配），`round` 是本次请求的工具调用轮次。渲染层据此排序消息、丢弃陈旧请求的迟到事件、
   把思考链绑到正确的助手消息上（口径见 `06 §16.1`）。
+- **轮终改动汇总 `chat:turnChanges`**（2026-11-07，docs/07 §2.3）：一条 job 落 `done` 时，
+  主进程汇总本轮被修改的文件（写前快照的 before + 盘上 after 算增删行数），向 chat 窗口推送
+  `ChatTurnChangesPayload`（`sessionId` / `requestId` / `files[]`）。它**只在主进程与渲染层
+  内存里存在**：不落会话文件、不进 Center 协议、重启即失（与 DSH 同款口径）。渲染层按
+  `(sessionId, requestId)` 缓存，供对话尾部「本次改动文件」卡片与切会话回显；汇总口径见
+  `06 §4.2`。
 - **会话项目通道 `chat:setSessionProject`**（v17，2026-09）：绑定 / 解绑**单个会话**的项目
   （入参 `{ sessionId, projectId }`，`projectId` 空串 = 清除绑定）。状态写在会话文件自身的
   `meta.projectId`（与 `chat:archiveSession` 同一条路，**不是配置项**、不进迁移链）；

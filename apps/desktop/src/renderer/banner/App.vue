@@ -115,6 +115,26 @@ async function dismiss(): Promise<void> {
   else send()
 }
 
+/**
+ * 点击带 `sessionId` 的提醒卡片（2026-11-07，docs/07 §2.2.3 / §4）：
+ * 先播退场，再让主进程校验「当前 id + 这条的 sessionId」后打开主界面并切会话。
+ *
+ * 主进程收到后会自己 dismiss（隐藏两扇窗），这里**不再发 dismiss 回执**：
+ * 迟到的回执按 id 不匹配被忽略，多发一次只是白跑一趟 IPC。
+ */
+async function activate(): Promise<void> {
+  const id = currentId.value
+  clearTimers()
+  currentId.value = ''
+  startLeave()
+  if (layer !== 'card' || id === '' || preview) return
+  try {
+    await window.aurora.banner.activate(id)
+  } catch {
+    // 主进程已退出 / 通道不可用：窗口会随进程一起消失，不需要补救
+  }
+}
+
 onMounted(() => {
   offShow = window.aurora.banner.onShow((next) => present(next))
 })
@@ -128,7 +148,14 @@ onUnmounted(() => {
 
 <template>
   <GlowBand v-if="layer === 'glow'" :active="visible" />
-  <BannerCard v-else :payload="payload" :tts-ready="ttsReady" :muted="preview" @close="dismiss" />
+  <BannerCard
+    v-else
+    :payload="payload"
+    :tts-ready="ttsReady"
+    :muted="preview"
+    @close="dismiss"
+    @activate="activate"
+  />
 </template>
 
 <style scoped>

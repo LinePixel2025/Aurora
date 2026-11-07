@@ -186,6 +186,10 @@ export class BannerService {
       level: normalizeLevel(request.level),
       // 档位随载荷下发（渲染层挂 data-size 做档位专属字号 / 行数）；旧装配方缺省按标准档
       size: prefs.size ?? 'standard',
+      // 「任务完成」这类提醒带会话 id：卡片可点，主进程点击时按当前这条的 sessionId 跳会话
+      ...(request.sessionId === undefined || request.sessionId.trim() === ''
+        ? {}
+        : { sessionId: request.sessionId.trim() }),
     }
 
     if (this.current !== undefined) {
@@ -237,6 +241,15 @@ export class BannerService {
   /** 正在显示的 id（没有则为空串）：渲染层 / 自测排障用。 */
   currentId(): string {
     return this.current?.id ?? ''
+  }
+
+  /**
+   * 正在显示那条要跳回的会话 id（没有 / 不带会话时为空串）。
+   *
+   * `banner:activate` 的**唯一会话来源**：渲染层回执只带展示 id，不能自己指定要切哪个会话。
+   */
+  currentSessionId(): string {
+    return this.current?.sessionId ?? ''
   }
 
   /** 应用退出：清掉定时器与队列，不再尝试操作已经销毁的窗口。 */

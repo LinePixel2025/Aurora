@@ -18,7 +18,7 @@
  * 两个通道都以**注入**形式接进来（`present` / `banner`），因此本模块可单测；
  * 它自己不认识窗口、不 import electron。
  */
-import type { Logger, ReminderChannel } from '@aurora/shared'
+import type { BannerLevel, Logger, ReminderChannel } from '@aurora/shared'
 import type { SmartGateVerdict } from './smart-reminder.js'
 
 export interface NotificationRequest {
@@ -28,6 +28,13 @@ export interface NotificationRequest {
   openPath?: string
   /** 同类通知合并键：相同 key 的在短时间内只弹一次 */
   dedupeKey?: string
+  /**
+   * 点击通知要跳回的会话（2026-11-07，docs/07 §4「任务完成提醒」）：
+   * 有值时系统通知与流光卡片点击都打开主界面并切到该会话（优先于 `openPath`）。
+   */
+  sessionId?: string
+  /** 流光卡片的语义档位（缺省 `info`；「任务完成」用 `success`） */
+  level?: BannerLevel
   /**
    * 流光通道的停留时长覆盖（毫秒，仍受 BannerService 2–30s 钳制）。唯一的使用场景是
    * 智慧提醒的汇总摘要：内容比普通提醒长，按 6s 默认值一闪而过读不完。
@@ -40,17 +47,51 @@ export interface NotificationRequest {
 export type NotificationPresenter = (request: NotificationRequest) => boolean
 
 /**
+ * 任务完成提醒偏好（`notifications.taskDone*`，v41，docs/07 §4）。
+ *
+ * - `enabled: false` = 完全不发（也不进免打扰队列）；
+ * - `backgroundOnly: true` = 主界面持有键盘焦点时跳过（用户正看着回复，不需要再打断）。
+ */
+export interface TaskDoneNoticePreferences {
+  enabled: boolean
+  backgroundOnly: boolean
+}
+
+/** 未注入设置时的保守缺省（与 Schema 默认值一致：开 + 仅后台）。 */
+export const DEFAULT_TASK_DONE_PREFERENCES: TaskDoneNoticePreferences = {
+  enabled: true,
+  backgroundOnly: true,
+}
+
+/**
+ * 该不该发「任务完成」提醒（纯判定，便于单测）。
+ *
+ * 判定只有两条：总开关；「仅后台」时主界面焦点 = 不发。免打扰 / 通道偏好不在这里 ——
+ * 那两件事发生在 `notify()` 的去重、抑制闸与通道判定里，别重复实现。
+ */
+export function shouldSendTaskDoneNotice(
+  preferences: TaskDoneNoticePreferences,
+  chatFocused: boolean,
+): boolean {
+  if (!preferences.enabled) return false
+  return !(preferences.backgroundOnly && chatFocused)
+}
+
+/**
  * 注入的流光提醒载体（`BannerService.show` 的适配）：返回是否显示成功。
  *
  * 只传标题 / 正文 / dedupeKey / 停留时长覆盖 —— 语义档位与是否朗读交给提醒通道自己决定，
  * 编排层不替流光挑视觉参数（两处各调一套就是「系统通知好看、流光难看」的来源）；
  * `durationMs` 例外仅用于智慧提醒汇总（内容长，默认 6s 读不完，见 `NotificationRequest`）。
+ * `sessionId` 是 2026-11-07 新增的「点击跳回会话」，只有「任务完成」会带。
  */
 export type NotificationBanner = (request: {
   title: string
   body: string
   dedupeKey?: string
   durationMs?: number
+  sessionId?: string
+  level?: BannerLevel
 }) => boolean
 
 export interface NotificationServiceOptions {
@@ -63,6 +104,11 @@ export interface NotificationServiceOptions {
   banner?: NotificationBanner
   /** 点击通知时打开路径（由主进程注入 shell.openPath） */
   openPath?: (target: string) => Promise<void>
+  /**
+   * 点击带 `sessionId` 的通知时打开主界面并切会话（主进程注入；不 import electron）。
+   * 未注入时静默忽略（与没有点击目标同款）。
+   */
+  activateSession?: (sessionId: string) => void | Promise<void>
   /** 去重窗口，默认 3s：防止同一次操作触发多条通知 */
   dedupeWindowMs?: number
   /**
@@ -78,6 +124,7 @@ export class NotificationService {
   private readonly channel: () => ReminderChannel
   private readonly banner: NotificationBanner | undefined
   private readonly openPath: ((target: string) => Promise<void>) | undefined
+  private readonly activateSession: ((sessionId: string) => void | Promise<void>) | undefined
   private readonly dedupeWindowMs: number
   private readonly smartGate:
     ((request: { title: string; body: string }) => SmartGateVerdict) | undefined
@@ -93,6 +140,7 @@ export class NotificationService {
     this.channel = options.channel ?? (() => 'system')
     this.banner = options.banner
     this.openPath = options.openPath
+    this.activateSession = options.activateSession
     this.dedupeWindowMs = options.dedupeWindowMs ?? 3_000
     this.smartGate = options.smartGate
   }
@@ -184,6 +232,8 @@ export class NotificationService {
             ...(request.bannerDurationMs === undefined
               ? {}
               : { durationMs: request.bannerDurationMs }),
+            ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+            ...(request.level === undefined ? {} : { level: request.level }),
           }) ?? false
       } catch (error) {
         this.logger.warn('流光提醒展示失败（不影响主流程）', { error: String(error) })
@@ -245,8 +295,26 @@ export class NotificationService {
     return this.shownByBanner
   }
 
-  /** 点击通知的实际动作：打开路径（失败只记日志）。 */
-  async handleClick(openPath: string | undefined): Promise<void> {
+  /**
+   * 点击通知的实际动作：带 `sessionId` → 跳会话；否则打开路径（失败只记日志）。
+   *
+   * 两个通道点击都走这里 —— 系统通知与流光卡片的目标语义必须一份实现，
+   * 否则「任务完成」在一种通道下能跳、另一种不能。
+   */
+  async handleClick(request: NotificationRequest): Promise<void> {
+    if (request.sessionId !== undefined && request.sessionId.trim() !== '') {
+      if (this.activateSession === undefined) return
+      try {
+        await this.activateSession(request.sessionId)
+      } catch (error) {
+        this.logger.warn('打开提醒对应会话失败', {
+          sessionId: request.sessionId,
+          error: String(error),
+        })
+      }
+      return
+    }
+    const openPath = request.openPath
     if (openPath === undefined || openPath.trim() === '' || this.openPath === undefined) return
     try {
       await this.openPath(openPath)

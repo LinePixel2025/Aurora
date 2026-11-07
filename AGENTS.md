@@ -72,11 +72,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、281 条断言应当全绿（2026-11-07 实测 `SUMMARY 281/281 passed`；
+  **全量约 40 秒、283 条断言应当全绿（2026-11-07 实测 `SUMMARY 283/283 passed`；
   v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
   v36 插件系统 +24、小组件与推送 +4、v37 小组件层级 / 材质 +4、插件配置窗口 +1、
   流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1、小组件不可激活 / 固定 +3、
-  v39 Computer Use +5、v40 智慧提醒 §2.5 +6 条断言）**——
+  v39 Computer Use +5、v40 智慧提醒 §2.5 +6、v41 轮终改动汇总 / 任务完成提醒 +2 条断言）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **全量冒烟只在用户说「提交」时跑**（2026-10-31 口径，见 `Memory/2026-10-31-iteration-vs-full-acceptance.md`）；
@@ -99,22 +99,24 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   ⚠️ 筛选跑会产生假 FAIL（看到 FAIL 先问"是不是筛选跑的"，再用全量确认）。userData 自动隔离。规则见 docs/07 §5.3。
   当前基线（2026-11-07 实测；2026-10-25 提醒页新增 `settings-notifications-schedule` 场景；
   v39 Computer Use 新增浮层 / 顶部状态胶囊 / 设置页 / `/computer` 斜杠入口 4 个场景；
-  v40 智慧提醒新增 `settings-notifications-smart` 1 个场景）：**全量 118 条 checks** ——
-  本机全量单轮 109 条（四窗 98 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
-  提醒设置页 4）
+  v40 智慧提醒新增 `settings-notifications-smart` 1 个场景；
+  v41 新增 `chat-changed-files`（轮终改动卡片）与 `settings-notifications-task`（任务完成提醒）2 个场景）：
+  **全量 120 条 checks** ——
+  本机全量单轮 111 条（四窗 99 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
+  提醒设置页 5）
   + onboarding 6 + memory/awareness-glow 3。
-  四窗 98 含 v36 插件场景 `chat-plugin-panel` /
+  四窗 99 含 v36 插件场景 `chat-plugin-panel` /
   `chat-plugin-page` / `settings-plugins-installed` / `settings-plugins-detail`（设置列表 + 配置入口）/
   `settings-plugins-marketplace`、设置页 `settings-plugins`、v37 新增的 `settings-llm-default`
   （AI 模型页默认模型下拉）与 `plugin-config`（独立插件配置窗口）。
   桌面 widget 窗口不在 `WindowName` 里，走 `captureWindows` 的 `widgetWindow` 现取。
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 118 条：
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 120 条：
   `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config,banner-card,banner-glow,computer-use-overlay,computer-use-hud'`
-  （109 checks，仅
+  （111 checks，仅
   `chat-model-picker` 红；**两个 Computer Use 内部窗口必须显式列进 `AURORA_CAPTURE_WINDOWS`** ——
-  按 `target.name` 精确过滤，漏了它们只会得到 106 条，看起来「少了两张」）
+  按 `target.name` 精确过滤，漏了它们只会得到 108 条，看起来「少了两张」）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
   （3 checks 全绿）；这是 capture 环境问题，不是子代理改动的回归。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
@@ -153,7 +155,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **绝不允许裸 `v-html` 模型原文**；链接 scheme 走 markdown-it `validateLink`（`javascript:` 拒绝）；
   外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接（生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件 / 命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 39`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 41`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 - **界面文案口径**（用户连续两轮点名「冗杂」）：区组说明段 **≤45 汉字**、字段 hint **≤40 汉字**，各只写 1 句；
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。

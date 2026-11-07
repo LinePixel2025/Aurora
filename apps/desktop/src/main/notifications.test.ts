@@ -7,7 +7,12 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import type { Logger, ReminderChannel } from '@aurora/shared'
-import { NotificationService, type NotificationRequest } from './notifications.js'
+import {
+  DEFAULT_TASK_DONE_PREFERENCES,
+  NotificationService,
+  shouldSendTaskDoneNotice,
+  type NotificationRequest,
+} from './notifications.js'
 
 function quietLogger(): Logger {
   const noop = (): void => {}
@@ -226,5 +231,98 @@ describe('智慧提醒抑制闸与汇总投递（v40）', () => {
     // 普通提醒不带这个字段：视觉参数仍由用户设置决定
     service.notify({ title: '普通', body: 'b' })
     expect(seen[1]?.durationMs).toBeUndefined()
+  })
+})
+
+describe('任务完成提醒：会话归属与点击跳转（2026-11-07）', () => {
+  it('sessionId / level 透传到系统通知与流光载体（两者共用同一份请求）', () => {
+    const system: NotificationRequest[] = []
+    const banners: Array<{ title: string; body: string; sessionId?: string; level?: string }> = []
+    const service = new NotificationService({
+      logger: quietLogger(),
+      present: (request) => {
+        system.push(request)
+        return true
+      },
+      channel: () => 'both',
+      banner: (request) => {
+        banners.push(request)
+        return true
+      },
+    })
+    expect(
+      service.notify({
+        title: '任务完成',
+        body: '《数学》已完成，改动 2 个文件',
+        sessionId: 'main',
+        level: 'success',
+      }),
+    ).toBe(true)
+    expect(system[0]).toMatchObject({ sessionId: 'main', level: 'success' })
+    expect(banners[0]).toMatchObject({ sessionId: 'main', level: 'success' })
+  })
+
+  it('handleClick：有 sessionId 时走 activateSession，不再打开文件夹', async () => {
+    const activate = vi.fn(async () => undefined)
+    const openPath = vi.fn(async () => undefined)
+    const service = new NotificationService({
+      logger: quietLogger(),
+      activateSession: activate,
+      openPath,
+    })
+    await service.handleClick({
+      title: '任务完成',
+      body: '已完成',
+      sessionId: 'main',
+      openPath: 'C:\\should-not-open',
+    })
+    expect(activate).toHaveBeenCalledWith('main')
+    expect(openPath).not.toHaveBeenCalled()
+  })
+
+  it('handleClick：没有 sessionId 时保持 openPath 旧行为', async () => {
+    const activate = vi.fn(async () => undefined)
+    const openPath = vi.fn(async () => undefined)
+    const service = new NotificationService({
+      logger: quietLogger(),
+      activateSession: activate,
+      openPath,
+    })
+    await service.handleClick({ title: '分类完成', body: 'x', openPath: 'C:\\dir' })
+    expect(openPath).toHaveBeenCalledWith('C:\\dir')
+    expect(activate).not.toHaveBeenCalled()
+  })
+
+  it('handleClick：activateSession 抛错只吞掉并记日志（提醒点击不该变成错误弹窗）', async () => {
+    const service = new NotificationService({
+      logger: quietLogger(),
+      activateSession: async () => {
+        throw new Error('session gone')
+      },
+    })
+    await expect(
+      service.handleClick({ title: '任务完成', body: 'x', sessionId: 'missing' }),
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe('任务完成提醒的开关与「仅后台」判定（v41）', () => {
+  it('出厂默认：开 + 仅主界面不在前台时发', () => {
+    expect(DEFAULT_TASK_DONE_PREFERENCES).toEqual({ enabled: true, backgroundOnly: true })
+    // 主界面有焦点 → 跳过；失焦 / 隐藏 → 发
+    expect(shouldSendTaskDoneNotice(DEFAULT_TASK_DONE_PREFERENCES, true)).toBe(false)
+    expect(shouldSendTaskDoneNotice(DEFAULT_TASK_DONE_PREFERENCES, false)).toBe(true)
+  })
+
+  it('关掉总开关后无论前台与否都不发（也不进免打扰队列）', () => {
+    const prefs = { enabled: false, backgroundOnly: false }
+    expect(shouldSendTaskDoneNotice(prefs, true)).toBe(false)
+    expect(shouldSendTaskDoneNotice(prefs, false)).toBe(false)
+  })
+
+  it('关掉「仅后台」后每次正常收敛都发', () => {
+    const prefs = { enabled: true, backgroundOnly: false }
+    expect(shouldSendTaskDoneNotice(prefs, true)).toBe(true)
+    expect(shouldSendTaskDoneNotice(prefs, false)).toBe(true)
   })
 })

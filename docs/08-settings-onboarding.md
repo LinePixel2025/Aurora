@@ -298,6 +298,9 @@
     "speak": true, // v38：语音朗读总闸（仍需 tts 已配置）
     "size": "standard", // v38：compact / standard / large —— 按显示器宽度比例取卡宽并流体放大字号（2026-11-01 放大）
     "durationMs": 6000, // v38：停留时长（2000–30000）
+    "smartEnabled": false, // v40：智慧提醒总开关（免打扰期先攒后汇总）
+    "taskDoneEnabled": true, // v41：Agent 正常收敛后的「任务完成」提醒
+    "taskDoneBackgroundOnly": true, // v41：仅主界面不在前台时提醒（正在看回复就不打断）
   },
   // v39 新增：Computer Use（docs/06 §28）。整组在 SETTINGS_READONLY_PREFIXES 里；
   // 真正的会话授权由用户 /computer 或 Agent computer_start 逐会话建立，不写配置。
@@ -359,7 +362,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **37**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **41**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -638,7 +641,7 @@
   provider + model，严格使用该选择，不可用时暂停而不是回落。整组在 `SETTINGS_READONLY_PREFIXES` 里：
   它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
   内嵌图片是否真正读取由有效后台模型的 `vision` 决定；运行状态会如实显示「已开启 / 仅分析文字」。
-- `notifications`（**v37 新增，v38 / v40 扩展**，见 07 §4）：提醒通道与细节。
+- `notifications`（**v37 新增，v38 / v40 / v41 扩展**，见 07 §4）：提醒通道与细节。
   `channel`：`system`（默认，系统通知中心）/ `banner`（流光提醒）/ `both`（两条都发）/
   `off`（不打扰，只记日志）；`sound` / `volume` / `speak` / `size` / `durationMs`（v38）：
   流光提醒的提示音、音量（0–100）、语音朗读、卡片大小（`compact` / `standard` / `large`：
@@ -654,9 +657,14 @@
   被抑制的提醒队列不进配置：落盘 `<userData>/smart-reminder-queue.json`（上限 50 条，见 §1.2）。
   `sound` / `speak` 是**总闸**：关掉后请求级 `true` 也不越过。`channel` 只决定 Aurora 自己发起的提醒
   （分类完成 / 课前提醒 / 引导 / `notify_user`）；`notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，
-  不受 `channel` 影响（但仍受两个总闸约束）。`SettingsPatch` 新增可选 `notifications` 字段（顶层浅合并）；
+  不受 `channel` 影响（但仍受两个总闸约束）。
+  `taskDoneEnabled` / `taskDoneBackgroundOnly`（**v41**，任务完成提醒）：一次 Agent 请求正常收敛
+  （job → `done`）后发一条「任务完成」，点击跳回该会话；关掉即完全不发（也不进免打扰汇总），
+  「仅后台」开着时主界面持有键盘焦点就跳过 —— 用户正看着这次的回复，不需要再被打断。
+  它与 `channel` 是**叠加**关系：仍按默认提醒方式投递，`off` 下同样静默；`error` / 用户取消 /
+  轮次暂停不发。`SettingsPatch` 新增可选 `notifications` 字段（顶层浅合并）；
   路径登记在 `WRITABLE_PATH_OVERRIDES` 的 `notifications.*`（AI 可以照用户要求切换打扰方式，
-  v40 的四个 `smart*` 字段保持扁平、天然被通配覆盖），
+  v40 的四个 `smart*` 与 v41 的两个 `taskDone*` 字段保持扁平、天然被通配覆盖），
   **不在** `SETTINGS_READONLY_PREFIXES`。
 - `computerUse`（**v39 新增**，见 06 §28）：桌面操控总开关、视觉（虚拟光标 / 流光 / HUD）、
   节奏（移动时长 / 输入间隔 / 截图宽度）、限额（动作上限 / 闲置结束）与应用允许 / 禁止名单。
@@ -768,7 +776,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 40`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 41`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -882,12 +890,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   用户已写的值原样保留）、
   `v39 → v40`（**智慧提醒**，见 §1 的 `notifications` 与 07 §4：为已有 `notifications` 补
   `smartEnabled: false` / `smartWindow: null` / `smartDuringClass: false` / `smartSummarize: true`
-  —— 升级后默认关闭，行为与 v39 逐字一致；用户已写的 `channel` 等字段原样保留）。
-  四十条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  —— 升级后默认关闭，行为与 v39 逐字一致；用户已写的 `channel` 等字段原样保留）、
+  `v40 → v41`（**任务完成提醒**，见 §1 的 `notifications` 与 07 §4：为已有 `notifications` 补
+  `taskDoneEnabled: true` / `taskDoneBackgroundOnly: true` —— 升级后默认开启但只在你离开主界面时提醒；
+  用户已写的 `channel` / 智慧提醒字段原样保留）。
+  四十一条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **40** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **41** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1058,22 +1069,29 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   - **连接**：`center` Aurora Center；
   - **扩展**：`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
   - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
-  - **`notifications` 提醒（v37 新增，v38 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
-    自上而下五个区组 —— ①「默认提醒方式」四选一；②「流光提醒」细节
+  - **`notifications` 提醒（v37 新增，v38 / v40 / v41 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
+    自上而下六个区组 —— ①「默认提醒方式」四选一；②「流光提醒」细节
     （提示音 / 音量 / 朗读 / 弹窗大小 / 停留时长，非流光通道时置灰）；
-    ③**「定时提醒」**：自动化总开关（`automations.enabled`，常显）+ 课前提醒三件套
+    ③「智慧提醒」（v40：总开关 / 免打扰时段 / 上课期间 / Agent 总结）；
+    ④**「任务完成提醒」**（v41：`taskDoneEnabled` 总开关 +
+    `taskDoneBackgroundOnly`「仅主界面不在前台时提醒」，总开关关闭时后者置灰）；
+    ⑤**「定时提醒」**：自动化总开关（`automations.enabled`，常显）+ 课前提醒三件套
     （`modes.classroom.preClassReminder` / `preClassLeadMinutes` / `preClassOpenFolder`，
     与「模式」页 / 主界面自动化页**同一字段**，写盘回传完整 `modes` 子树；
     门控同 §6.1 —— 非 ClassRoom 模式或课表无节次时控件不进 DOM，换成
     `data-empty="modes.classroom.preClassReminder"` 说明）；
-    ④**「勿扰时段」**（`advanced.quietHours.start` / `.end`，与「通用」页同一字段与保存语义，
-    留空 = 不启用，只填开始按默认「07:00」补全；起止用时间轮盘，见 07 §2.5）；⑤「发送测试提醒」按钮
+    ⑥**「勿扰时段」**（`advanced.quietHours.start` / `.end`，与「通用」页同一字段与保存语义，
+    留空 = 不启用，只填开始按默认「07:00」补全；起止用时间轮盘，见 07 §2.5）；
+    页尾「发送测试提醒」按钮
     （细节见 07 §2.2.3 / §4）。锚点 `notifications.channel.<key>` /
     `notifications.sound` / `.volume` / `.speak` / `.size.<key>` / `.duration.<ms>` /
+    `notifications.taskDoneEnabled` / `.taskDoneBackgroundOnly` /
     `notifications.test`，截图场景 `settings-notifications.png`（通道）、
-    `settings-notifications-style.png`（细节区，拍前把通道切到流光以显示可用态）与
+    `settings-notifications-style.png`（细节区，拍前把通道切到流光以显示可用态）、
+    `settings-notifications-smart.png`（智慧提醒区组）与
     `settings-notifications-schedule.png`（定时提醒 + 勿扰区组，课前提醒按
-    「三控件或 data-empty 二选一」断言）。
+    「三控件或 data-empty 二选一」断言）；任务完成区组的默认值 / 置灰由
+    `settings-notifications-task` 单独核对。
   - 旧页深链兼容映射：`?page=tts` → `voice`、`?page=skills|mcp` → `agent`；
     `general` / `modes` / `llm` / `advanced` 页 id 不变，旧深链继续可用。
 - **Skill 管理**（目标 6 页 IA 下为「Agent 设置」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。

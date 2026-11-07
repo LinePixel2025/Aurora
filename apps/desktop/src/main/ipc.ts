@@ -301,6 +301,11 @@ export interface DesktopDeps {
   /** 仅自测：`app:smokeBanner` 的触发器（未注入 = 该通道如实回 E_INVALID_STATE） */
   smokeBanner?: (action: 'show' | 'dismiss') => BannerDiagnostics
   /**
+   * 点击带 `sessionId` 的提醒卡片后跳会话（`banner:activate`，2026-11-07）：
+   * 打开主界面（最小化恢复）并推 `chat:remoteActivate`。未注入时该通道回 false。
+   */
+  noticeActivate?: (sessionId: string) => void | Promise<void>
+  /**
    * 默认提醒方式的「试一下」（`notifications:test`，v37）：按当前方式真的投递一条示例提醒。
    * 未注入时回 E_INVALID_STATE（设置页据此如实报错，不静默成功）。
    */
@@ -1583,6 +1588,26 @@ export function registerIpc(deps: DesktopDeps): () => void {
     if (!Number.isFinite(height)) return err('E_INVALID_ARGUMENT', '卡片高度必须是有限数字')
     const id = typeof request?.id === 'string' ? request.id : ''
     return ok(deps.bannerCardResize({ id, height }))
+  })
+
+  /**
+   * 点击带 `sessionId` 的提醒卡片（2026-11-07，docs/07 §2.2.3 / §4）：
+   * 只认**当前展示中**的那一条 id；会话 id 从服务里取（渲染层传什么都不看），
+   * 先关闭再打开主界面并切会话。失败一律折成 `false`，不抛错（提醒点击不该变成错误弹窗）。
+   */
+  handle<boolean>(IPC.banner.activate, async (request: { id?: unknown }) => {
+    if (deps.banner === undefined) return ok(false)
+    const id = typeof request?.id === 'string' ? request.id : ''
+    if (id === '' || deps.banner.currentId() !== id) return ok(false)
+    const sessionId = deps.banner.currentSessionId()
+    if (sessionId === '' || deps.noticeActivate === undefined) return ok(false)
+    const dismissed = deps.banner.dismiss(id)
+    try {
+      await deps.noticeActivate(sessionId)
+    } catch (error) {
+      deps.logger.warn('点击提醒后跳会话失败', { sessionId, error: String(error) })
+    }
+    return ok(dismissed.dismissed)
   })
 
   // 仅开发自测：推一条 / 收一条提醒（生产与打包态一律拒绝）

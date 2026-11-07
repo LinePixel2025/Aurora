@@ -1349,6 +1349,28 @@ const migrateV39ToV40: Migration = {
   },
 }
 
+/**
+ * v40 → v41：`notifications` 补任务完成提醒两字段（docs/07 §4）。
+ *
+ * 口径同上：以默认值为底、已有对象在上 —— 用户已选的 channel / 智慧提醒设置原样保留；
+ * 补出来的两项 = v41 之前的行为（每次正常收敛都提醒），只是默认改成「仅主界面不在前台时」。
+ */
+const migrateV40ToV41: Migration = {
+  from: 40,
+  to: 41,
+  describe: 'v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const notifications = asRecord(next['notifications'])
+    next['notifications'] = {
+      ...DEFAULT_NOTIFICATIONS,
+      ...(notifications ?? {}),
+    }
+    next['version'] = 41
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1390,6 +1412,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV37ToV38,
   migrateV38ToV39,
   migrateV39ToV40,
+  migrateV40ToV41,
 ]
 
 export interface MigrationOutcome {

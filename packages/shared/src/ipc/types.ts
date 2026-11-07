@@ -137,6 +137,10 @@ export interface SmokeDiagnostics {
   banner?: BannerDiagnostics
   /** 智慧提醒的运行态（v40，docs/07 §4）：自测据此断言「抑制入队 → 结算出摘要」 */
   smartReminder?: SmartReminderDiagnostics
+  /** 轮终改动汇总（2026-11-07，docs/06 §4.2）：自测断言「真实写文件 → 收到带行数的汇总」 */
+  turnChanges?: ChatTurnChangesPayload[]
+  /** 「任务完成」提醒记录（2026-11-07）：自测断言标题 / 会话归属（smoke 下不真的投递） */
+  taskNotices?: Array<{ title: string; body: string; sessionId: string }>
 }
 
 /** 智慧提醒的运行态（`SmartReminderService.diagnostics()` 的快照形状） */
@@ -1236,6 +1240,12 @@ export interface BannerRequest {
   /** 同内容合并键（缺省 `title\0body`）：短窗口内的重复请求只显示一次 */
   dedupeKey?: string
   level?: BannerLevel
+  /**
+   * 点击卡片要跳回的会话（2026-11-07）：只有「任务完成」这类提醒带它。
+   * 缺省 = 旧行为（点卡片只关闭）；主进程把它写进展示载荷，点击时**以服务里当前那条为准**，
+   * 渲染层不能通过回执改会话。
+   */
+  sessionId?: string
 }
 
 /**
@@ -1260,6 +1270,11 @@ export interface BannerShowPayload {
    * 旧载荷缺省时渲染层按 standard 处理（与出厂默认一致）。
    */
   size?: BannerCardSize
+  /**
+   * 点击卡片要跳回的会话（2026-11-07）：有值 = 卡片可点开会话（`banner:activate`），
+   * 无值 = 旧行为（点卡片关闭）。主进程按**当前展示的那条**校验，渲染层不能自选会话。
+   */
+  sessionId?: string
 }
 
 /**
@@ -1949,6 +1964,36 @@ export interface ChatHistoryRequest {
   sessionId: string
   /** 返回最近 N 条；缺省 100（与 main/ipc.ts 的 handler 对齐） */
   limit?: number
+}
+
+/**
+ * 一轮（一次 Agent 请求）里被改动的文件（2026-11-07，docs/06 §4.2 / docs/07 §2.3）。
+ *
+ * **只在本进程内存里存在**：主进程汇总后经 `chat:turnChanges` 推给 chat 渲染层，不落会话文件、
+ * 不进 Center 协议 —— 与 DeepSeek Harness 的「重启后旧轮次没有改动卡片」同款口径。
+ */
+export interface ChangedFileInfo {
+  /** 绝对路径（右栏文件预览用） */
+  path: string
+  /** 展示路径：工作目录内为 `/` 相对路径、家目录内 `~/…`、其余绝对路径（一律 `/` 分隔） */
+  display: string
+  /**
+   * 改动类型：`created` / `modified` / `deleted` 是能算出内容的三种；
+   * `binary`（Office / 含 NUL）不计行数；`oversized`（超过对比上限）与 `unknown`（没有
+   * before 快照等）只列路径 —— 都不假装 0。
+   */
+  status: 'created' | 'modified' | 'deleted' | 'binary' | 'oversized' | 'unknown'
+  /** 新增行数（`binary` / `oversized` / `unknown` 缺省） */
+  added?: number
+  /** 删除行数（同上） */
+  removed?: number
+}
+
+/** `chat:turnChanges` 的推送载荷（主进程 → chat 渲染层） */
+export interface ChatTurnChangesPayload {
+  sessionId: string
+  requestId: string
+  files: ChangedFileInfo[]
 }
 
 /**
@@ -2810,6 +2855,12 @@ export interface AuroraApi {
      */
     onSessionTitleChanged(listener: (event: ChatSessionTitleChangedEvent) => void): () => void
     /**
+     * 轮终改动汇总推送（2026-11-07，docs/06 §4.2，on/off 成对）：一条 job 正常收敛后，
+     * 主进程把本轮被修改的文件（含增删行数）推给 chat 渲染层；渲染层按
+     * `(sessionId, requestId)` 缓存在内存里，供对话尾部卡片与切会话回显。
+     */
+    onTurnChanges(listener: (event: ChatTurnChangesPayload) => void): () => void
+    /**
      * 新建会话并返回其 id。
      *
      * `options.space`（docs/06 §4 会话三分，2026-09-30）：给新会话打空间戳 ——
@@ -2953,6 +3004,11 @@ export interface AuroraApi {
     dismiss(id: string): Promise<Result<BannerDismissResult>>
     /** 上报卡片内容高度（主进程据此把卡片窗调到「卡片 + 外边距」） */
     measure(request: BannerMeasureRequest): Promise<Result<boolean>>
+    /**
+     * 点击带 `sessionId` 的卡片：主进程只认**当前展示的那一条**，先关闭再打开主界面并
+     * 切到该会话（`chat:remoteActivate`）。返回 `false` = 当前不是这一条 / 这条不带会话。
+     */
+    activate(id: string): Promise<Result<boolean>>
   }
   /**
    * 提醒通道（v37，docs/07 §4）：设置页「提醒」的试一下按钮。

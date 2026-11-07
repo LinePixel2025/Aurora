@@ -7,6 +7,8 @@
  * 2. **流光提醒长什么样、多大声、留多久**（`sound` / `volume` / `speak` / `size` / `durationMs`）；
  * 3. **智慧提醒**（v40）：免打扰期（手动时段 / ClassRoom 上课期间）不弹提醒，期结束后
  *    汇总成一条投递（`smartEnabled` / `smartWindow` / `smartDuringClass` / `smartSummarize`）；
+ * 3.1 **任务完成提醒**（v41）：Agent 正常收敛后提醒「任务完成」，点击跳回会话；
+ *    可关掉，也可选「仅主界面不在前台时提醒」（`taskDoneEnabled` / `taskDoneBackgroundOnly`）；
  * 4. **定时提醒**：自动化总开关（`automations.enabled`）+ 课前提醒三件套
  *    （`modes.classroom.preClass*`，与「模式」页 / 主界面自动化页同一字段；
  *    门控按 docs/08 §6.1 —— 非 ClassRoom 模式或课表无节次时控件不进 DOM，换 `data-empty` 说明）；
@@ -188,6 +190,13 @@ const smartStart = computed(() => smartWindow.value?.start ?? '')
 const smartEnd = computed(() => smartWindow.value?.end ?? '')
 const smartDaily = computed(() => smartWindow.value?.daily ?? false)
 
+// ───────────────────────── 任务完成提醒（v41：开关 + 仅后台） ─────────────────────────
+
+/** 任务完成提醒总开关（`notifications.taskDoneEnabled`，v41） */
+const taskDoneEnabled = computed(() => notifications.value?.taskDoneEnabled ?? true)
+/** 是否只在主界面不在前台时提醒（`notifications.taskDoneBackgroundOnly`，v41） */
+const taskDoneBackgroundOnly = computed(() => notifications.value?.taskDoneBackgroundOnly ?? true)
+
 /** 本地日期键（YYYY-MM-DD），与主进程一次性窗口的 armedDate 同口径 */
 function smartTodayKey(): string {
   const now = new Date()
@@ -261,7 +270,7 @@ function describeTest(result: NotificationTestResult): string {
     <header>
       <h1 class="page-title">提醒</h1>
       <p class="page-sub">
-        Aurora 全部提醒相关设置：默认方式、流光样式、智慧提醒、课前提醒与勿扰时段。
+        Aurora 全部提醒相关设置：默认方式、流光样式、智慧提醒、任务完成提醒、课前提醒与勿扰时段。
       </p>
     </header>
 
@@ -503,6 +512,40 @@ function describeTest(result: NotificationTestResult): string {
           :checked="smartSummarize"
           :disabled="!smartEnabled"
           @change="save({ smartSummarize: ($event.target as HTMLInputElement).checked })"
+        />
+      </SettingField>
+    </section>
+
+    <section
+      class="section-card"
+      :class="{ dormant: !taskDoneEnabled }"
+      data-field="notifications.taskDone"
+    >
+      <h2 class="section-title">任务完成提醒</h2>
+      <p class="section-desc">Agent 完成一次任务后提醒「任务完成」，点击提醒可回到该会话。</p>
+
+      <SettingField
+        data-field="notifications.taskDoneEnabled"
+        label="开启任务完成提醒"
+        hint="关闭后不再发送，也不会进入免打扰汇总"
+      >
+        <input
+          type="checkbox"
+          :checked="taskDoneEnabled"
+          @change="save({ taskDoneEnabled: ($event.target as HTMLInputElement).checked })"
+        />
+      </SettingField>
+
+      <SettingField
+        data-field="notifications.taskDoneBackgroundOnly"
+        label="仅主界面不在前台时提醒"
+        hint="正在看这次回复时不打扰；关掉则每次完成都提醒"
+      >
+        <input
+          type="checkbox"
+          :checked="taskDoneBackgroundOnly"
+          :disabled="!taskDoneEnabled"
+          @change="save({ taskDoneBackgroundOnly: ($event.target as HTMLInputElement).checked })"
         />
       </SettingField>
     </section>

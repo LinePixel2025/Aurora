@@ -63,6 +63,7 @@ import {
   resolvePermissionMode,
   resolveModelParams,
   isCenterOfficialProviderId,
+  createNoopLogger,
   err,
   ok,
   type CenterConnectionStatus,
@@ -85,6 +86,9 @@ import {
   type Settings,
   type SettingsPatch,
   type TokenUsage,
+  type AgentToolCall,
+  type ChatTurnChangesPayload,
+  type ChangedFileInfo,
 } from '@aurora/shared'
 import {
   GuideRunner,
@@ -106,6 +110,8 @@ import {
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
 import { llmSwitchRejection, withModelParams } from './llm-params.js'
+// 轮终改动汇总（2026-11-07，docs/06 §4.2）：快照 before + 盘上 after，推给 chat 渲染层
+import { TURN_CHANGE_TOOL_NAMES, collectTurnChanges } from './turn-changes.js'
 import { TtsSynthesizer } from './tts.js'
 import { createSttService } from './stt.js'
 import { createImageGenService } from './imagegen.js'
@@ -154,7 +160,12 @@ import { OfficePool, type OfficeChildLike } from './office-pool.js'
 import { SELF_AWARENESS_EVIDENCE_LIMIT_BYTES } from './extract.js'
 import { ClassificationHistory } from './classification-history.js'
 import { ClassificationService, type ClassifyProviderFactory } from './classification.js'
-import { NotificationService } from './notifications.js'
+import {
+  DEFAULT_TASK_DONE_PREFERENCES,
+  NotificationService,
+  shouldSendTaskDoneNotice,
+  type NotificationRequest,
+} from './notifications.js'
 import {
   buildDigestPrompt,
   SmartReminderService,
@@ -196,6 +207,8 @@ import {
   SETTINGS_NOTIFICATIONS_SMART_CHECK,
   SETTINGS_NOTIFICATIONS_STYLE_ACT,
   SETTINGS_NOTIFICATIONS_STYLE_CHECK,
+  SETTINGS_NOTIFICATIONS_TASK_ACT,
+  SETTINGS_NOTIFICATIONS_TASK_CHECK,
   captureWindows,
   CHAT_AUTO_TITLE_CHECK,
   CHAT_TRACE_FOLD_CHECK,
@@ -450,6 +463,17 @@ let fileAwareness: FileAwarenessService | undefined
 let fileAwarenessAnalyzer: FileAwarenessAnalyzer | undefined
 let agentActivityDetach: (() => void) | undefined
 const activeAgentRequests = new Set<string>()
+/**
+ * 轮终改动汇总（2026-11-07，docs/06 §4.2）：按 requestId 收集已结算的写文件工具调用，
+ * job 落 `done` 后汇总并推给 chat 渲染层。只在本进程内存里、**按请求有界**（失败 / 取消的
+ * 请求在终态事件里清掉，绝不无限长）。
+ */
+const turnWriteToolCalls = new Map<string, AgentToolCall[]>()
+const TURN_WRITE_REQUESTS_MAX = 32
+const TURN_WRITE_CALLS_MAX = 200
+/** 仅自测：推送过的轮终汇总 / 组装过的「任务完成」提醒（生产不读，见 SmokeDiagnostics） */
+const smokeTurnChanges: ChatTurnChangesPayload[] = []
+const smokeTaskNotices: Array<{ title: string; body: string; sessionId: string }> = []
 let notifications: NotificationService | undefined
 /**
  * 智慧提醒（v40，docs/07 §4）：免打扰期收集被抑制的提醒，期结束后总结输出。
@@ -1625,6 +1649,8 @@ async function bootstrap(): Promise<void> {
       dismiss: (id) => bannerService?.dismiss(id) ?? { dismissed: false, pending: 0 },
       diagnostics: () =>
         bannerService?.diagnostics() ?? { visible: false, pending: 0, shownCount: 0 },
+      currentId: () => bannerService?.currentId() ?? '',
+      currentSessionId: () => bannerService?.currentSessionId() ?? '',
     }),
     imageGen: createImageGenPort(imageGenService),
     imageDisplay: imageDisplayPort,
@@ -2323,11 +2349,162 @@ async function bootstrap(): Promise<void> {
       if (error !== '') throw new Error(error)
     },
   })
+  // ───────── 轮终改动汇总 + 「任务完成」提醒（2026-11-07，docs/06 §4.2 / docs/07 §4）─────────
+
+  /** 记一次已结算的写文件工具调用（同请求同工具 id 只记一次；按请求数有界）。 */
+  const trackTurnWriteCall = (requestId: string, call: AgentToolCall): void => {
+    const existing = turnWriteToolCalls.get(requestId)
+    if (existing === undefined) {
+      while (turnWriteToolCalls.size >= TURN_WRITE_REQUESTS_MAX) {
+        const oldest = turnWriteToolCalls.keys().next().value
+        if (oldest === undefined) break
+        turnWriteToolCalls.delete(oldest)
+      }
+      turnWriteToolCalls.set(requestId, [call])
+      return
+    }
+    if (existing.some((item) => item.id === call.id)) return
+    if (existing.length >= TURN_WRITE_CALLS_MAX) return
+    existing.push(call)
+  }
+
+  const takeTurnWriteCalls = (requestId: string): AgentToolCall[] => {
+    const calls = turnWriteToolCalls.get(requestId)
+    turnWriteToolCalls.delete(requestId)
+    return calls ?? []
+  }
+
+  /** 「任务完成」提醒正文：会话标题 + 改动文件数，缺失的半句整句省略（不造空括号）。 */
+  const taskDoneBody = (title: string, changedFiles: number): string => {
+    const head = title.trim() === '' ? '本次任务' : `《${title.trim()}》`
+    const tail = changedFiles > 0 ? `已完成，改动 ${changedFiles} 个文件` : '已完成'
+    const text = `${head}${tail}`
+    return text.length <= 120 ? text : `${text.slice(0, 119)}…`
+  }
+
+  /** 任务完成提醒偏好（v41，docs/07 §4）：设置读失败按「开 + 仅后台」的出厂值处理。 */
+  const taskDonePreferences = (): typeof DEFAULT_TASK_DONE_PREFERENCES => {
+    try {
+      const notifications = settings!.get().notifications
+      return {
+        enabled: notifications.taskDoneEnabled,
+        backgroundOnly: notifications.taskDoneBackgroundOnly,
+      }
+    } catch (error) {
+      logger?.debug('读取任务完成提醒设置失败，按缺省处理', { error: String(error) })
+      return DEFAULT_TASK_DONE_PREFERENCES
+    }
+  }
+
+  /** 正常收敛后投递「任务完成」提醒；smoke 只记录不真投（避免冒烟期间刷系统通知）。 */
+  const notifyTaskDone = async (
+    sessionId: string,
+    requestId: string,
+    changedFiles: number,
+  ): Promise<void> => {
+    // 用户偏好先判：关掉就彻底静默；「仅后台」时主界面正在前台就不打扰。
+    // smoke 一律按「不在前台」跑，保证自测断言的是投递路径本身。
+    const focused = smokeMode ? false : windows?.isFocused('chat') === true
+    if (!shouldSendTaskDoneNotice(taskDonePreferences(), focused)) {
+      logger?.debug('任务完成提醒已按设置跳过', { sessionId, requestId, focused })
+      return
+    }
+    let title = ''
+    try {
+      title = (await sessions?.titleStateOf(sessionId))?.title?.trim() ?? ''
+    } catch (error) {
+      logger?.debug('读取会话标题失败，任务完成提醒不带标题', { error: String(error) })
+    }
+    const notice = { title: '任务完成', body: taskDoneBody(title, changedFiles), sessionId }
+    if (smokeMode) {
+      smokeTaskNotices.push(notice)
+      if (smokeTaskNotices.length > 50) smokeTaskNotices.shift()
+      return
+    }
+    // 标题 / 正文 / 会话归属与默认提醒方式都走既有 NotificationService：不另开一条通道
+    notifications?.notify({
+      title: notice.title,
+      body: notice.body,
+      sessionId,
+      level: 'success',
+      dedupeKey: `task-done:${requestId}`,
+    })
+  }
+
+  /**
+   * 一条 job 正常收敛：汇总本轮改动 → 推给 chat 渲染层 → 发「任务完成」提醒。
+   * 任何一步失败都只 warn，不能影响收尾（卡片与提醒都只是锦上添花）。
+   */
+  const finalizeTurnChanges = async (sessionId: string, requestId: string): Promise<void> => {
+    const toolCalls = takeTurnWriteCalls(requestId)
+    if (toolCalls.length === 0) {
+      await notifyTaskDone(sessionId, requestId, 0)
+      return
+    }
+    let files: ChangedFileInfo[] = []
+    try {
+      files = await collectTurnChanges(
+        { sessionId, toolCalls },
+        {
+          snapshots: {
+            list: (query) => ensureSnapshotPort().list(query),
+            readContent: (ref) => ensureSnapshotPort().readContent(ref),
+          },
+          readFile: (path) => fs.readFile(path),
+          stat: async (path) => ({ size: (await fs.stat(path)).size }),
+          logger: logger?.child('turn-changes') ?? createNoopLogger(),
+          workspaceRootOf: (id) => sessionProjects.boundaryRoot(id),
+          homeDir: app.getPath('home'),
+        },
+      )
+    } catch (error) {
+      logger?.warn('轮终改动汇总失败（任务完成提醒照常）', {
+        sessionId,
+        requestId,
+        error: String(error),
+      })
+    }
+    if (files.length > 0) {
+      const payload: ChatTurnChangesPayload = { sessionId, requestId, files }
+      windows?.sendTo('chat', IPC.chat.turnChanges, payload)
+      if (smokeMode) {
+        smokeTurnChanges.push(payload)
+        if (smokeTurnChanges.length > 50) smokeTurnChanges.shift()
+      }
+    }
+    await notifyTaskDone(sessionId, requestId, files.length)
+  }
+
+  /** 提醒被点击：打开主界面到前台（最小化恢复）并切到该会话（与 Computer Use 收尾同一套顺序）。 */
+  const activateSessionFromNotice = async (sessionId: string): Promise<void> => {
+    await sessions?.get(sessionId)
+    const manager = windows
+    if (manager === undefined) return
+    manager.bringToFront('chat')
+    // 主界面首次打开时 bringToFront 会现场建窗：等加载完再推，否则推给还没挂监听器的页面
+    void manager.whenLoaded('chat').then(() => {
+      manager.sendTo('chat', IPC.chat.remoteActivate, { sessionId })
+    })
+  }
+
   agentActivityDetach = agent.onEvent((event) => {
     if (event.sessionId.startsWith(FILE_AWARENESS_SESSION_PREFIX)) return
     if (event.type === 'queued') activeAgentRequests.add(event.requestId)
     else if (event.type === 'done' || event.type === 'error') {
       activeAgentRequests.delete(event.requestId)
+    }
+    // 轮终改动汇总（docs/06 §4.2）：写文件工具一结算就记下来，job 落 done 时再汇总；
+    // 失败 / 取消 / 暂停的终态把记录清掉，别让内存随会话越积越多。
+    if (event.type === 'tool') {
+      if (event.call.state !== 'running' && TURN_CHANGE_TOOL_NAMES.has(event.call.name)) {
+        trackTurnWriteCall(event.requestId, event.call)
+      }
+    } else if (event.type === 'job') {
+      if (event.job.status === 'done')
+        void finalizeTurnChanges(event.job.sessionId, event.requestId)
+      else if (event.job.status !== 'running') turnWriteToolCalls.delete(event.requestId)
+    } else if (event.type === 'error') {
+      turnWriteToolCalls.delete(event.requestId)
     }
     fileAwareness?.setAgentBusy(activeAgentRequests.size > 0)
   })
@@ -2907,12 +3084,14 @@ async function bootstrap(): Promise<void> {
           title: request.title,
           body: request.body,
           // 系统级提醒（分类完成 / 课前提醒 / 引导 / notify_user）统一按 info 档 + 提示音；
-          // 是否朗读仍由请求级 speak 缺省（= 用户 TTS 配置）决定
-          level: 'info',
+          // 「任务完成」带自己的 success 档；是否朗读仍由请求级 speak 缺省（= 用户 TTS 配置）决定
+          level: request.level ?? 'info',
           sound: true,
           ...(request.dedupeKey === undefined ? {} : { dedupeKey: request.dedupeKey }),
           // 智慧提醒的汇总内容长，投递时会带更长的停留请求（仍受流光 2–30s 钳制）
           ...(request.durationMs === undefined ? {} : { durationMs: request.durationMs }),
+          // 「任务完成」带会话 id：卡片可点，主进程点击时跳回该会话
+          ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
         },
         { source: 'system' },
       ).ok ?? false,
@@ -2920,6 +3099,8 @@ async function bootstrap(): Promise<void> {
       shell.openPath(target).then((error) => {
         if (error !== '') throw new Error(error)
       }),
+    // 点击带 sessionId 的提醒（系统通知 / 流光卡片同一入口）→ 打开主界面并切会话
+    activateSession: (sessionId) => activateSessionFromNotice(sessionId),
     smartGate: (request) => smartReminderService?.gate(request) ?? 'deliver',
   })
   extractPool = new ExtractPool({
@@ -3252,9 +3433,14 @@ async function bootstrap(): Promise<void> {
       banner: smokeMode ? bannerDiagnostics() : undefined,
       // 智慧提醒：抑制状态 / 队列长度 / 是否已结算（自测断言「抑制入队 → 结算出摘要」）
       smartReminder: smokeMode ? smartReminderService?.diagnostics() : undefined,
+      // 轮终改动汇总 / 任务完成提醒（2026-11-07，docs/06 §4.2）：自测断言真实写文件后的回执
+      turnChanges: smokeMode ? [...smokeTurnChanges] : undefined,
+      taskNotices: smokeMode ? [...smokeTaskNotices] : undefined,
     }),
     // 仅自测：`app:smokeBanner` 的触发器（窗口可见性由上面的 diagnostics 读回）
     smokeBanner: (action) => smokeBannerAction(action),
+    /** 点击带 sessionId 的提醒卡片（`banner:activate`）：打开主界面并切会话 */
+    noticeActivate: (sessionId) => activateSessionFromNotice(sessionId),
     /**
      * 卡片内容高度上报（`banner:measure`）。
      *
@@ -3808,6 +3994,15 @@ async function runCapture(dir: string): Promise<void> {
         act: SETTINGS_NOTIFICATIONS_SMART_ACT,
         check: SETTINGS_NOTIFICATIONS_SMART_CHECK,
       },
+      // 提醒页的「任务完成提醒」区组（v41）：出厂态两个开关都开、非置灰；check 还会
+      // 点一次总开关验证子项置灰 / 恢复（最后点回默认态，capture 的 userData 本就是隔离的）。
+      {
+        name: 'settings',
+        file: 'settings-notifications-task.png',
+        query: { page: 'notifications' },
+        act: SETTINGS_NOTIFICATIONS_TASK_ACT,
+        check: SETTINGS_NOTIFICATIONS_TASK_CHECK,
+      },
       // 提醒页的「定时提醒 + 勿扰时段」区组（2026-10-25 聚合，docs/08 §6/§6.1）。
       // 课前提醒三件套的门控是「ClassRoom 模式 + 课表有节次」，所以 prepare 先造现场：
       // 切模式 + 保证至少一节课（capture 的 userData 是隔离的，不用还原）。
@@ -4119,6 +4314,13 @@ async function runSmokeTest(userData: string): Promise<void> {
             },
           },
         },
+      },
+      // 任务完成提醒（v41，docs/07 §4）：自测断言投递路径本身，固定成「开 + 每次完成都提醒」，
+      // 免得隔离 userData 的默认「仅后台」在窗口有焦点时把断言变成空真。
+      notifications: {
+        ...settings!.get().notifications,
+        taskDoneEnabled: true,
+        taskDoneBackgroundOnly: false,
       },
     }
     settings?.update(smokePatch as Partial<Settings>)
@@ -4908,9 +5110,20 @@ async function runSmokeTest(userData: string): Promise<void> {
     let readonlyOk = false
     let rollbackOk = false
     let eventsOk = false
+    let changesOk = false
+    let noticeOk = false
     /** 本次观察到的所有事件类型（用于"白名单没被放宽"的断言） */
     const seenTypes = new Set<string>()
     let integrationDetail = ''
+    /** 等一个异步旁路结果（轮终汇总 / 任务完成提醒都是 job done 之后异步产出的） */
+    const waitForSmoke = async (predicate: () => boolean, timeoutMs = 5000): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        if (predicate()) return true
+        await new Promise<void>((resolve) => setTimeout(resolve, 50))
+      }
+      return predicate()
+    }
     /** 等某个会话的请求跑完（done 事件；30s 兜底，避免自测整体挂死） */
     const waitForSessionDone = async (
       h: NonNullable<typeof agent>,
@@ -4975,12 +5188,32 @@ async function runSmokeTest(userData: string): Promise<void> {
         })
         const beforeSnapshots = await snapshotStore.list({ path: target })
         const beforeRequests = stub.getRecordedRequests().length
-        await host.send({
+        const autoSend = await host.send({
           sessionId: 'smoke-integration',
           text: `${WRITE_FILE_MARKER}\n${target}`,
           origin: 'chat',
         })
         await waitForSessionDone(host, 'smoke-integration')
+        // 轮终汇总在 job 落 done 之后异步产出：等它出现再断言（与排障时"点开卡片才看到"同一条链）
+        const turnReady = await waitForSmoke(() =>
+          smokeTurnChanges.some((payload) => payload.requestId === autoSend.requestId),
+        )
+        const turnPayload = smokeTurnChanges.find((entry) => entry.requestId === autoSend.requestId)
+        const changed = turnPayload?.files.find((file) => file.path === target)
+        changesOk =
+          turnReady &&
+          turnPayload?.sessionId === 'smoke-integration' &&
+          changed?.status === 'modified' &&
+          changed.added === 1 &&
+          changed.removed === 1
+        const noticeReady = await waitForSmoke(() =>
+          smokeTaskNotices.some((notice) => notice.sessionId === 'smoke-integration'),
+        )
+        const notice = smokeTaskNotices.find((entry) => entry.sessionId === 'smoke-integration')
+        noticeOk =
+          noticeReady &&
+          notice?.title === '任务完成' &&
+          (notice.body.includes('改动 1 个文件') || notice.body.includes('本次任务已完成'))
         await snapshotStore.flush()
         const prompt = stub
           .getRecordedRequests()
@@ -5055,7 +5288,7 @@ async function runSmokeTest(userData: string): Promise<void> {
         })
         // 还原冒烟期间压小的轮次上限（v34 起它走环境变量，不再是设置）
         delete process.env['AURORA_SMOKE_MAX_ROUNDS']
-        integrationDetail = `scope=${scopeOk} auto=${autoOk} readonly=${readonlyOk} rollback=${rollbackOk} events=[${[...seenTypes].join(',')}] unknown=[${unknown.join(',')}]`
+        integrationDetail = `scope=${scopeOk} auto=${autoOk} readonly=${readonlyOk} rollback=${rollbackOk} changes=${changesOk} notice=${noticeOk} events=[${[...seenTypes].join(',')}] unknown=[${unknown.join(',')}]`
       } else {
         integrationDetail = 'settings / agent / deps 不可用'
       }
@@ -5087,6 +5320,8 @@ async function runSmokeTest(userData: string): Promise<void> {
       eventsOk,
       integrationDetail,
     )
+    record('集成⑦：轮终改动汇总带上了真实写过的文件与 +/- 行数', changesOk, integrationDetail)
+    record('集成⑧：正常收敛后组装「任务完成」提醒并带会话归属', noticeOk, integrationDetail)
   }
 
   // 2.7 给"第二次启动"留一条 paused 的 job（step 5 的跨进程续跑验证前置）：
@@ -7243,17 +7478,15 @@ function smokeBannerAction(action: 'show' | 'dismiss'): BannerDiagnostics {
   return bannerDiagnostics()
 }
 
-/** 系统通知载体（docs/05 §3.3）。展示失败返回 false，由 NotificationService 记日志降级。 */ function createNotificationPresenter(): (request: {
-  title: string
-  body: string
-  openPath?: string
-}) => boolean {
+/** 系统通知载体（docs/05 §3.3）。展示失败返回 false，由 NotificationService 记日志降级。 */
+function createNotificationPresenter(): (request: NotificationRequest) => boolean {
   return (request) => {
     if (!Notification.isSupported()) return false
     try {
       const notification = new Notification({ title: request.title, body: request.body })
       notification.on('click', () => {
-        void notifications?.handleClick(request.openPath)
+        // 带 sessionId（任务完成）→ 跳会话；否则打开文件夹。目标语义只在 handleClick 一份实现
+        void notifications?.handleClick(request)
       })
       notification.show()
       return true

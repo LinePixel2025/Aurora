@@ -21,8 +21,10 @@ import { deepClone } from '@aurora/shared/browser'
 import type {
   AgentJob,
   AgentToolCall,
+  ChangedFileInfo,
   ChatMessageDto,
   ChatSessionSummary,
+  ChatTurnChangesPayload,
   JobSummary,
   SendMessageRequest,
   SubagentSnapshot,
@@ -104,6 +106,59 @@ export function sessionIdFor(context: ChatContext): string {
   if (context === 'quick') return 'quick'
   if (context === 'main') return 'main'
   return 'settings'
+}
+
+/**
+ * 轮终改动汇总的**模块级缓存**（2026-11-07，docs/06 §4.2）。
+ *
+ * 主进程在一条请求正常收敛后推 `chat:turnChanges`；这里按 `(sessionId, requestId)` 存下来，
+ * **不按当前会话过滤**（事件对非当前会话也会到，切走再切回仍要能显示）。不落会话文件、
+ * 重启即失 —— 与 DSH 的改动文件卡片同款口径。
+ *
+ * 有界：最多 200 条，超出按插入序丢最旧（长会话 / 多会话同开时不至于无界增长）。
+ */
+const turnChangesCache = new Map<
+  string,
+  { sessionId: string; requestId: string; files: readonly ChangedFileInfo[] }
+>()
+const TURN_CHANGES_CACHE_LIMIT = 200
+const turnChangesVersion = ref(0)
+
+function turnChangesKey(sessionId: string, requestId: string): string {
+  return `${sessionId}\u0000${requestId}`
+}
+
+export function cacheTurnChanges(payload: ChatTurnChangesPayload): void {
+  if (payload.files.length === 0) return
+  const key = turnChangesKey(payload.sessionId, payload.requestId)
+  turnChangesCache.delete(key)
+  turnChangesCache.set(key, {
+    sessionId: payload.sessionId,
+    requestId: payload.requestId,
+    files: payload.files,
+  })
+  while (turnChangesCache.size > TURN_CHANGES_CACHE_LIMIT) {
+    const oldest = turnChangesCache.keys().next().value
+    if (oldest === undefined) break
+    turnChangesCache.delete(oldest)
+  }
+  turnChangesVersion.value += 1
+}
+
+/**
+ * 读某个会话的轮终改动（requestId → files）。
+ *
+ * 读 `turnChangesVersion` 是**有意的**：模块级 Map 不是响应式的，写缓存后自增一次版本，
+ * 让调用它的 computed 重算。单测也可以直接调它（不依赖 Vue 组件）。
+ */
+export function readTurnChanges(sessionId: string): Map<string, readonly ChangedFileInfo[]> {
+  void turnChangesVersion.value
+  const map = new Map<string, readonly ChangedFileInfo[]>()
+  for (const entry of turnChangesCache.values()) {
+    if (entry.sessionId !== sessionId) continue
+    map.set(entry.requestId, entry.files)
+  }
+  return map
 }
 
 /**
@@ -508,6 +563,22 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     void loadSessions()
   })
 
+  /**
+   * 轮终改动汇总（2026-11-07，docs/06 §4.2）：写进模块级缓存，**不按当前会话过滤** ——
+   * 事件对其它会话也会到（主进程直接推给 chat 窗口），切回该会话时要能立刻显示卡片。
+   */
+  const disposeTurnChanges = window.aurora.chat.onTurnChanges((payload) => {
+    cacheTurnChanges(payload)
+  })
+
+  /**
+   * 当前会话的轮终改动（requestId → files）。`turnChangesVersion` 只是触发器：
+   * 模块级 Map 不是响应式的，写缓存后自增一次让它重算。
+   */
+  const turnChangesForSession = computed<ReadonlyMap<string, readonly ChangedFileInfo[]>>(() =>
+    readTurnChanges(sessionId.value),
+  )
+
   onScopeDispose(() => {
     // 先 flush 再 dispose：卸载瞬间已入队的增量不能丢（消息正文会缺尾），
     // dispose 只负责取消在途帧与清空缓冲（组件已经没了，不再 apply）
@@ -518,6 +589,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     disposeCenterVisibility()
     disposeSessionDeleted()
     disposeSessionTitle()
+    disposeTurnChanges()
   })
 
   /**
@@ -1305,6 +1377,11 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     lastSettledRequestId,
     lastSettledAt,
     latestTurnGroupable,
+    /**
+     * 当前会话的轮终改动（requestId → 文件清单；2026-11-07）：MessageList 在每条请求的
+     * 最后一条助手消息下渲染「本次改动文件」卡片。只在内存、重启即失。
+     */
+    turnChangesForSession,
     /** 本会话 token 用量（输入框底部「上下文详解」的数据源，docs/07 §2.3） */
     usage,
     /** 本会话的子代理运行（「子代理」页面用，新的在前） */

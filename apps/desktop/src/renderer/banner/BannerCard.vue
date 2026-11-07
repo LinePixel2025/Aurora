@@ -18,7 +18,7 @@
  * 字号 / 内边距 / 关闭按钮全部用 `cqw` 跟卡片宽度联动（根节点是容器查询锚点）：
  * 主进程只决定宽度（按显示器比例），渲染层决定"字有多大"，两边不会各写一套数字。
  */
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BannerShowPayload } from '@aurora/shared'
 import { useTts } from '../shared/composables/useTts.js'
 import { playBannerChime } from '../shared/chime.js'
@@ -30,12 +30,38 @@ const props = defineProps<{
   muted: boolean
 }>()
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; activate: [] }>()
 
 const tts = useTts()
 const cardEl = ref<HTMLElement | null>(null)
 let observer: ResizeObserver | null = null
 let reportedHeight = -1
+
+/**
+ * 这张卡是否可点开会话（2026-11-07，docs/07 §2.2.3 / §4）：只有带 `sessionId` 的提醒
+ * （目前是「任务完成」）才是按钮；其它提醒保持旧行为（点卡片 = 关闭）。
+ */
+const activatable = computed(() => props.payload !== null && (props.payload.sessionId ?? '') !== '')
+
+function onCardClick(): void {
+  if (!activatable.value) {
+    emit('close')
+    return
+  }
+  emit('activate')
+}
+
+function onCardKeydown(event: KeyboardEvent): void {
+  if (!activatable.value) return
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  emit('activate')
+}
+
+function cardLabel(): string | undefined {
+  if (!activatable.value) return undefined
+  return `${props.payload?.title ?? ''}，点击打开会话`
+}
 
 /**
  * 把卡片真实高度回报主进程（幂等：0.5px 内的重复回报直接跳过，避免和窗口 resize 来回抖）。
@@ -97,11 +123,14 @@ onUnmounted(() => {
         :key="payload.id"
         ref="cardEl"
         class="banner-card"
-        :class="`banner-card--${payload.level}`"
+        :class="[`banner-card--${payload.level}`, { 'banner-card--activatable': activatable }]"
         :data-size="payload.size ?? 'standard'"
-        role="alert"
+        :role="activatable ? 'button' : 'alert'"
+        :tabindex="activatable ? 0 : undefined"
+        :aria-label="cardLabel()"
         data-field="banner.card"
-        @click="emit('close')"
+        @click="onCardClick"
+        @keydown="onCardKeydown"
       >
         <span class="banner-card-accent" aria-hidden="true" />
         <div class="banner-card-text">
@@ -167,6 +196,20 @@ onUnmounted(() => {
   cursor: default;
   transform-origin: 50% 0;
   will-change: transform, opacity;
+}
+
+/* 带 sessionId 的提醒整卡可点（跳会话）：其余提醒保持 default + 点卡片关闭 */
+.banner-card--activatable {
+  cursor: pointer;
+}
+
+.banner-card--activatable:hover {
+  border-color: var(--border-strong);
+}
+
+.banner-card--activatable:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
 }
 
 /* ─── 入场：从流光里落下 ─── */

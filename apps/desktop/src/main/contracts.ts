@@ -226,6 +226,13 @@ export interface BannerServiceLike {
   ): { ok: boolean; reason?: string; id?: string; queued?: boolean }
   dismiss(id: string): BannerDismissResult
   diagnostics(): { visible: boolean; pending: number; shownCount: number }
+  /**
+   * 当前展示 id（`banner:activate` / `banner:measure` 的幂等判据；没有则空串）。
+   * 2026-11-07 起「点击卡片跳会话」只认**当前这一条**，渲染层回执里的 id 不是信任来源。
+   */
+  currentId(): string
+  /** 当前展示那条要跳回的会话（没有 / 不带会话时为空串） */
+  currentSessionId(): string
 }
 
 export interface AgentHost {

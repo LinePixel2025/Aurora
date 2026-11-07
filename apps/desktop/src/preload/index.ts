@@ -164,6 +164,8 @@ const api: AuroraApi = {
     onSessionDeleted: (listener) => subscribe(IPC.chat.sessionDeleted, listener),
     // 会话自动标题推送（docs/06 §4）：生成成功后原位更新列表，不重新水合消息
     onSessionTitleChanged: (listener) => subscribe(IPC.chat.sessionTitleChanged, listener),
+    // 轮终改动汇总推送（2026-11-07，docs/06 §4.2）：只在内存，供对话尾部卡片
+    onTurnChanges: (listener) => subscribe(IPC.chat.turnChanges, listener),
     // 会话三分（docs/06 §4）：space / projectId 只透传（纯字面量，无 Proxy 克隆问题）
     newSession: (options) => invoke(IPC.chat.newSession, options),
     // 真删除会话（docs/08 会话管理页）：不可逆，二次确认由调用方负责
@@ -220,6 +222,8 @@ const api: AuroraApi = {
     dismiss: (id) => invoke(IPC.banner.dismiss, { id }),
     // 卡片内容高度上报：窗口矩形必须等于「卡片 + 24px」，靠估算会在某些文案上留死区
     measure: (request) => invoke(IPC.banner.measure, request),
+    // 点击带 sessionId 的卡片：主进程只认当前那条，先关闭再切回对应会话
+    activate: (id) => invoke(IPC.banner.activate, { id }),
   },
   // 提醒通道（v37）：设置页「提醒」的试一下按钮（按当前默认方式投递一条示例）
   notifications: {

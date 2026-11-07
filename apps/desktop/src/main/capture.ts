@@ -6298,6 +6298,73 @@ export const SETTINGS_NOTIFICATIONS_SMART_CHECK = `(async () => {
   }
 })()`
 
+/**
+ * 提醒页「任务完成提醒」区组（v41，docs/07 §4 / docs/08 §6.1）：
+ * act 把它滚进视口；check 读出厂态（两个开关都开、非置灰），再点一次总开关验证
+ * 「子控件随总开关置灰 / 恢复」这条接线（最后会点回来，配置留在默认态）。
+ */
+export const SETTINGS_NOTIFICATIONS_TASK_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const section = document.querySelector('[data-field="notifications.taskDone"]')
+    if (section === null) return { ok: false, reason: '任务完成提醒区组不在 DOM' }
+    section.scrollIntoView({ block: 'start' })
+    await wait(220)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_NOTIFICATIONS_TASK_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(260)
+    const field = (id) => document.querySelector('[data-field="notifications.' + id + '"]')
+    const checkboxOf = (element) =>
+      element === null ? null : element.querySelector('input[type="checkbox"]')
+    const section = field('taskDone')
+    const enabled = checkboxOf(field('taskDoneEnabled'))
+    const backgroundOnly = checkboxOf(field('taskDoneBackgroundOnly'))
+    const enabledRect = enabled === null ? null : enabled.getBoundingClientRect()
+    const backgroundRect = backgroundOnly === null ? null : backgroundOnly.getBoundingClientRect()
+    const conditions = {
+      sectionPresent: section !== null,
+      enabledOnByDefault: enabled !== null && enabled.checked === true,
+      backgroundOnlyOnByDefault: backgroundOnly !== null && backgroundOnly.checked === true,
+      notDormant: section !== null && !section.classList.contains('dormant'),
+      // 复选框是 16px（SettingField 统一外观）：量「能点中」的下限，不量存在
+      enabledClickable: enabled !== null && enabled.disabled === false && enabledRect.height >= 12,
+      backgroundClickable:
+        backgroundOnly !== null &&
+        backgroundOnly.disabled === false &&
+        backgroundRect.width >= 12,
+    }
+    // 「总开关关 → 子项置灰」：点一次总开关，等 Vue 与 IPC 往返后再读，最后点回来
+    if (enabled !== null && backgroundOnly !== null) {
+      enabled.click()
+      await wait(320)
+      conditions.subDisabledWhenOff = backgroundOnly.disabled === true
+      enabled.click()
+      await wait(320)
+      conditions.restoredAfterToggle =
+        enabled.checked === true && backgroundOnly.disabled === false
+    } else {
+      conditions.subDisabledWhenOff = false
+      conditions.restoredAfterToggle = false
+    }
+    const pass = Object.keys(conditions).every((key) => conditions[key] === true)
+    return {
+      pass,
+      conditions,
+      enabled: enabled === null ? null : enabled.checked,
+      backgroundOnly: backgroundOnly === null ? null : backgroundOnly.checked,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
 export const SETTINGS_AWARENESS_SCROLL_ACT = `(async () => {  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const usage = document.querySelector('[data-field="fileAwareness.usage"]')
@@ -9640,6 +9707,52 @@ export const CHAT_MARKDOWN_CHECK = `(async () => {
         charts: q('.md-chart'),
         chartStates: states,
       },
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_CHANGED_FILES_CHECK = `(async () => {
+  try {
+    const settle = () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))),
+      )
+    const card = document.querySelector('[data-field="chat.changed-files"]')
+    if (card === null) return { pass: false, reason: 'no changed-files card' }
+    const head = card.querySelector('[data-field="chat.changed-files-title"]')
+    const titleNode = head === null ? null : head.querySelector('.changed-files-label')
+    const title = titleNode === null ? '' : (titleNode.textContent || '').trim()
+    const stats = head === null ? '' : (head.textContent || '')
+    const collapsedRows = card.querySelectorAll('[data-field="chat.changed-file"]').length
+    const text = card.textContent || ''
+    const more = card.querySelector('.changed-files-more')
+    if (more !== null) more.click()
+    await settle()
+    const expandedRows = card.querySelectorAll('[data-field="chat.changed-file"]').length
+    const first = card.querySelector('[data-field="chat.changed-file"]')
+    if (first !== null) first.click()
+    await settle()
+    const filesTab = document.querySelector('[data-field="chat.ctx-tab-files"]')
+    const tabActive = filesTab !== null && filesTab.getAttribute('aria-selected') === 'true'
+    const conditions = {
+      card: true,
+      title: title.indexOf('已编辑 6 个文件') !== -1,
+      statsAdded: stats.indexOf('+49') !== -1,
+      statsRemoved: stats.indexOf('-4') !== -1,
+      collapsed: collapsedRows === 4,
+      expanded: expandedRows === 6,
+      binary: text.indexOf('二进制') !== -1,
+      oversized: text.indexOf('过大') !== -1,
+      rowOpensFiles: tabActive,
+    }
+    return {
+      pass: Object.keys(conditions).every((key) => conditions[key] === true),
+      conditions,
+      title,
+      collapsedRows,
+      expandedRows,
     }
   } catch (error) {
     return { pass: false, reason: String(error) }
@@ -13798,6 +13911,10 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
         id: 'capture-archived-a1',
         role: 'assistant',
         content: '这条会话已被归档，用来验证左栏归档分组的分组、计数与可逆往返。',
+        // 2026-11-07：轮终改动卡片场景（chat-changed-files.png）用这条已归档会话当载体 ——
+        // 它天然不出现在主列表（避免多一条会话行打乱左栏探针），但 `chat:remoteActivate`
+        // 仍能切进来（隐藏只过滤左栏展示，docs/12 §5）。
+        requestId: 'capture-changes-turn',
         createdAt: archivedAt,
       },
     ],
@@ -14630,6 +14747,66 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       act: CHAT_CTX_EMPTY_ACT,
       check: CHAT_CTX_EMPTY_CHECK,
+    },
+    // 本次改动文件卡片（2026-11-07，docs/07 §2.3，对齐 DSH 的 turn tail）：排在本组最末。
+    // 现场用**已归档会话** `chat-seed-archived`（它不在主列表里，不会多出一行打乱左栏探针），
+    // 由主进程按真实链路推 `chat:remoteActivate` + `chat:turnChanges` 拿卡片；
+    // check 在截图后展开列表并点一行，断言「展开 6 行 + 二进制/过大 + 行点击打开文件标签」。
+    {
+      name: 'chat',
+      file: 'chat-changed-files.png',
+      prepare: async () => {
+        await manager.reload('chat', {})
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        manager.sendTo('chat', IPC.chat.remoteActivate, { sessionId: 'chat-seed-archived' })
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        manager.sendTo('chat', IPC.chat.turnChanges, {
+          sessionId: 'chat-seed-archived',
+          requestId: 'capture-changes-turn',
+          files: [
+            {
+              path: 'D:\\capture\\assets\\big.bin',
+              display: 'assets/big.bin',
+              status: 'oversized',
+            },
+            {
+              path: 'D:\\capture\\dist\\app.asar',
+              display: 'dist/app.asar',
+              status: 'binary',
+            },
+            {
+              path: 'D:\\capture\\docs\\07-ui-spec.md',
+              display: 'docs/07-ui-spec.md',
+              status: 'modified',
+              added: 5,
+              removed: 0,
+            },
+            {
+              path: 'D:\\capture\\notes\\plan.md',
+              display: 'notes/plan.md',
+              status: 'created',
+              added: 12,
+              removed: 0,
+            },
+            {
+              path: 'D:\\capture\\src\\main.ts',
+              display: 'src/main.ts',
+              status: 'modified',
+              added: 24,
+              removed: 3,
+            },
+            {
+              path: 'D:\\capture\\src\\renderer\\chat\\App.vue',
+              display: 'src/renderer/chat/App.vue',
+              status: 'modified',
+              added: 8,
+              removed: 1,
+            },
+          ],
+        })
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      },
+      check: CHAT_CHANGED_FILES_CHECK,
     },
     // 五段共用同一窗口，不能加 query / reload；本地占位凭据只在隔离 userData 中保存，绝不测试连接。
     // 双主题场景（step-06）刻意排在五段**之前**：它只等第 0 段就位、不点任何页脚按钮，

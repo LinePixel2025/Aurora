@@ -116,6 +116,7 @@ const {
   lastSettledRequestId,
   lastSettledAt,
   latestTurnGroupable,
+  turnChangesForSession,
   subagentRuns,
   usage,
   jobs,
@@ -333,6 +334,33 @@ watch(
   },
   { immediate: true },
 )
+
+/**
+ * 「本次改动文件」卡片 → 右栏文件预览（2026-11-07，docs/07 §2.3）。
+ *
+ * 每个「文件」标签一份请求（`token` 单调递增：同一路径再点一次也要重新预览）。
+ * 必须等一次 `nextTick` 再写请求：标签首次打开时面板是这一帧才挂载的，
+ * 提前写进去，面板的 watch 还没建立，点击就"没反应"。
+ */
+const fileOpenRequests = ref<Record<string, { path: string; token: number }>>({})
+let fileOpenToken = 0
+
+async function openChangedFile(path: string): Promise<void> {
+  const target = path.trim()
+  if (target === '') return
+  contextOpen.value = true
+  const tab = ensureCtxKind('files')
+  if (tab === null) {
+    flashProjectNotice('error', `标签已达上限（${CTX_TABS_MAX} 个），先关掉一个`)
+    return
+  }
+  await nextTick()
+  fileOpenToken += 1
+  fileOpenRequests.value = {
+    ...fileOpenRequests.value,
+    [tab.id]: { path: target, token: fileOpenToken },
+  }
+}
 
 /**
  * 开新标签（「＋」菜单）：到上限时给一条可见提示，而不是静默什么都不发生。
@@ -2445,8 +2473,10 @@ async function markGuideDone(): Promise<void> {
           :settled-request-id="lastSettledRequestId"
           :settled-at="lastSettledAt"
           :latest-turn-groupable="latestTurnGroupable"
+          :turn-changes="turnChangesForSession"
           @speak="speakMessage"
           @stop-speak="tts.stop"
+          @open-file="openChangedFile"
         />
       </div>
 
@@ -2715,6 +2745,7 @@ async function markGuideDone(): Promise<void> {
               v-if="tab.kind === 'files'"
               :session-id="sessionId"
               :project-name="currentProjectName"
+              :open-request="fileOpenRequests[tab.id] ?? null"
               @title="(title) => setCtxTabTitle(tab.id, title)"
             />
             <!-- 终端是单列 flex（组件内部自管布局与滚动），不吃两行网格 -->

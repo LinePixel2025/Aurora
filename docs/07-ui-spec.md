@@ -233,6 +233,10 @@
   - 渲染层按 `durationMs - 320ms` 开始淡出、到点回执 `banner:dismiss(id)`；主进程另有
     `durationMs + 1500ms` 的**兜底定时器**（渲染进程崩掉 / 脚本异常时照样收尾，卡片不会永远挂着）。
   - 点击卡片任意位置或右上角关闭按钮都会播完退场再回执关闭；主进程收到回执后隐藏两扇窗并推进队列。
+    **2026-11-07 起带 `sessionId` 的提醒（目前只有「任务完成」）卡片可点开会话**：整张卡片是
+    `role="button"`（Enter / Space 同效）、悬停给 pointer，点击先播退场，再经 `banner:activate`
+    让主进程校验「当前 id + 该条的 sessionId」后打开主界面并切到该会话；右上角关闭按钮仍是
+    **只关卡片**（`@click.stop`）。无 sessionId 的旧提醒保持「点卡片 = 关闭」不变。
   - **提示音（R4，2026-11-01 重写）**：Web Audio 现场合成三声上行音
     （A5 → C#6 → E6，三角波，快起慢落 0.72s），不新增音频资产（打包体积 / CSP / 资源缺失
     三件事一起省掉）；**模块级复用同一个 `AudioContext`**，播放前若 `state !== 'running'`
@@ -747,6 +751,25 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
     折叠态下展开体**仍在 DOM 里**（grid `0fr` 收成零高度、内层 `overflow: hidden`，见 §5.2）：
     `capture` 的两条探针要先读到折叠态的 `.thinking-head` 文案（含「已深度思考」）与
     `.thinking.streaming .thinking-text` 锚点，整块 `v-if` 掉会让它们在折叠的那一帧失效。
+- **本次改动文件卡片（2026-11-07，对齐 DeepSeek Harness；同日按用户要求加重视觉）**：
+  正常完成的请求在**最终结论之后**追加一张「本轮改动文件」**独立卡片**
+  （`ChangedFilesCard.vue`，`data-field="chat.changed-files"`；`MessageList` 在最终助手消息的
+  正文 / 图片之后、朗读按钮之前渲染）。数据来自主进程的 `chat:turnChanges`（口径见 06 §4.2），
+  **只有内存、重启即失**（与 DSH 一致）。
+  - 视觉：抬升表面（`--bg-raised`）+ 1px `--border-strong` + **左侧 3px 强调色描边** +
+    `--radius-md`；头部是图标底块（30px 圆角方块、强调色 16% 填充）+「本次改动」小字 +
+    主文本色 semibold 标题 + 绿/红统计**药丸**（`+A` / `-R`，等宽）。逐行 27px、文件图标按
+    状态着色（新建绿 / 删除红 / 过大橙），hover 整行 `--fill-2`。底部左侧展开按钮（胶囊）、
+    右侧灰色小字「点击文件在右侧预览」。
+  - 文案：多文件标题「已编辑 N 个文件」、单文件标题「已编辑 <文件名>」；无改动 / 收集失败时
+    **整张卡片不出现**。
+  - 行 = 展示路径（工作目录内为 `/` 相对路径，家目录内 `~/…`，其余绝对路径）+ 等宽
+    `+n` / `-n`；二进制显示「二进制」，超限显示「过大」，没有可对比内容显示「未统计」。
+  - 折叠态先显示 **4 行**，底部「全部 N 个文件」展开、「收起」收回；行是 button，
+    键盘可达，`title` 给完整路径。
+  - 点行 / 标题在右栏打开该文件的「文件」标签预览（越界路径由 `preview:read` 的会话边界根
+    校验如实报错）；不移植 DSH 的 review tab / hunk 视图。
+  - 子代理内部写入、`run_command` 间接改的文件不列（限制见 06 §4.2）。
 - **工具行（2026-09-30 轨迹重构）**：`todo_write` 渲染为**结构化清单行**
   （`data-field="chat.todo-card"`：状态圈（待办 ○ / 进行中 ◐ / 完成 ✓）+ 条目 + 进度摘要），
   `task` 渲染为**子代理行**（`data-field="chat.task-card"`：任务简述 + 「可读写」徽章 + 步骤数 +
@@ -1637,6 +1660,16 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   `banner` 流光提醒 / `both` 两者都发 / `off` 不打扰（只记日志）。去重（3s，`dedupeKey`）在
   通道判定**之前**：`both` 下同一条提醒也只算一次，不会出现「系统通知被合并、流光却弹了两次」。
   `notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，不受这个默认值影响。
+- **任务完成提醒（2026-11-07，v41 可配置）**：一条 job **正常收敛**（`status: 'done'`）后投递一条
+  `标题 = 任务完成` 的提醒（正文 = `《会话标题》已完成，改动 N 个文件`，无标题 / 无改动时省略
+  对应半句），走上面同一条默认提醒方式与同一套去重 / 免打扰口径（`dedupeKey = task-done:<requestId>`；
+  免打扰期内按 §4 智慧提醒机制入队汇总）。`error` / 用户取消 / 轮次上限 `paused` **不发**。
+  **两项设置**（设置 → 提醒 → 任务完成提醒）：`taskDoneEnabled` 总开关（关掉后完全不发、
+  也不入免打扰队列）与 `taskDoneBackgroundOnly`「仅主界面不在前台时提醒」（开着时主界面持有
+  键盘焦点就跳过 —— 用户正看着这次回复，不再打断；关掉则每次完成都提醒）。用户偏好判定
+  （`shouldSendTaskDoneNotice`）在**主进程**、组提醒正文之前；焦点用 `windows.isFocused('chat')`，
+  不另发 IPC。系统通知与流光提醒**点击都跳会话**：打开主界面到前台（最小化时恢复）并切到该会话；
+  提醒本身不抢焦点，只有点击才跳。
 - **智慧提醒（v40，同一页）**：免打扰期 + 延迟汇总。`smartEnabled` 总开关下有两个免打扰来源：
   手动时段（`smartWindow`，每天重复或当天一次性，一次性在结束后自动清空）与
   「上课期间不提醒」（`smartDuringClass`，仅 ClassRoom 模式生效，「上课中」从课程表
@@ -2516,6 +2549,9 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     （上面这条链只是**已知条目**，不是清单全集：`chat-composer-slash` / `chat-composer-permission` /
     `chat-classisland-status` 也属于本组，2026-09-26 又新增了 `chat-composer-flyouts` /
     `chat-tool-card-open` / `chat-archive` / `chat-stream-burst`，v19 再加 `chat-automation*` 四连。
+    2026-11-07 又在交互窗组**末尾**加 `chat-changed-files`（本次改动文件卡片）：现场用已归档会话
+    `chat-seed-archived`（不占主列表行），由主进程推 `chat:remoteActivate` + `chat:turnChanges`
+    走真实链路出卡片；探针在截图后展开列表、点一行断言会打开「文件」标签。
     **真实顺序与条数以 `report.json` 为准**，
     改顺序时不要照这份清单核对。）
     （`theme-chat` 排在全部交互窗场景之前，因为主题图要拍"未配置模型"的基线态；

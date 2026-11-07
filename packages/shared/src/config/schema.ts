@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 40 as const
+export const CONFIG_VERSION = 41 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -1224,6 +1224,18 @@ export const NotificationsSchema = z.object({
   smartDuringClass: z.boolean().default(false),
   /** 免打扰期结束后由 Agent 总结被抑制的提醒（v40）；关闭或总结失败时逐条纯文本投递。 */
   smartSummarize: z.boolean().default(true),
+  /**
+   * 任务完成提醒（v41，docs/07 §4）：一条 Agent 请求正常收敛（job → `done`）后弹一条
+   * 「任务完成」，点击跳回该会话。关掉后不发、也不入免打扰队列。
+   *
+   * 与 `channel` 的关系：仍按默认提醒方式投递，`off` 时同样静默。
+   */
+  taskDoneEnabled: z.boolean().default(true),
+  /**
+   * 任务完成提醒只在主界面不在前台时发（v41）：`true` 时如果主界面持有键盘焦点就跳过
+   * （用户正看着这次回复，不需要再被打断）；`false` = 每次完成都提醒。
+   */
+  taskDoneBackgroundOnly: z.boolean().default(true),
 })
 export type NotificationsSettings = z.infer<typeof NotificationsSchema>
 

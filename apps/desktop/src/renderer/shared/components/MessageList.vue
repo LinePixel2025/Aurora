@@ -53,10 +53,14 @@
  * `.tool-card` / `.tool-head` / `.tool-icon`（每卡恰好一枚）/ `.tool-body`（带内联 `--collapse-h`）/
  * `.tool-args`；`.thinking` 与同气泡 `.md` 的 DOM 先后（思考在前）不变；
  * `data-field` 的 `chat.messages` / `chat.todo-card` / `chat.task-card` / `chat.thinking-live` 保留。
+ *
+ * 2026-11-07 追加：每条请求**最后一条**助手消息的正文 / 图片之后、朗读按钮之前渲染
+ * 「本次改动文件」卡片（`ChangedFilesCard`，`data-field="chat.changed-files"`）。数据来自
+ * 主进程 `chat:turnChanges`（只在内存、重启即失），没有任何改动时整张卡片不出现。
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { Ref } from 'vue'
-import type { AgentToolCall, ChatDisplayImage } from '@aurora/shared'
+import type { AgentToolCall, ChangedFileInfo, ChatDisplayImage } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '@aurora/shared/browser'
 import '@aurora/shared/browser/markdown/md.css'
@@ -74,6 +78,7 @@ import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
 import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '@aurora/shared/browser'
 import AgentTrace from './AgentTrace.vue'
 import AgentToolRow from './AgentToolRow.vue'
+import ChangedFilesCard from './ChangedFilesCard.vue'
 import DisplayImageGallery from './DisplayImageGallery.vue'
 
 const props = withDefaults(
@@ -118,6 +123,12 @@ const props = withDefaults(
      * 缺省落 `_default` 桶（不切会话的窗口行为与从前一致）。
      */
     sessionId?: string
+    /**
+     * 当前会话的轮终改动（requestId → 文件清单，2026-11-07，docs/06 §4.2）：
+     * 在每条请求**最后一条助手消息**的正文 / 图片之后渲染「本次改动文件」卡片。
+     * 缺省空 Map = 不渲染任何卡片（子代理页 / 自动化回放等不需要它）。
+     */
+    turnChanges?: ReadonlyMap<string, readonly ChangedFileInfo[]>
   }>(),
   {
     emptyHint: '开始一段对话吧',
@@ -131,6 +142,7 @@ const props = withDefaults(
     settledAt: null,
     latestTurnGroupable: true,
     sessionId: '',
+    turnChanges: () => new Map<string, readonly ChangedFileInfo[]>(),
   },
 )
 
@@ -186,6 +198,8 @@ const settledIds = displayState.settledIds
 const emit = defineEmits<{
   (event: 'speak', text: string, id: string): void
   (event: 'stopSpeak'): void
+  /** 点改动文件卡片（行 / 标题）：由父级打开右栏文件预览 */
+  (event: 'open-file', path: string): void
 }>()
 
 /**
@@ -340,6 +354,35 @@ function displayImagesOfMessages(messages: readonly ChatMessage[]): ChatDisplayI
 function displayImagesForMessage(message: ChatMessage): ChatDisplayImage[] {
   const group = groupForFinal(message)
   return group === undefined ? displayImagesOf(message) : displayImagesOfMessages(group.messages)
+}
+
+/** 空清单常量：没有改动数据时不产生新数组引用（模板里的 v-if 只读它，不渲染） */
+const EMPTY_CHANGED_FILES: readonly ChangedFileInfo[] = []
+
+/**
+ * requestId → 该请求**最后一条** assistant 消息 id（2026-11-07，docs/06 §4.2）。
+ *
+ * 卡片挂在请求末尾（DSH 的 turn tail）：只有最后一条助手消息渲染它，
+ * 中间的工具轮正文 / 思考块即使同属一个请求也不重复出现。旧历史缺 `requestId` 时无卡片。
+ */
+const finalAssistantIdByRequest = computed<Map<string, string>>(() => {
+  const finals = new Map<string, string>()
+  for (const message of props.messages) {
+    if (message.role !== 'assistant' || message.requestId === undefined) continue
+    finals.set(message.requestId, message.id)
+  }
+  return finals
+})
+
+function changedFilesOf(message: ChatMessage): readonly ChangedFileInfo[] {
+  const requestId = message.requestId
+  if (requestId === undefined) return EMPTY_CHANGED_FILES
+  if (finalAssistantIdByRequest.value.get(requestId) !== message.id) return EMPTY_CHANGED_FILES
+  return props.turnChanges?.get(requestId) ?? EMPTY_CHANGED_FILES
+}
+
+function openChangedFile(path: string): void {
+  emit('open-file', path)
 }
 
 /** 这条消息正在合成 / 正在播放；两者互斥，由 `useTts` 的状态决定。 */
@@ -1453,6 +1496,17 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               "
               :images="displayImagesForMessage(message)"
               :session-id="props.sessionId"
+            />
+
+            <!--
+              本次改动文件卡片（2026-11-07，docs/07 §2.3，对齐 DSH 的 turn tail）：
+              只在每条请求**最后一条**助手消息上出现，位置在正文 / 图片之后、朗读按钮之前。
+              数据来自主进程 `chat:turnChanges`（只在内存），没有改动时整张卡片不渲染。
+            -->
+            <ChangedFilesCard
+              v-if="changedFilesOf(message).length > 0"
+              :files="changedFilesOf(message)"
+              @open="openChangedFile"
             />
 
             <!--

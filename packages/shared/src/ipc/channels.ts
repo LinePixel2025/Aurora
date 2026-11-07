@@ -190,6 +190,11 @@ export const IPC = {
      * 主进程生成并落盘成功后广播 `{ sessionId, title }`。
      */
     sessionTitleChanged: 'chat:sessionTitleChanged',
+    /**
+     * 轮终改动汇总推送（2026-11-07，docs/06 §4.2，主进程 → chat 渲染层，on/off 成对）：
+     * payload `ChatTurnChangesPayload`（本轮改动的文件 + 增删行数）。只在内存、不落盘。
+     */
+    turnChanges: 'chat:turnChanges',
     /** Job（任务）列表 / 续跑 / 取消（v15，docs/06 §4.1） */
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
@@ -258,6 +263,11 @@ export const IPC = {
     dismiss: 'banner:dismiss',
     /** 渲染层上报卡片内容高度（窗口必须与卡片同大，不能靠字符数估算） */
     measure: 'banner:measure',
+    /**
+     * 点击带 `sessionId` 的提醒卡片（2026-11-07）：主进程只认当前那一条的 id，
+     * 且 sessionId **只从服务里取**（不接受渲染层传入的会话 id）。
+     */
+    activate: 'banner:activate',
   },
   /**
    * 默认提醒方式（v37，docs/07 §4、docs/08 §6.1）：
