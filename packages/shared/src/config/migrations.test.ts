@@ -1120,6 +1120,7 @@ describe('配置迁移链', () => {
         'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
+        'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1171,6 +1172,7 @@ describe('配置迁移链', () => {
         'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
+        'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1602,6 +1604,7 @@ describe('配置迁移链', () => {
         'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
         'v37 → v38：v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
+        'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2146,6 +2149,44 @@ describe('配置迁移链', () => {
           JSON.stringify(parsed.error.issues),
         ).toBe(true)
       }
+    })
+  })
+
+  describe('v39 → v40（智慧提醒，docs/07 §4）', () => {
+    it('为老配置补智慧提醒默认值（全关），且不影响已有提醒字段', () => {
+      const outcome = migrate({
+        version: 39,
+        notifications: { channel: 'banner', volume: 30 },
+      })
+      expect(outcome.applied[0]).toContain('v39 → v40')
+      expect(outcome.data['notifications']).toEqual({
+        channel: 'banner',
+        sound: true,
+        volume: 30,
+        speak: true,
+        size: 'standard',
+        durationMs: 6000,
+        smartEnabled: false,
+        smartWindow: null,
+        smartDuringClass: false,
+        smartSummarize: true,
+      })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('缺 notifications 组与已有组两种起点都幂等', () => {
+      const fromMissing = migrate({ version: 39 })
+      const fromPresent = migrate({
+        version: 39,
+        notifications: { smartEnabled: true, smartWindow: { start: '09:00', end: '11:30', daily: true, armedDate: '2026-11-07' } },
+      })
+      expect(fromMissing.data['notifications']).toMatchObject({ smartEnabled: false, smartWindow: null })
+      expect(fromPresent.data['notifications']).toMatchObject({
+        smartEnabled: true,
+        smartWindow: { start: '09:00', end: '11:30', daily: true, armedDate: '2026-11-07' },
+      })
+      const twice = migrate({ ...fromPresent.data, version: 39 })
+      expect(twice.data['notifications']).toEqual(fromPresent.data['notifications'])
     })
   })
 })

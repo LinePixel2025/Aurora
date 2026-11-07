@@ -34,6 +34,7 @@ const PREVIEW_PAYLOAD: BannerShowPayload = {
   volume: 0.6,
   durationMs: 60_000,
   level: 'success',
+  size: 'standard',
 }
 
 const payload = ref<BannerShowPayload | null>(preview ? PREVIEW_PAYLOAD : null)

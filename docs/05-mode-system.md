@@ -141,6 +141,12 @@ export interface ModeGuide {
 > - 修正会把文件移到新科目、把该条标记 `corrected: true`，并由修正记录**沉淀为学习规则**
 >   （见 §3.2 ④）——同一类文件名再次出现时 `source` 为 `rule`，不再消耗模型调用。
 
+> **智慧提醒（v40，07 §4）**：免打扰期内（手动时段 / ClassRoom 上课期间），分类完成这类
+> 提醒在 `NotificationService.notify()` 里被抑制并入队（`<userData>/smart-reminder-queue.json`），
+> 免打扰期结束后由模型总结成一条摘要按默认提醒方式投递——分类完成通知也走这条路，
+> 上课期间不会被逐条打断。「上课中」的判定与课前提醒同源：从 `IScheduleProvider.getToday()`
+> 推导（`schedule.ts` 的 `currentLesson` 纯函数），不用 ClassIsland status 快照触发。
+
 ### 3.4 课前提醒与上课前自动打开科目文件夹
 
 - **v1（手动课程表）**：设置中维护每周课程表（星期 × 节次 → 科目）；课前 N 分钟系统通知 + 自动打开该科目文件夹（explorer）。N = `modes.classroom.preClassLeadMinutes`（默认 5，范围 1–30，v10 起可配）。

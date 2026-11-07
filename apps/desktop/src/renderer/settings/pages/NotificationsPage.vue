@@ -1,19 +1,22 @@
 <script setup lang="ts">
 /**
- * 提醒设置页（v37，v38 扩展；2026-10-25 聚合定时提醒与勿扰时段；docs/07 §4、docs/08 §6/§6.1）。
+ * 提醒设置页（v37，v38 / v40 扩展；2026-10-25 聚合定时提醒与勿扰时段；docs/07 §4、docs/08 §6/§6.1）。
  *
  * Aurora 所有提醒相关配置的集中入口，全部即时生效：
  * 1. **提醒走哪条通道**（`notifications.channel`）—— 系统通知 / 流光提醒 / 两者 / 不打扰；
  * 2. **流光提醒长什么样、多大声、留多久**（`sound` / `volume` / `speak` / `size` / `durationMs`）；
- * 3. **定时提醒**：自动化总开关（`automations.enabled`）+ 课前提醒三件套
+ * 3. **智慧提醒**（v40）：免打扰期（手动时段 / ClassRoom 上课期间）不弹提醒，期结束后
+ *    汇总成一条投递（`smartEnabled` / `smartWindow` / `smartDuringClass` / `smartSummarize`）；
+ * 4. **定时提醒**：自动化总开关（`automations.enabled`）+ 课前提醒三件套
  *    （`modes.classroom.preClass*`，与「模式」页 / 主界面自动化页同一字段；
  *    门控按 docs/08 §6.1 —— 非 ClassRoom 模式或课表无节次时控件不进 DOM，换 `data-empty` 说明）；
- * 4. **勿扰时段**（`advanced.quietHours`，与「通用」页同一字段与保存语义）。
+ * 5. **勿扰时段**（`advanced.quietHours`，与「通用」页同一字段与保存语义）。
  *
  * 语义边界（也写进页面文案）：`sound` / `speak` 是**总闸** —— 关掉之后连请求级
  * `sound: true` / `speak: true` 也不会越过；开着时请求级仍可让某一条静音 / 不读。
  * `channel` 只管 Aurora 自己发起的提醒；`notify_banner` 与插件 `ctx.banner` 是显式请求流光，
  * 但同样受这两个总闸约束（用户关了提示音就是不想被吵）。
+ * 智慧提醒与勿扰时段是两件事：勿扰时段静默丢弃（不打也不记），智慧提醒先攒后汇总。
  *
  * 写盘注意：`settings:update` 是**顶层浅合并**，`modes` / `advanced` 必须回传完整子树
  * （丢子树 = 静默丢字段，同主界面自动化页 `BUILTIN_SETTING_KEYS` 的口径）。
@@ -174,6 +177,55 @@ async function saveQuiet(which: 'start' | 'end', value: string): Promise<void> {
   message.value = '已保存'
 }
 
+// ───────────────────────── 智慧提醒（v40：免打扰期 + 延迟汇总） ─────────────────────────
+
+const smartEnabled = computed(() => notifications.value?.smartEnabled ?? false)
+const smartDuringClass = computed(() => notifications.value?.smartDuringClass ?? false)
+const smartSummarize = computed(() => notifications.value?.smartSummarize ?? true)
+const smartWindow = computed(() => notifications.value?.smartWindow ?? null)
+const smartStart = computed(() => smartWindow.value?.start ?? '')
+const smartEnd = computed(() => smartWindow.value?.end ?? '')
+const smartDaily = computed(() => smartWindow.value?.daily ?? false)
+
+/** 本地日期键（YYYY-MM-DD），与主进程一次性窗口的 armedDate 同口径 */
+function smartTodayKey(): string {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+/**
+ * 保存语义与勿扰时段同款：留空 = 清空时段；只填开始时结束按「10:00」兜底。
+ * 一次性窗口在首次保存时定下 armedDate（当天）；勾「每天重复」后它不再参与判定。
+ */
+async function saveSmartWindow(which: 'start' | 'end', value: string): Promise<void> {
+  const current = notifications.value
+  if (current === null) return
+  const start = which === 'start' ? value.trim() : (smartWindow.value?.start ?? '')
+  const end = which === 'end' ? value.trim() : (smartWindow.value?.end ?? '10:00')
+  const next =
+    start === '' || end === ''
+      ? null
+      : {
+          start,
+          end,
+          daily: smartWindow.value?.daily ?? false,
+          armedDate: smartWindow.value?.armedDate ?? smartTodayKey(),
+        }
+  await save({ smartWindow: next })
+}
+
+/** 切换「每天重复」：取消勾选时按今天重新武装（之前的一次性窗口视为重新设置） */
+async function saveSmartDaily(daily: boolean): Promise<void> {
+  const current = notifications.value
+  const window = smartWindow.value
+  if (current === null || window === null) return
+  await save({
+    smartWindow: { ...window, daily, ...(daily ? {} : { armedDate: smartTodayKey() }) },
+  })
+}
+
 /** 「试一下」：走主进程同一条提醒路由，因此验证的是真实生效路径 */
 async function testChannel(): Promise<void> {
   testing.value = true
@@ -195,6 +247,7 @@ async function testChannel(): Promise<void> {
 
 function describeTest(result: NotificationTestResult): string {
   if (result.channel === 'off') return '当前是「不打扰」：没有弹出提醒，只写了日志'
+  if (result.suppressed === true) return '智慧提醒免打扰期生效中：这条已入队，期结束后汇总投递'
   if (!result.delivered) return '没有投递成功：系统通知可能被系统设置关闭了'
   if (result.channel === 'banner') return '已通过流光提醒投递'
   if (result.channel === 'both') return '已同时通过系统通知与流光提醒投递'
@@ -206,7 +259,9 @@ function describeTest(result: NotificationTestResult): string {
   <section class="page" data-field="notifications.page">
     <header>
       <h1 class="page-title">提醒</h1>
-      <p class="page-sub">Aurora 全部提醒相关设置：默认方式、流光样式、课前提醒与勿扰时段。</p>
+      <p class="page-sub">
+        Aurora 全部提醒相关设置：默认方式、流光样式、智慧提醒、课前提醒与勿扰时段。
+      </p>
     </header>
 
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
@@ -364,6 +419,94 @@ function describeTest(result: NotificationTestResult): string {
           />
           <span class="tiny muted mono duration-value">{{ Math.round(durationMs / 1000) }} 秒</span>
         </div>
+      </SettingField>
+    </section>
+
+    <section
+      class="section-card"
+      :class="{ dormant: !smartEnabled }"
+      data-field="notifications.smart"
+    >
+      <h2 class="section-title">智慧提醒</h2>
+      <p class="section-desc">免打扰期内的提醒先攒着，期结束后汇总成一条再投递。</p>
+
+      <SettingField
+        data-field="notifications.smartEnabled"
+        label="开启智慧提醒"
+        hint="关闭后一切照旧；总开关关闭时下方设置不生效"
+      >
+        <input
+          type="checkbox"
+          :checked="smartEnabled"
+          @change="save({ smartEnabled: ($event.target as HTMLInputElement).checked })"
+        />
+      </SettingField>
+
+      <SettingField
+        data-field="notifications.smartWindow.start"
+        label="免打扰时段开始"
+        hint="格式 HH:mm；两端都填才生效，支持跨天"
+      >
+        <input
+          class="input"
+          type="text"
+          spellcheck="false"
+          placeholder="09:00"
+          :value="smartStart"
+          :disabled="!smartEnabled"
+          @change="saveSmartWindow('start', ($event.target as HTMLInputElement).value)"
+        />
+      </SettingField>
+
+      <SettingField data-field="notifications.smartWindow.end" label="免打扰时段结束">
+        <input
+          class="input"
+          type="text"
+          spellcheck="false"
+          placeholder="11:30"
+          :value="smartEnd"
+          :disabled="!smartEnabled"
+          @change="saveSmartWindow('end', ($event.target as HTMLInputElement).value)"
+        />
+      </SettingField>
+
+      <SettingField
+        data-field="notifications.smartWindow.daily"
+        label="每天重复"
+        hint="关闭时只在今天生效一次，期结束后自动清除"
+      >
+        <input
+          type="checkbox"
+          :checked="smartDaily"
+          :disabled="!smartEnabled"
+          @change="saveSmartDaily(($event.target as HTMLInputElement).checked)"
+        />
+      </SettingField>
+
+      <SettingField
+        data-field="notifications.smartDuringClass"
+        label="上课期间不提醒"
+        hint="仅 ClassRoom 模式生效，按课程表判定是否在上课"
+      >
+        <input
+          type="checkbox"
+          :checked="smartDuringClass"
+          :disabled="!smartEnabled"
+          @change="save({ smartDuringClass: ($event.target as HTMLInputElement).checked })"
+        />
+      </SettingField>
+
+      <SettingField
+        data-field="notifications.smartSummarize"
+        label="结束后由 Agent 总结"
+        hint="关闭或总结失败时，改为逐条列出原文"
+      >
+        <input
+          type="checkbox"
+          :checked="smartSummarize"
+          :disabled="!smartEnabled"
+          @change="save({ smartSummarize: ($event.target as HTMLInputElement).checked })"
+        />
       </SettingField>
     </section>
 

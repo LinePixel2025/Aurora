@@ -9,6 +9,9 @@
  *
  * 行为：
  * - 分类完成 / 课前提醒 → 通知（系统通道下点击打开对应文件夹，docs/05 §3.3）；
+ * - 智慧提醒免打扰期（v40，docs/07 §4）：抑制闸挂在去重之后、通道判定之前——抑制的提醒
+ *   不弹而是入队，免打扰期结束后由 `SmartReminderService` 结算并经 `notifyDigest` 投递
+ *   （跳过抑制闸，摘要不能把自己也抑制成环）；
  * - 通道不可用时降级为日志 + 计数（自测据此断言，避免依赖 Windows 通知中心状态）；
  * - 失败绝不抛错：提醒只是锦上添花，不能影响分类与提醒主流程。
  *
@@ -16,6 +19,7 @@
  * 它自己不认识窗口、不 import electron。
  */
 import type { Logger, ReminderChannel } from '@aurora/shared'
+import type { SmartGateVerdict } from './smart-reminder.js'
 
 export interface NotificationRequest {
   title: string
@@ -24,6 +28,12 @@ export interface NotificationRequest {
   openPath?: string
   /** 同类通知合并键：相同 key 的在短时间内只弹一次 */
   dedupeKey?: string
+  /**
+   * 流光通道的停留时长覆盖（毫秒，仍受 BannerService 2–30s 钳制）。唯一的使用场景是
+   * 智慧提醒的汇总摘要：内容比普通提醒长，按 6s 默认值一闪而过读不完。
+   * 普通提醒不要传这个字段（视觉参数仍由用户设置决定）。
+   */
+  bannerDurationMs?: number
 }
 
 /** 注入的系统通知载体：返回是否成功展示 */
@@ -32,13 +42,15 @@ export type NotificationPresenter = (request: NotificationRequest) => boolean
 /**
  * 注入的流光提醒载体（`BannerService.show` 的适配）：返回是否显示成功。
  *
- * 只传标题 / 正文 / dedupeKey —— 语义档位与是否朗读交给提醒通道自己决定，
- * 编排层不替流光挑视觉参数（两处各调一套就是「系统通知好看、流光难看」的来源）。
+ * 只传标题 / 正文 / dedupeKey / 停留时长覆盖 —— 语义档位与是否朗读交给提醒通道自己决定，
+ * 编排层不替流光挑视觉参数（两处各调一套就是「系统通知好看、流光难看」的来源）；
+ * `durationMs` 例外仅用于智慧提醒汇总（内容长，默认 6s 读不完，见 `NotificationRequest`）。
  */
 export type NotificationBanner = (request: {
   title: string
   body: string
   dedupeKey?: string
+  durationMs?: number
 }) => boolean
 
 export interface NotificationServiceOptions {
@@ -53,6 +65,11 @@ export interface NotificationServiceOptions {
   openPath?: (target: string) => Promise<void>
   /** 去重窗口，默认 3s：防止同一次操作触发多条通知 */
   dedupeWindowMs?: number
+  /**
+   * 智慧提醒抑制闸（v40，`SmartReminderService.gate`）。返回 `suppress` = 免打扰期，
+   * 本条提醒不投递（已由闸门入队）；闸门抛错按不抑制处理——宁可多弹，不静默吞提醒。
+   */
+  smartGate?: (request: { title: string; body: string }) => SmartGateVerdict
 }
 
 export class NotificationService {
@@ -62,6 +79,7 @@ export class NotificationService {
   private readonly banner: NotificationBanner | undefined
   private readonly openPath: ((target: string) => Promise<void>) | undefined
   private readonly dedupeWindowMs: number
+  private readonly smartGate: ((request: { title: string; body: string }) => SmartGateVerdict) | undefined
   private readonly recent = new Map<string, number>()
   /** 自测与设置页用的**投递成功**计数（任一通道成功即 +1） */
   private shown = 0
@@ -75,13 +93,15 @@ export class NotificationService {
     this.banner = options.banner
     this.openPath = options.openPath
     this.dedupeWindowMs = options.dedupeWindowMs ?? 3_000
+    this.smartGate = options.smartGate
   }
 
   /**
-   * 按当前默认提醒方式投递一条提醒；被去重 / 全部载体不可用 / 设为不打扰时返回 false。
+   * 按当前默认提醒方式投递一条提醒；被去重 / 免打扰期抑制 / 全部载体不可用 / 设为不打扰时返回 false。
    *
    * 去重键在任何通道之前判定：同一条提醒在 `both` 下也只算一次，不会出现
-   * 「系统通知被合并、流光却弹了两次」这种两套节奏。
+   * 「系统通知被合并、流光却弹了两次」这种两套节奏。抑制闸在去重之后、通道判定之前：
+   * 免打扰期内的提醒由闸门入队，等期结束后汇总投递（docs/07 §4）。
    */
   notify(request: NotificationRequest): boolean {
     const key = request.dedupeKey ?? `${request.title}\u0000${request.body}`
@@ -94,6 +114,32 @@ export class NotificationService {
     this.recent.set(key, now)
     this.pruneRecent(now)
 
+    if (this.smartGate !== undefined) {
+      try {
+        if (this.smartGate({ title: request.title, body: request.body }) === 'suppress') {
+          this.logger.info('提醒被智慧提醒免打扰期抑制（已入队，结束后汇总）', {
+            title: request.title,
+          })
+          return false
+        }
+      } catch (error) {
+        this.logger.warn('智慧提醒抑制闸失败，按不抑制处理', { error: String(error) })
+      }
+    }
+
+    return this.deliver(request)
+  }
+
+  /**
+   * 智慧提醒汇总的投递入口：**跳过**去重与抑制闸（摘要自己再被抑制就是死循环），
+   * 通道语义与 `notify()` 完全一致（off = 只日志；流光下 `bannerDurationMs` 拉长停留）。
+   */
+  notifyDigest(request: NotificationRequest): boolean {
+    return this.deliver(request)
+  }
+
+  /** 通道判定与双通道投递（`notify` / `notifyDigest` 共用，判据只有这一份）。 */
+  private deliver(request: NotificationRequest): boolean {
     let channel: ReminderChannel = 'system'
     try {
       channel = this.channel()
@@ -134,6 +180,9 @@ export class NotificationService {
             title: request.title,
             body: request.body,
             ...(request.dedupeKey === undefined ? {} : { dedupeKey: request.dedupeKey }),
+            ...(request.bannerDurationMs === undefined
+              ? {}
+              : { durationMs: request.bannerDurationMs }),
           }) ?? false
       } catch (error) {
         this.logger.warn('流光提醒展示失败（不影响主流程）', { error: String(error) })

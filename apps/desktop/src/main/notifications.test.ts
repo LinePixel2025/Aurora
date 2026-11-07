@@ -172,3 +172,59 @@ describe('NotificationService 的默认提醒方式', () => {
     )
   })
 })
+
+describe('智慧提醒抑制闸与汇总投递（v40）', () => {
+  function createGatedHarness(gate: (request: { title: string; body: string }) => string) {
+    return new NotificationService({
+      logger: quietLogger(),
+      present: () => true,
+      channel: () => 'banner',
+      banner: () => true,
+      smartGate: gate as (request: { title: string; body: string }) => 'deliver' | 'suppress',
+    })
+  }
+
+  it('suppress：不投递、直接返回 false（提醒已由闸门入队）', () => {
+    const service = createGatedHarness(() => 'suppress')
+    expect(service.notify({ title: '分类完成', body: 'x' })).toBe(false)
+    expect(service.shownCount).toBe(0)
+  })
+
+  it('deliver：照常按通道投递', () => {
+    const service = createGatedHarness(() => 'deliver')
+    expect(service.notify({ title: 't', body: 'b' })).toBe(true)
+    expect(service.shownCount).toBe(1)
+  })
+
+  it('闸门抛错按不抑制处理（宁可多弹，不静默吞提醒）', () => {
+    const service = createGatedHarness(() => {
+      throw new Error('gate down')
+    })
+    expect(service.notify({ title: 't', body: 'b' })).toBe(true)
+    expect(service.shownCount).toBe(1)
+  })
+
+  it('notifyDigest 跳过抑制闸与去重：摘要自己不能被抑制成环', () => {
+    const service = createGatedHarness(() => 'suppress')
+    expect(service.notifyDigest({ title: '免打扰期间的提醒摘要', body: '总结' })).toBe(true)
+    expect(service.shownCount).toBe(1)
+  })
+
+  it('notifyDigest 的 bannerDurationMs 传给流光载体（汇总读得完）', () => {
+    const seen: Array<{ title: string; durationMs?: number }> = []
+    const service = new NotificationService({
+      logger: quietLogger(),
+      present: () => false,
+      channel: () => 'banner',
+      banner: (request) => {
+        seen.push(request)
+        return true
+      },
+    })
+    service.notifyDigest({ title: '摘要', body: '很长的一段总结', bannerDurationMs: 12_000 })
+    expect(seen[0]?.durationMs).toBe(12_000)
+    // 普通提醒不带这个字段：视觉参数仍由用户设置决定
+    service.notify({ title: '普通', body: 'b' })
+    expect(seen[1]?.durationMs).toBeUndefined()
+  })
+})

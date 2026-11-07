@@ -98,6 +98,7 @@ onUnmounted(() => {
         ref="cardEl"
         class="banner-card"
         :class="`banner-card--${payload.level}`"
+        :data-size="payload.size ?? 'standard'"
         role="alert"
         data-field="banner.card"
         @click="emit('close')"
@@ -138,11 +139,15 @@ onUnmounted(() => {
 }
 
 .banner-card {
-  /* 卡片内的尺寸尺度统一从这里派生：全部跟窗口宽度联动 */
+  /* 卡片内的尺寸尺度统一从这里派生：全部跟窗口宽度联动；
+   * 字号上下限与正文行数按档位在下方 [data-size] 里覆写（标准档 = 历史值）。 */
   --banner-pad: clamp(14px, 2cqw, 22px);
   --banner-gap: clamp(10px, 1.4cqw, 16px);
   --banner-close: clamp(30px, 3.6cqw, 40px);
   --banner-accent: clamp(3px, 0.5cqw, 5px);
+  --banner-title-size: clamp(19px, 3.3cqw, 34px);
+  --banner-body-size: clamp(16px, 2.8cqw, 28px);
+  --banner-body-lines: 3;
   /* 12px 外边距留给阴影：主进程据此把窗口调成「卡片 + 24px」，多出来的区域才会挡住点击 */
   position: relative;
   box-sizing: border-box;
@@ -198,6 +203,25 @@ onUnmounted(() => {
   transform: translate3d(0, -14px, 0) scale(0.97);
 }
 
+/*
+ * v40 起三档差异拉开（docs/07 §2.2.3 表格是同一份数字）：
+ * 紧凑 = 细窄条（小字号、紧内边距、正文至多 2 行）；宽大 = 加高加大字（投影后排可读）。
+ * `cqw` 的流体联动保留 —— 档位只改 clamp 的上下限与档内节奏，宽度仍由主进程按显示器比例给。
+ */
+.banner-card[data-size='compact'] {
+  --banner-pad: clamp(10px, 1.8cqw, 16px);
+  --banner-title-size: clamp(14px, 3.2cqw, 19px);
+  --banner-body-size: clamp(12.5px, 2.7cqw, 16px);
+  --banner-body-lines: 2;
+}
+
+.banner-card[data-size='large'] {
+  --banner-pad: clamp(18px, 2.4cqw, 30px);
+  --banner-title-size: clamp(24px, 3.4cqw, 44px);
+  --banner-body-size: clamp(20px, 2.9cqw, 36px);
+  --banner-body-lines: 4;
+}
+
 /* 语义色条：只表达档位，不做渐变 */
 .banner-card-accent {
   flex: none;
@@ -245,7 +269,7 @@ onUnmounted(() => {
 
 .banner-card-title {
   margin: 0;
-  font-size: clamp(19px, 3.3cqw, 34px);
+  font-size: var(--banner-title-size);
   font-weight: 650;
   line-height: 1.3;
   letter-spacing: 0.1px;
@@ -257,13 +281,13 @@ onUnmounted(() => {
 
 .banner-card-body {
   margin: 0;
-  font-size: clamp(16px, 2.8cqw, 28px);
+  font-size: var(--banner-body-size);
   line-height: 1.45;
   /* 投影 / 大屏上看的是对比度：正文用主文本色，层次靠字号而不是靠"更灰" */
   color: var(--text-primary);
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: var(--banner-body-lines);
   overflow: hidden;
   overflow-wrap: anywhere;
 }

@@ -24,14 +24,15 @@ export const BANNER_CARD = {
   /** 卡片顶到屏幕上边缘的距离（「从流光里落下」，不贴死第 0 像素） */
   topOffset: 16,
   /**
-   * 首帧占位高度：够放「标题 + 3 行正文」的最大档（宽大档实测约 228px）。
+   * 首帧占位高度：够放「标题 + 3 行正文」的标准档（实测约 228px）。
    * 渲染层一量完就收缩，所以略大比略小安全 —— 略小会先裁掉正文。
+   * 宽大档正文 4 行（上限约 340px）首帧可能先裁 1–2 帧，量完即修复（与旧口径同款取舍）。
    */
   initialHeight: 240,
   /** 卡片高度下限：紧凑档只有标题时约 55px */
   minHeight: 56,
-  /** 卡片高度上限（再高必然是误报；正文最多 3 行） */
-  maxHeight: 280,
+  /** 卡片高度上限（再高必然是误报；正文最多 4 行） */
+  maxHeight: 360,
 } as const
 
 /** 单档尺寸：卡片宽度占显示器宽度的比例 + 夹取区间。 */
@@ -43,15 +44,15 @@ export interface BannerCardSizeProfile {
 }
 
 /**
- * 三档比例（docs/07 §2.2.3 的表格是同一份数字）。
+ * 三档比例（docs/07 §2.2.3 的表格是同一份数字；v40 起三档差异拉开，标准档不变）。
  *
- * 1920 屏落成：紧凑 460 / 标准 691 / 宽大 883；1366 屏：460 / 640 / 780；
- * 2560 屏：614 / 922 / 1178；3840 屏：700 / 1000 / 1280。
+ * 1920 屏落成：紧凑 400 / 标准 691 / 宽大 998；1366 屏：400 / 640 / 800；
+ * 2560 屏：512 / 922 / 1331；3840 屏：560 / 1000 / 1400。
  */
 export const BANNER_CARD_PROFILES: Record<BannerCardSize, BannerCardSizeProfile> = {
-  compact: { ratio: 0.24, minWidth: 460, maxWidth: 700 },
+  compact: { ratio: 0.2, minWidth: 400, maxWidth: 560 },
   standard: { ratio: 0.36, minWidth: 640, maxWidth: 1000 },
-  large: { ratio: 0.46, minWidth: 780, maxWidth: 1280 },
+  large: { ratio: 0.52, minWidth: 800, maxWidth: 1400 },
 }
 
 /** 未知档位回落标准档（配置 Schema 已收窄，这里只防脏数据） */

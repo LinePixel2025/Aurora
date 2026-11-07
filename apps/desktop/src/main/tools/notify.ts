@@ -17,10 +17,11 @@ export function createNotificationPort(service: NotificationServiceLike): Notify
     async show(title: string, body: string): Promise<void> {
       const shown = service.notify({ title, body })
       if (!shown) {
-        // notify() 不区分「通道不可用」「3s 内重复被去重」「默认提醒方式设为不打扰」，
-        // 如实回报三种可能，让模型知道用户可能没有看到，而不是收到一条假成功的「已发送」。
+        // notify() 不区分「通道不可用」「3s 内重复被去重」「默认提醒方式设为不打扰」
+        // 「智慧提醒免打扰期已入队」四种情况，如实回报，让模型知道用户可能没有看到
+        // （免打扰期的提醒会在期结束后汇总投递），而不是收到一条假成功的「已发送」。
         throw new Error(
-          '通知未展示（系统不支持、短时间内重复内容被去重，或默认提醒方式设为了「不打扰」）',
+          '通知未展示（系统不支持、短时间内重复被去重、默认提醒方式设为「不打扰」，或正处于智慧提醒免打扰期——该提醒已入队，期结束后会汇总投递）',
         )
       }
     },

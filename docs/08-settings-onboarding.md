@@ -638,15 +638,25 @@
   provider + model，严格使用该选择，不可用时暂停而不是回落。整组在 `SETTINGS_READONLY_PREFIXES` 里：
   它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
   内嵌图片是否真正读取由有效后台模型的 `vision` 决定；运行状态会如实显示「已开启 / 仅分析文字」。
-- `notifications`（**v37 新增，v38 扩展**，见 07 §4）：提醒通道与细节。
+- `notifications`（**v37 新增，v38 / v40 扩展**，见 07 §4）：提醒通道与细节。
   `channel`：`system`（默认，系统通知中心）/ `banner`（流光提醒）/ `both`（两条都发）/
   `off`（不打扰，只记日志）；`sound` / `volume` / `speak` / `size` / `durationMs`（v38）：
   流光提醒的提示音、音量（0–100）、语音朗读、卡片大小（`compact` / `standard` / `large`：
-  按显示器宽度比例取卡宽 + 流体字号，2026-11-01 起整体放大；取值与默认值未变）与停留时长（2–30s）。
+  按显示器宽度比例取卡宽 + 流体字号，2026-11-01 起整体放大、v40 起三档视觉差异拉开；
+  取值与默认值未变）与停留时长（2–30s）。
+  `smartEnabled` / `smartWindow` / `smartDuringClass` / `smartSummarize`（**v40**，智慧提醒，见 07 §4）：
+  免打扰总开关、手动免打扰时段（`start` / `end` 为 "HH:mm"，`daily` = 每天重复，
+  `daily: false` 时仅 `armedDate`（YYYY-MM-DD）当天一次性生效、结束后自动清空）、
+  ClassRoom 模式上课期间不提醒（从课程表推导「上课中」，不用 ClassIsland status 快照触发）、
+  结束后由 Agent 总结被抑制的提醒（失败回落逐条纯文本，不丢提醒）。
+  智慧提醒只作用于**默认提醒方式的路由**（`notify()` 里的抑制闸，去重之后、通道判定之前）；
+  显式流光（`notify_banner` / `ctx.banner`）与 `ask_user` 旁路播报不被抑制。
+  被抑制的提醒队列不进配置：落盘 `<userData>/smart-reminder-queue.json`（上限 50 条，见 §1.2）。
   `sound` / `speak` 是**总闸**：关掉后请求级 `true` 也不越过。`channel` 只决定 Aurora 自己发起的提醒
   （分类完成 / 课前提醒 / 引导 / `notify_user`）；`notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，
   不受 `channel` 影响（但仍受两个总闸约束）。`SettingsPatch` 新增可选 `notifications` 字段（顶层浅合并）；
-  路径登记在 `WRITABLE_PATH_OVERRIDES` 的 `notifications.*`（AI 可以照用户要求切换打扰方式），
+  路径登记在 `WRITABLE_PATH_OVERRIDES` 的 `notifications.*`（AI 可以照用户要求切换打扰方式，
+  v40 的四个 `smart*` 字段保持扁平、天然被通配覆盖），
   **不在** `SETTINGS_READONLY_PREFIXES`。
 - `computerUse`（**v39 新增**，见 06 §28）：桌面操控总开关、视觉（虚拟光标 / 流光 / HUD）、
   节奏（移动时长 / 输入间隔 / 截图宽度）、限额（动作上限 / 闲置结束）与应用允许 / 禁止名单。
@@ -687,6 +697,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | 文件                           | 内容                                           | 说明                                                                  |
 | ------------------------------ | ---------------------------------------------- | --------------------------------------------------------------------- |
 | `userData/classification.json` | `{ version, records: ClassificationRecord[] }` | 分类流水（上限 500 条，新的在前）；原子写 + 300ms 防抖 + 损坏备份重建 |
+| `userData/smart-reminder-queue.json` | `{ version, queue: SmartReminderEntry[], lastDigest? }` | 智慧提醒免打扰期被抑制的提醒（v40，上限 50 条，新的在前）与最近一次汇总文本；原子写，损坏时按空队列重建（不丢提醒的兜底是结算时的回落路径） |
 
 规则缓存**不单独持久化**，启动时由流水中的用户修正记录重建（见 05 §3.2），
 因而不新增存储面，也不会与流水出现两处数据不一致。
@@ -757,7 +768,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 39`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 40`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -868,12 +879,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   用户已选的 `channel` 原样保留 —— 补出来的值等于 v38 之前写死在代码里的行为）、
   `v38 → v39`（**Computer Use**，见 §1 的 `computerUse` 与 06 §28：缺 `computerUse` 时补
   `{ enabled: false, ... }` 默认值 —— 升级本身不会打开任何桌面操控能力；已有对象在上，
-  用户已写的值原样保留）。
-  三十九条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  用户已写的值原样保留）、
+  `v39 → v40`（**智慧提醒**，见 §1 的 `notifications` 与 07 §4：为已有 `notifications` 补
+  `smartEnabled: false` / `smartWindow: null` / `smartDuringClass: false` / `smartSummarize: true`
+  —— 升级后默认关闭，行为与 v39 逐字一致；用户已写的 `channel` 等字段原样保留）。
+  四十条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **39** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **40** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

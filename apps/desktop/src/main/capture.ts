@@ -6171,6 +6171,79 @@ export const SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK = `(async () => {
   }
 })()`
 
+/**
+ * 「提醒」页的**智慧提醒区组**（v40，docs/07 §4）：免打扰期 + 延迟汇总。
+ * 出厂态总开关是关的 —— 整块置灰是**有意的**（同流光细节区的 dormant 口径），
+ * 判据因此断言「开关关 + 子控件在但禁用 + 区组挂 dormant」，置灰态本身就是被验对象。
+ */
+export const SETTINGS_NOTIFICATIONS_SMART_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const section = document.querySelector('[data-field="notifications.smart"]')
+    if (section === null) return { ok: false, reason: '智慧提醒区组不在 DOM' }
+    section.scrollIntoView({ block: 'start' })
+    await wait(220)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_NOTIFICATIONS_SMART_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(260)
+    const field = (id) => {
+      const element = document.querySelector('[data-field="notifications.' + id + '"]')
+      return element === null ? null : element.querySelector('input')
+    }
+    const section = document.querySelector('[data-field="notifications.smart"]')
+    const sectionRect = section === null ? null : (() => {
+      const rect = section.getBoundingClientRect()
+      return { width: Math.round(rect.width), height: Math.round(rect.height) }
+    })()
+    const enabled = field('smartEnabled')
+    const start = field('smartWindow.start')
+    const end = field('smartWindow.end')
+    const daily = field('smartWindow.daily')
+    const duringClass = field('smartDuringClass')
+    const summarize = field('smartSummarize')
+    // 子控件 = 除总开关外的全部（总开关自己保持可点，见 enabledClickable）
+    const toggles = [daily, duringClass, summarize]
+    const inputs = [start, end]
+    const conditions = {
+      sectionPresent: sectionRect !== null && sectionRect.width > 300,
+      // 出厂态：总开关关、总结默认开，其余布尔默认关
+      enabledOff: enabled !== null && enabled.type === 'checkbox' && enabled.checked === false,
+      summarizeOn: summarize !== null && summarize.checked === true,
+      // 总开关关 → 整块 dormant：子控件全部禁用但仍在 DOM（可见可读，置灰本身是被验对象）；
+      // 总开关**自己必须保持可点**（不然用户没法开启）
+      dormantClass: section !== null && section.classList.contains('dormant'),
+      enabledClickable: enabled !== null && enabled.disabled === false,
+      subControlsDisabled: toggles
+        .concat(inputs)
+        .every((element) => element !== null && element.disabled === true),
+      togglesPresent: toggles.every((element) => element !== null && element.type === 'checkbox'),
+      windowInputsPresent: inputs.every((element) => element !== null && element.type === 'text'),
+      // 复选框是 16px（SettingField 统一外观）：量「能点中」的小下限；时段输入另量正常高度
+      togglesClickable: toggles.every((element) => {
+        if (element === null) return false
+        const rect = element.getBoundingClientRect()
+        return rect.height >= 12 && rect.width >= 12
+      }),
+      windowInputsSized: inputs.every((element) => {
+        if (element === null) return false
+        const rect = element.getBoundingClientRect()
+        return rect.height >= 24 && rect.width >= 120
+      }),
+    }
+    const pass = Object.keys(conditions).every((key) => conditions[key] === true)
+    return { section: sectionRect, enabled: enabled === null ? null : enabled.checked, conditions, pass }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
 export const SETTINGS_AWARENESS_SCROLL_ACT = `(async () => {  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const usage = document.querySelector('[data-field="fileAwareness.usage"]')

@@ -16,6 +16,7 @@
 import { createServer, type Server, type ServerResponse } from 'node:http'
 import { createNoopLogger, type Logger } from '@aurora/shared'
 import { TITLE_PROMPT_MARKER } from './session-title.js'
+import { SMART_DIGEST_PROMPT_MARKER } from './smart-reminder.js'
 
 export const STUB_MARKER = 'AURORA_STUB_OK'
 export const STUB_MODEL = 'aurora-smoke-model'
@@ -36,6 +37,13 @@ export const SUBAGENT_TASK_MARKER = 'STUB_TASK_MARKER'
 
 /** 桩服务产出的思考链标记（断言「思考增量绑到了它自己那条助手消息」用） */
 export const REASONING_MARKER = 'STUB_REASONING_OK'
+
+/**
+ * 智慧提醒汇总分流（v40）的固定摘要文本：冒烟的「结算出汇总卡片」断言据此可以
+ * 顺带断言卡片内容来自**模型分流**（而不是纯文本回落），需要时再接。
+ */
+export const STUB_DIGEST_SUMMARY =
+  '免打扰期间共 1 条提醒被静默：一条测试提醒已按当前设置入队，无阻塞事项（桩摘要）。'
 /** 子代理最终报告里的标记 */
 export const SUBAGENT_REPORT_MARKER = 'STUB_SUB_OK'
 
@@ -211,7 +219,8 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       (item) =>
         item.path.endsWith('/chat/completions') &&
         !isClassifyRequest(item) &&
-        !isTitleRequest(item),
+        !isTitleRequest(item) &&
+        !isDigestRequest(item),
     )
   const classifyRequests = (): StubRequest[] =>
     requests.filter((item) => item.path.endsWith('/chat/completions') && isClassifyRequest(item))
@@ -234,7 +243,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       requests.push(record)
       // 对话请求另存一份定型快照（**在分流之前**：分流只决定回什么，不影响"收到了什么"）。
       // 只收 `/chat/completions`：`/models` 没有 messages，分类与子代理由标记字段区分。
-      if (path.endsWith('/chat/completions') && !isTitleRequest(record)) {
+      if (path.endsWith('/chat/completions') && !isTitleRequest(record) && !isDigestRequest(record)) {
         recordedRequests.push({
           messages: body?.messages ?? [],
           tools: Array.isArray(body?.tools)
@@ -284,6 +293,26 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
             {
               index: 0,
               delta: { content: JSON.stringify(classifyVerdict(record)) },
+              finish_reason: null,
+            },
+          ],
+        })
+        sendSseStop(res)
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
+      // ── 智慧提醒汇总分流（v40，docs/07 §4）：提示词首行带专属标记 ──
+      // 必须像标题分流一样**排除在对话计数之外**：默认对话分流按「第几次对话请求」
+      // 决定发不发工具调用（计数寻址），汇总请求不排掉就会顶掉冒烟对话链路的
+      // 第一次请求——桩把纯文本回给对话，use_skill 那组断言随之全红（2026-11-07 实测）。
+      if (isDigestRequest(record)) {
+        sendSse(res, {
+          choices: [
+            {
+              index: 0,
+              delta: { content: STUB_DIGEST_SUMMARY },
               finish_reason: null,
             },
           ],
@@ -836,6 +865,16 @@ function isTitleRequest(request: StubRequest): boolean {
       message.role === 'user' &&
       typeof message.content === 'string' &&
       message.content.includes(TITLE_PROMPT_MARKER),
+  )
+}
+
+/** 请求是否为智慧提醒汇总请求：user 正文带汇总分流标记（与标题同款判定）。 */
+function isDigestRequest(request: StubRequest): boolean {
+  return (request.body?.messages ?? []).some(
+    (message) =>
+      message.role === 'user' &&
+      typeof message.content === 'string' &&
+      message.content.includes(SMART_DIGEST_PROMPT_MARKER),
   )
 }
 

@@ -28,6 +28,7 @@ import type {
   PluginWidgetWindowMaterial,
 } from '../plugin/manifest.js'
 import type { PluginPanelSchema } from '../plugin/ui.js'
+import type { BannerCardSize } from '../config/schema.js'
 
 export type { ModeId, WindowName }
 
@@ -134,6 +135,22 @@ export interface SmokeDiagnostics {
   widgetWindows?: WidgetWindowDiagnostics[]
   /** 流光提醒的运行态（服务队列 + 两个原生窗口，2026-10-24） */
   banner?: BannerDiagnostics
+  /** 智慧提醒的运行态（v40，docs/07 §4）：自测据此断言「抑制入队 → 结算出摘要」 */
+  smartReminder?: SmartReminderDiagnostics
+}
+
+/** 智慧提醒的运行态（`SmartReminderService.diagnostics()` 的快照形状） */
+export interface SmartReminderDiagnostics {
+  /** 免打扰期当前是否生效（窗口或上课期间任一命中） */
+  active: boolean
+  /** 「上课中」缓存（evaluate 每拍刷新；gate 是同步判定，读的是这份缓存） */
+  inClass: boolean
+  /** 被抑制待汇总的提醒条数 */
+  queueLength: number
+  /** 本次进程内是否已完成过一次结算投递 */
+  digestFired: boolean
+  /** 最近一次结算投递的时刻（ISO） */
+  lastDigestAt?: string
 }
 
 // ───────────────────────── 设置 ─────────────────────────
@@ -1238,6 +1255,11 @@ export interface BannerShowPayload {
   volume: number
   durationMs: number
   level: BannerLevel
+  /**
+   * 卡片档位（v40）：渲染层据此挂 `data-size` 做档位专属字号 / 内边距 / 行数。
+   * 旧载荷缺省时渲染层按 standard 处理（与出厂默认一致）。
+   */
+  size?: BannerCardSize
 }
 
 /**
@@ -1456,6 +1478,8 @@ export interface NotificationTestResult {
   channel: ReminderChannel
   /** 是否真的投递出去了（`off` / 载体不可用时为 false） */
   delivered: boolean
+  /** 智慧提醒免打扰期生效中（v40）：这条测试提醒没投递而是入了队，期结束后汇总 */
+  suppressed?: boolean
 }
 
 // ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────

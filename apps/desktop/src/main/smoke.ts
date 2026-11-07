@@ -299,11 +299,11 @@ export function smokeScript(
       }))
       const largeWidth = await measureCardWidth()
 
-      // 紧凑档卡宽 460–700 + 两侧各 12px 外边距（Windows 无边框窗口可能多出几个像素，给 ±6 容差）；
-      // 宽大档只做上限 + 「明显比紧凑宽」的相对判据 —— 小屏上会被 displayWidth - 40 压住。
+      // v40 三档差异拉开：紧凑卡宽 400–560 + 两侧各 12px 外边距（无边框窗口可能多出几个像素，±6 容差）；
+      // 宽大档 800–1400 + 24，只做上限 + 「明显比紧凑宽」的相对判据 —— 小屏上会被 displayWidth - 40 压住。
       record(
         '弹窗大小分档真的生效（紧凑 < 宽大，且都在合法区间）',
-        compactWidth >= 478 && compactWidth <= 730 && largeWidth <= 1310 && largeWidth >= compactWidth + 120,
+        compactWidth >= 418 && compactWidth <= 590 && largeWidth <= 1430 && largeWidth >= compactWidth + 120,
         'compact=' + String(compactWidth) + ' large=' + String(largeWidth),
       )
 
@@ -316,6 +316,79 @@ export function smokeScript(
         '提醒细节已还原（提示音开 / 音量 60 / 标准卡 / 6 秒）',
         Boolean(back) && back.sound === true && back.volume === 60 && back.size === 'standard' && back.durationMs === 6000 && back.channel === 'system',
         JSON.stringify(back),
+      )
+    }
+
+    // 2.5 智慧提醒（v40，docs/07 §4）：免打扰期抑制入队 → 窗口结束结算出汇总卡片。
+    //     自测环境没有可用模型，总结走纯文本回落 —— 恰好覆盖回落分支（不丢提醒）。
+    //     通道切到流光，用原生卡片窗可见性证明「摘要真的弹出来了」。
+    {
+      const initialSmart = await window.aurora.settings.get()
+      const smartBefore = initialSmart && initialSmart.ok ? initialSmart.value.notifications : undefined
+      record(
+        '智慧提醒默认值（全关，行为与上一版本一致）',
+        Boolean(smartBefore) && smartBefore.smartEnabled === false && smartBefore.smartWindow === null && smartBefore.smartDuringClass === false && smartBefore.smartSummarize === true,
+        JSON.stringify(smartBefore),
+      )
+
+      const readSmartDiag = async () => {
+        const result = await window.aurora.app.getSmokeDiagnostics()
+        return result && result.ok ? result.value.smartReminder : undefined
+      }
+      const readCardDiag = async () => {
+        const result = await window.aurora.app.getSmokeDiagnostics()
+        return result && result.ok ? result.value.banner : undefined
+      }
+
+      const now = new Date()
+      const armedDate = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
+      expectOk('settings.update(智慧提醒开启 + 全天免打扰窗口 + 流光通道)', await window.aurora.settings.update({
+        notifications: {
+          channel: 'banner', sound: false, speak: false, volume: 20, size: 'standard', durationMs: 6000,
+          smartEnabled: true,
+          smartWindow: { start: '00:00', end: '23:59', daily: true, armedDate },
+          smartDuringClass: false,
+          smartSummarize: true,
+        },
+      }))
+      // 主进程订阅了 settings.onChange 并立即评估：抑制状态应当在下一拍就点亮
+      const activeDiag = await waitFor(readSmartDiag, (value) => Boolean(value && value.active === true), 4000)
+      record('免打扰期生效（诊断 active）', Boolean(activeDiag && activeDiag.active === true), JSON.stringify(activeDiag))
+
+      // 测试提醒（唯一免被去重挡的入口）应当被抑制：入队、不弹卡
+      await window.aurora.notifications.test()
+      const queuedDiag = await waitFor(readSmartDiag, (value) => Boolean(value && value.queueLength >= 1), 4000)
+      record('免打扰期内的提醒被抑制入队（队列 ≥ 1）', Boolean(queuedDiag && queuedDiag.queueLength >= 1), JSON.stringify(queuedDiag))
+      const stillHidden = await readCardDiag()
+      record('抑制期间卡片不弹（cardVisible = false）', Boolean(stillHidden && stillHidden.cardVisible === false), JSON.stringify(stillHidden))
+
+      // 清空窗口 = 免打扰期结束：立即评估走边沿结算 → 纯文本回落 → 摘要卡片弹出
+      expectOk('settings.update(清空免打扰时段)', await window.aurora.settings.update({
+        notifications: {
+          channel: 'banner', sound: false, speak: false, volume: 20, size: 'standard', durationMs: 6000,
+          smartEnabled: true, smartWindow: null, smartDuringClass: false, smartSummarize: true,
+        },
+      }))
+      const settled = await waitFor(
+        async () => {
+          const [diag, card] = [await readSmartDiag(), await readCardDiag()]
+          return diag && diag.digestFired === true && diag.queueLength === 0 && card && card.cardVisible === true ? diag : undefined
+        },
+        Boolean,
+        6000,
+      )
+      record('免打扰期结束结算出汇总卡片（队列清空 + 卡片可见）', Boolean(settled), JSON.stringify(settled))
+      await window.aurora.app.smokeBanner('dismiss')
+
+      expectOk('settings.update(智慧提醒还原)', await window.aurora.settings.update({
+        notifications: { channel: 'system', sound: true, speak: true, volume: 60, size: 'standard', durationMs: 6000, smartEnabled: false, smartWindow: null, smartDuringClass: false, smartSummarize: true },
+      }))
+      const smartRestored = await window.aurora.settings.get()
+      const smartBack = smartRestored && smartRestored.ok ? smartRestored.value.notifications : undefined
+      record(
+        '智慧提醒已还原（总开关关 / 窗口空）',
+        Boolean(smartBack) && smartBack.smartEnabled === false && smartBack.smartWindow === null,
+        JSON.stringify(smartBack),
       )
     }
 

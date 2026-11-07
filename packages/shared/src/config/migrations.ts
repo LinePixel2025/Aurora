@@ -1327,6 +1327,28 @@ const migrateV38ToV39: Migration = {
   },
 }
 
+/**
+ * v39 → v40：`notifications` 补智慧提醒四字段（docs/07 §4）。
+ *
+ * 口径同 `migrateV37ToV38`：以默认值为底、已有对象在上 —— 用户已选的 `channel` 等
+ * 字段原样保留；补出来的四项等于 v39 之前的行为（智慧提醒不存在 = 全关）。
+ */
+const migrateV39ToV40: Migration = {
+  from: 39,
+  to: 40,
+  describe: 'v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const notifications = asRecord(next['notifications'])
+    next['notifications'] = {
+      ...DEFAULT_NOTIFICATIONS,
+      ...(notifications ?? {}),
+    }
+    next['version'] = 40
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1367,6 +1389,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV36ToV37,
   migrateV37ToV38,
   migrateV38ToV39,
+  migrateV39ToV40,
 ]
 
 export interface MigrationOutcome {

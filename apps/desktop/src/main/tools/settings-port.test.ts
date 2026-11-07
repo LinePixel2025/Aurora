@@ -223,6 +223,33 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
     expect(store.get().center.enabled).toBe(false)
   })
 
+  it('智慧提醒字段可写（v40：扁平字段被 notifications.* 命中，嵌套叶子按 Schema 叶子默认可写）', async () => {
+    const { store, port } = setup()
+    // 提醒偏好不是权限闸门：AI 可照用户要求调（整组不在 SETTINGS_READONLY_PREFIXES）
+    expect(port.writable('notifications.smartEnabled').ok).toBe(true)
+    expect(port.writable('notifications.smartWindow').ok).toBe(true)
+    expect(port.writable('notifications.smartDuringClass').ok).toBe(true)
+    expect(port.writable('notifications.smartSummarize').ok).toBe(true)
+    // 嵌套叶子不在黑名单 → 落到「Schema 叶子默认可写」（覆盖表只给黑名单前缀开口子）
+    expect(port.writable('notifications.smartWindow.start').ok).toBe(true)
+
+    const outcome = await port.write([
+      { path: 'notifications.smartEnabled', value: true },
+      {
+        path: 'notifications.smartWindow',
+        value: { start: '09:00', end: '11:30', daily: false, armedDate: '2026-11-07' },
+      },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(store.get().notifications.smartEnabled).toBe(true)
+    expect(store.get().notifications.smartWindow).toEqual({
+      start: '09:00',
+      end: '11:30',
+      daily: false,
+      armedDate: '2026-11-07',
+    })
+  })
+
   it('外观四件套可真写入（v32 三件套 + v33 流光开关：`appearance` 在顶层分组里，承诺可写 = 写入可写）', async () => {
     const { store, port } = setup()
     for (const path of [

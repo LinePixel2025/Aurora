@@ -121,6 +121,29 @@ export function lessonKey(lesson: Lesson): string {
 }
 
 /**
+ * 纯函数：找出 `now` 正在上的一节课（`startTime ≤ now < endTime`，docs/05 §3.3 / docs/07 §4）。
+ *
+ * 与课前触发同一口径：**课表类判定一律从 `IScheduleProvider.getToday()` 推导**，
+ * 不读 ClassIsland status 快照（快照只用于展示）。相邻两节背靠背时取后一节
+ * （前一节的 `endTime === 后一节的 startTime`，半开区间落在后一节里）。
+ * 非法时间 / 非法星期的课直接跳过，绝不抛错；没有正在上的课返回 `undefined`。
+ */
+export function currentLesson(
+  lessons: readonly Lesson[],
+  now: Date,
+): Lesson | undefined {
+  const current = now.getHours() * 60 + now.getMinutes()
+  for (const lesson of lessons) {
+    const start = parseClock(lesson.startTime)
+    const end = parseClock(lesson.endTime)
+    if (start === undefined || end === undefined) continue
+    if (normalizeWeekday(lesson.weekday) !== now.getDay()) continue
+    if (current >= start && current < end) return lesson
+  }
+  return undefined
+}
+
+/**
  * 纯函数：挑出「课前进度窗口内应触发」的课程。
  *
  * - 窗口：`0 <= minutesUntil <= lookaheadMinutes`（默认 5）。应用启动时若已进入窗口

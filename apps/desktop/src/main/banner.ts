@@ -14,7 +14,13 @@
  * 失败口径：`show()` 永不抛错，一律折成 `{ ok, reason }` 回报 —— 提醒只是锦上添花，
  * 不能因为窗口没建起来把 Agent 的工具循环或插件调用带崩。
  */
-import type { BannerLevel, BannerRequest, BannerShowPayload, Logger } from '@aurora/shared'
+import type {
+  BannerCardSize,
+  BannerLevel,
+  BannerRequest,
+  BannerShowPayload,
+  Logger,
+} from '@aurora/shared'
 
 /**
  * 提醒来源：只用于日志与排障，不参与任何权限判定。
@@ -58,7 +64,7 @@ export interface BannerServiceOptions {
   maxDurationMs?: number
 }
 
-/** 用户设置解算后的提醒细节（`notifications.*`，v38） */
+/** 用户设置解算后的提醒细节（`notifications.*`，v38；v40 增加档位） */
 export interface BannerPreferences {
   /** 提示音总闸 */
   sound: boolean
@@ -68,6 +74,8 @@ export interface BannerPreferences {
   volume: number
   /** 每次停留时长（毫秒） */
   durationMs: number
+  /** 卡片档位（v40；缺省按 standard 处理，与出厂默认一致） */
+  size?: BannerCardSize
 }
 
 /** 单条提醒的时长区间：太短看不清，太长会赖在屏幕上 */
@@ -176,6 +184,8 @@ export class BannerService {
       volume: clampUnit(prefs.volume),
       durationMs,
       level: normalizeLevel(request.level),
+      // 档位随载荷下发（渲染层挂 data-size 做档位专属字号 / 行数）；旧装配方缺省按标准档
+      size: prefs.size ?? 'standard',
     }
 
     if (this.current !== undefined) {

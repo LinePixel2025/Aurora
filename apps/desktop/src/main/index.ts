@@ -155,6 +155,12 @@ import { SELF_AWARENESS_EVIDENCE_LIMIT_BYTES } from './extract.js'
 import { ClassificationHistory } from './classification-history.js'
 import { ClassificationService, type ClassifyProviderFactory } from './classification.js'
 import { NotificationService } from './notifications.js'
+import {
+  buildDigestPrompt,
+  SmartReminderService,
+  type SmartReminderEntry,
+  stripDigestMarker,
+} from './smart-reminder.js'
 import { createNodeOfficePort } from './tools/office-port.js'
 import { UpdateService } from './updater.js'
 import { createUpdaterPort } from './updater-port.js'
@@ -186,6 +192,8 @@ import {
   BANNER_GLOW_CAPTURE_CHECK,
   SETTINGS_NOTIFICATIONS_SCHEDULE_ACT,
   SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK,
+  SETTINGS_NOTIFICATIONS_SMART_ACT,
+  SETTINGS_NOTIFICATIONS_SMART_CHECK,
   SETTINGS_NOTIFICATIONS_STYLE_ACT,
   SETTINGS_NOTIFICATIONS_STYLE_CHECK,
   captureWindows,
@@ -443,6 +451,11 @@ let fileAwarenessAnalyzer: FileAwarenessAnalyzer | undefined
 let agentActivityDetach: (() => void) | undefined
 const activeAgentRequests = new Set<string>()
 let notifications: NotificationService | undefined
+/**
+ * 智慧提醒（v40，docs/07 §4）：免打扰期收集被抑制的提醒，期结束后总结输出。
+ * 抑制闸挂进 `NotificationService`（去重之后、通道判定之前）。
+ */
+let smartReminderService: SmartReminderService | undefined
 /**
  * 流光提醒（docs/07 §2.2.3）：屏幕顶端流光 + 置顶卡片。
  * 三个来源（Agent `notify_banner` / 插件 `ctx.banner` / `ask_user`）共用一个实例，
@@ -1076,6 +1089,8 @@ async function bootstrap(): Promise<void> {
         speak: notifications.speak && voiceReadiness(current).tts,
         volume: notifications.volume / 100,
         durationMs: notifications.durationMs,
+        // v40：档位随载荷下发，渲染层据此挂 data-size（与窗口宽度的读取同源）
+        size: notifications.size,
       }
     },
   })
@@ -2828,6 +2843,60 @@ async function bootstrap(): Promise<void> {
   //     提醒出口按用户设置的**默认提醒方式**分流（v37，docs/07 §4）：`present` 是系统通知，
   //     `banner` 是流光提醒。两个载体都在这里注入 —— 本服务只决定「发哪条通道」，
   //     通道自身的长相 / 时长 / 朗读全归各自的实现（`notifications.channel` 是唯一开关）。
+  //
+  //     智慧提醒（v40，docs/07 §4）挂在同一条路由上：免打扰期（手动时段 / ClassRoom 上课
+  //     期间）里的提醒不弹而是入队，期结束后由模型总结成一条摘要按默认方式投递。
+  //     队列落盘 `<userData>/smart-reminder-queue.json`（docs/08 §1.2，不进配置版本）。
+  const smartQueuePath = join(userData, 'smart-reminder-queue.json')
+  smartReminderService = new SmartReminderService({
+    logger: logger.child('smart-reminder'),
+    clock: () => new Date(),
+    settings: () => {
+      const n = settings!.get().notifications
+      return {
+        smartEnabled: n.smartEnabled,
+        smartWindow: n.smartWindow,
+        smartDuringClass: n.smartDuringClass,
+        smartSummarize: n.smartSummarize,
+      }
+    },
+    // 与 ModeManager.currentId() 同源：模式 id 就存在 `modes.current` 里
+    mode: () => settings!.get().modes.current,
+    lessonsToday: (now) => currentScheduleProvider().getToday(now),
+    loadQueue: async () => {
+      try {
+        const raw = JSON.parse(await fs.readFile(smartQueuePath, 'utf8')) as {
+          queue?: SmartReminderEntry[]
+        }
+        return Array.isArray(raw.queue) ? raw.queue : []
+      } catch {
+        // 不存在 / 损坏都按空队列：丢的是「待汇总」而非「已投递」，不构成提醒丢失
+        return []
+      }
+    },
+    saveQueue: async (file) => {
+      const tmp = `${smartQueuePath}.tmp`
+      await fs.writeFile(tmp, JSON.stringify(file), 'utf8')
+      await fs.rename(tmp, smartQueuePath)
+    },
+    clearWindow: async () => {
+      settings!.update({
+        notifications: { ...settings!.get().notifications, smartWindow: null },
+      })
+    },
+    summarize: createSmartReminderSummarizer(logger.child('smart-reminder')),
+    deliverDigest: (text) => {
+      notifications?.notifyDigest({
+        title: '免打扰期间的提醒摘要',
+        body: text,
+        dedupeKey: 'smart-digest',
+        bannerDurationMs: 12_000,
+      })
+    },
+  })
+  void smartReminderService.start().catch((error: unknown) => {
+    logger?.warn('智慧提醒服务启动失败', { error: String(error) })
+  })
   notifications = new NotificationService({
     logger: logger.child('notify'),
     present: createNotificationPresenter(),
@@ -2842,6 +2911,8 @@ async function bootstrap(): Promise<void> {
           level: 'info',
           sound: true,
           ...(request.dedupeKey === undefined ? {} : { dedupeKey: request.dedupeKey }),
+          // 智慧提醒的汇总内容长，投递时会带更长的停留请求（仍受流光 2–30s 钳制）
+          ...(request.durationMs === undefined ? {} : { durationMs: request.durationMs }),
         },
         { source: 'system' },
       ).ok ?? false,
@@ -2849,6 +2920,7 @@ async function bootstrap(): Promise<void> {
       shell.openPath(target).then((error) => {
         if (error !== '') throw new Error(error)
       }),
+    smartGate: (request) => smartReminderService?.gate(request) ?? 'deliver',
   })
   extractPool = new ExtractPool({
     fork: () =>
@@ -3178,6 +3250,8 @@ async function bootstrap(): Promise<void> {
       widgetWindows: smokeMode ? widgetManager?.diagnostics() : undefined,
       // 流光提醒：服务队列 + 两个原生窗口的真实可见性（自测断言「show 后可见 / dismiss 后不可见」）
       banner: smokeMode ? bannerDiagnostics() : undefined,
+      // 智慧提醒：抑制状态 / 队列长度 / 是否已结算（自测断言「抑制入队 → 结算出摘要」）
+      smartReminder: smokeMode ? smartReminderService?.diagnostics() : undefined,
     }),
     // 仅自测：`app:smokeBanner` 的触发器（窗口可见性由上面的 diagnostics 读回）
     smokeBanner: (action) => smokeBannerAction(action),
@@ -3207,7 +3281,10 @@ async function bootstrap(): Promise<void> {
           // 每次换 key：试一下不该被 3s 去重挡成"没反应"
           dedupeKey: `settings:test:${Date.now()}`,
         }) ?? false
-      return { channel, delivered }
+      // 免打扰期里 delivered=false 属预期（已入队待汇总）：标记出来，设置页别误报「系统关闭了通知」
+      const suppressed =
+        !delivered && (smartReminderService?.diagnostics().active ?? false) && channel !== 'off'
+      return suppressed ? { channel, delivered, suppressed } : { channel, delivered }
     },
     onQuit: () => app.quit(),
     // 附件提取（docs/07 §2.3）：与 Center 远程附件共用 `extractAttachmentDigest`
@@ -3307,8 +3384,12 @@ async function bootstrap(): Promise<void> {
     tray?.refresh()
     // 切到 / 离开 ClassRoom 都要调整文件监听
     syncClassification()
+    // 模式切出 classroom 可能让「上课期间免打扰」当场失效：立即评估结算，不等下一拍
+    void smartReminderService?.evaluate()
   })
   settings.onChange(() => tray?.refresh())
+  // 智慧提醒：设置一变就评估（清空时段 / 关总开关的结算不必等下一个 30s 节拍）
+  settings.onChange(() => void smartReminderService?.evaluate())
 
   // 8.1 分类管线：按当前模式与感知文件夹启动监听并武装队列（docs/05 §3.1）
   syncClassification()
@@ -3717,6 +3798,15 @@ async function runCapture(dir: string): Promise<void> {
         },
         act: SETTINGS_NOTIFICATIONS_STYLE_ACT,
         check: SETTINGS_NOTIFICATIONS_STYLE_CHECK,
+      },
+      // 提醒页的智慧提醒区组（v40）：出厂态总开关关、整块置灰 —— 置灰态本身就是被验对象，
+      // 不需要 prepare（capture 的 userData 是隔离的）。
+      {
+        name: 'settings',
+        file: 'settings-notifications-smart.png',
+        query: { page: 'notifications' },
+        act: SETTINGS_NOTIFICATIONS_SMART_ACT,
+        check: SETTINGS_NOTIFICATIONS_SMART_CHECK,
       },
       // 提醒页的「定时提醒 + 勿扰时段」区组（2026-10-25 聚合，docs/08 §6/§6.1）。
       // 课前提醒三件套的门控是「ClassRoom 模式 + 课表有节次」，所以 prepare 先造现场：
@@ -6572,6 +6662,37 @@ function createSummarizer(
 }
 
 /**
+ * 智慧提醒汇总器（v40，docs/07 §4）。
+ *
+ * 与 `createSummarizer` 同款裸 `provider.chat`：一次普通的非流式请求，
+ * 不进会话、不落 job、不污染历史。提示词首行带 `SMART_DIGEST_PROMPT_MARKER`
+ * （离线桩模型据此分流，见 smart-reminder.ts）。无可用模型 / 失败时返回 `null` ——
+ * `SmartReminderService` 会回落为逐条纯文本投递（不丢提醒），因此这里不重试。
+ */
+function createSmartReminderSummarizer(
+  log: Logger,
+): (entries: readonly SmartReminderEntry[]) => Promise<string | null> {
+  return async (entries) => {
+    const config = createProviderFactory(settings!, log, () => netFetch).create()
+    if (config === undefined) {
+      log.info('尚无可用模型配置，免打扰期汇总按纯文本回落')
+      return null
+    }
+
+    let text = ''
+    for await (const event of config.provider.chat({
+      model: config.model,
+      messages: [{ role: 'user', content: buildDigestPrompt(entries) }],
+    })) {
+      if (event.type === 'text') text += event.delta
+      if (event.type === 'error') throw new Error(event.message)
+    }
+    const cleaned = stripDigestMarker(text).trim()
+    return cleaned === '' ? null : cleaned
+  }
+}
+
+/**
  * 退出收尾（P1-12：调用方是 `before-quit` 的「先挡后退」协议）。
  *
  * ⚠️ 这里**不再**调用 `windows.prepareQuit()`（旧实现在首个 `await automationStore.flush()`
@@ -6603,6 +6724,8 @@ async function shutdown(): Promise<void> {
   // 全局快捷键必须在退出前注销，否则会残留到进程消亡（Electron 只在正常退出时自动清）
   hotkeys?.dispose()
   edgeBarScheduler?.stop()
+  // 智慧提醒：停评估节拍（队列已落盘；跨重启的遗留由下次启动补结算）
+  smartReminderService?.stop()
   if (awarenessGlowHideTimer !== undefined) {
     clearTimeout(awarenessGlowHideTimer)
     awarenessGlowHideTimer = undefined

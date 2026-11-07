@@ -14,10 +14,10 @@ import {
 } from './banner-geometry.js'
 
 describe('resolveBannerCardWidth', () => {
-  it('1920 屏按比例落成紧凑 461 / 标准 691 / 宽大 883', () => {
-    expect(resolveBannerCardWidth('compact', 1920)).toBe(461)
+  it('1920 屏按比例落成紧凑 400 / 标准 691 / 宽大 998（v40 起三档差异拉开）', () => {
+    expect(resolveBannerCardWidth('compact', 1920)).toBe(400)
     expect(resolveBannerCardWidth('standard', 1920)).toBe(691)
-    expect(resolveBannerCardWidth('large', 1920)).toBe(883)
+    expect(resolveBannerCardWidth('large', 1920)).toBe(998)
   })
 
   it('同一屏上宽大 > 标准 > 紧凑（档位真的拉开）', () => {
@@ -28,6 +28,14 @@ describe('resolveBannerCardWidth', () => {
       expect(standard, `display=${displayWidth}`).toBeGreaterThan(compact)
       expect(large, `display=${displayWidth}`).toBeGreaterThan(standard)
     }
+  })
+
+  it('v40 起紧凑收窄成细窄条、宽大到半屏量级（1920 上相差 ≥400px）', () => {
+    expect(resolveBannerCardWidth('compact', 1920)).toBeLessThanOrEqual(420)
+    expect(resolveBannerCardWidth('large', 1920)).toBeGreaterThanOrEqual(960)
+    expect(
+      resolveBannerCardWidth('large', 1920) - resolveBannerCardWidth('compact', 1920),
+    ).toBeGreaterThanOrEqual(400)
   })
 
   it('小屏夹到各档下限，大屏夹到上限', () => {

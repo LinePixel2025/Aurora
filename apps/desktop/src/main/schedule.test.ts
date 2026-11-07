@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createClassislandPlaceholderProvider,
   createManualScheduleProvider,
+  currentLesson,
   parseClock,
   resolveScheduleProvider,
   type Lesson,
@@ -118,5 +119,40 @@ describe('resolveScheduleProvider', () => {
     const provider = resolveScheduleProvider(settings)
     expect(provider.id).toBe('classisland')
     expect(await provider.getToday(MONDAY)).toEqual([])
+  })
+})
+
+describe('currentLesson', () => {
+  it('上课中：startTime ≤ now < endTime 命中', () => {
+    const lessons = [lesson()]
+    // 08:20 落在 08:00–08:45 内
+    expect(currentLesson(lessons, new Date(2026, 2, 2, 8, 20))).toEqual(lesson())
+  })
+
+  it('边界：开始时刻算上课中，结束时刻已经下课（半开区间）', () => {
+    const lessons = [lesson({ startTime: '08:00', endTime: '08:45' })]
+    expect(currentLesson(lessons, new Date(2026, 2, 2, 8, 0))).toEqual(lesson())
+    expect(currentLesson(lessons, new Date(2026, 2, 2, 8, 45))).toBeUndefined()
+  })
+
+  it('背靠背两节：交界时刻落在后一节', () => {
+    const lessons = [
+      lesson({ subject: '语文', startTime: '08:00', endTime: '08:45' }),
+      lesson({ subject: '数学', startTime: '08:45', endTime: '09:30' }),
+    ]
+    const found = currentLesson(lessons, new Date(2026, 2, 2, 8, 45))
+    expect(found?.subject).toBe('数学')
+  })
+
+  it('非上课时间 / 非当天 / 非法时间都返回 undefined，绝不抛错', () => {
+    expect(currentLesson([lesson()], new Date(2026, 2, 2, 9, 0))).toBeUndefined()
+    expect(currentLesson([lesson()], TUESDAY)).toBeUndefined()
+    expect(
+      currentLesson([lesson({ startTime: 'bad', endTime: '08:45' })], new Date(2026, 2, 2, 8, 20)),
+    ).toBeUndefined()
+    expect(
+      currentLesson([lesson({ endTime: '' })], new Date(2026, 2, 2, 8, 20)),
+    ).toBeUndefined()
+    expect(currentLesson([], new Date(2026, 2, 2, 8, 20))).toBeUndefined()
   })
 })

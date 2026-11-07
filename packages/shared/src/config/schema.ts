@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 39 as const
+export const CONFIG_VERSION = 40 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -1177,6 +1177,23 @@ export type ReminderChannel = (typeof REMINDER_CHANNELS)[number]
 export const BANNER_CARD_SIZE_IDS = ['compact', 'standard', 'large'] as const
 export type BannerCardSize = (typeof BANNER_CARD_SIZE_IDS)[number]
 
+/**
+ * 手动免打扰时段（v40，智慧提醒，docs/07 §4）。
+ *
+ * `start` / `end` 为 "HH:mm"（判定复用 `isQuietHour` 的跨天口径，起止相同视为未配置）；
+ * `daily: true` = 每天在该时段生效；`daily: false` = 仅 `armedDate`（YYYY-MM-DD）当天
+ * 一次性生效，免打扰期结算后由服务自动清空（下次启动发现日期已过也直接忽略）。
+ * 保持**扁平**挂在 `notifications` 下：`WRITABLE_PATH_OVERRIDES` 的 `notifications.*`
+ * 按段数匹配（`*` 只匹配一段），嵌套子对象的叶子会绕出通配、AI 就改不动了。
+ */
+export const SmartWindowSchema = z.object({
+  start: z.string(),
+  end: z.string(),
+  daily: z.boolean().default(false),
+  armedDate: z.string(),
+})
+export type SmartReminderWindow = z.infer<typeof SmartWindowSchema>
+
 export const NotificationsSchema = z.object({
   /** 默认提醒方式（缺省 `system` = 与 v37 之前的行为一字不差）。 */
   channel: z.enum(REMINDER_CHANNELS).default('system'),
@@ -1196,6 +1213,17 @@ export const NotificationsSchema = z.object({
   size: z.enum(BANNER_CARD_SIZE_IDS).default('standard'),
   /** 自动关闭时长（毫秒，2–30 秒；请求级 `durationMs` 优先于此值）。 */
   durationMs: z.number().int().min(2000).max(30_000).default(6000),
+  /** 智慧提醒总开关（v40）：关闭时一切照旧，其余 `smart*` 字段不参与判定。 */
+  smartEnabled: z.boolean().default(false),
+  /**
+   * 手动免打扰时段（v40）。与 `advanced.quietHours` 的「静默丢弃」不同：这里抑制的提醒
+   * 会进收集队列，免打扰期结束后总结输出（见 07 §4）。
+   */
+  smartWindow: SmartWindowSchema.nullable().default(null),
+  /** ClassRoom 模式上课期间不提醒（v40）：仅当前模式为 classroom 时参与判定。 */
+  smartDuringClass: z.boolean().default(false),
+  /** 免打扰期结束后由 Agent 总结被抑制的提醒（v40）；关闭或总结失败时逐条纯文本投递。 */
+  smartSummarize: z.boolean().default(true),
 })
 export type NotificationsSettings = z.infer<typeof NotificationsSchema>
 
