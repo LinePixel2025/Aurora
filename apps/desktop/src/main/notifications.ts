@@ -79,7 +79,8 @@ export class NotificationService {
   private readonly banner: NotificationBanner | undefined
   private readonly openPath: ((target: string) => Promise<void>) | undefined
   private readonly dedupeWindowMs: number
-  private readonly smartGate: ((request: { title: string; body: string }) => SmartGateVerdict) | undefined
+  private readonly smartGate:
+    ((request: { title: string; body: string }) => SmartGateVerdict) | undefined
   private readonly recent = new Map<string, number>()
   /** 自测与设置页用的**投递成功**计数（任一通道成功即 +1） */
   private shown = 0

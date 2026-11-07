@@ -128,10 +128,7 @@ export function lessonKey(lesson: Lesson): string {
  * （前一节的 `endTime === 后一节的 startTime`，半开区间落在后一节里）。
  * 非法时间 / 非法星期的课直接跳过，绝不抛错；没有正在上的课返回 `undefined`。
  */
-export function currentLesson(
-  lessons: readonly Lesson[],
-  now: Date,
-): Lesson | undefined {
+export function currentLesson(lessons: readonly Lesson[], now: Date): Lesson | undefined {
   const current = now.getHours() * 60 + now.getMinutes()
   for (const lesson of lessons) {
     const start = parseClock(lesson.startTime)

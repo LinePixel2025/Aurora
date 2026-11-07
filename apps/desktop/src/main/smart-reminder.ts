@@ -109,10 +109,7 @@ export function localDateKey(now: Date): string {
 }
 
 /** 手动窗口此刻是否生效（跨天口径复用 `isQuietHour`；起止相同视为未配置）。 */
-export function isSmartWindowActive(
-  now: Date,
-  window: SmartReminderPrefs['smartWindow'],
-): boolean {
+export function isSmartWindowActive(now: Date, window: SmartReminderPrefs['smartWindow']): boolean {
   if (window === null) return false
   if (!window.daily && window.armedDate !== localDateKey(now)) return false
   return isQuietHour(now, { start: window.start, end: window.end })

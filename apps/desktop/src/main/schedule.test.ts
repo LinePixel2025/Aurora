@@ -150,9 +150,7 @@ describe('currentLesson', () => {
     expect(
       currentLesson([lesson({ startTime: 'bad', endTime: '08:45' })], new Date(2026, 2, 2, 8, 20)),
     ).toBeUndefined()
-    expect(
-      currentLesson([lesson({ endTime: '' })], new Date(2026, 2, 2, 8, 20)),
-    ).toBeUndefined()
+    expect(currentLesson([lesson({ endTime: '' })], new Date(2026, 2, 2, 8, 20))).toBeUndefined()
     expect(currentLesson([], new Date(2026, 2, 2, 8, 20))).toBeUndefined()
   })
 })

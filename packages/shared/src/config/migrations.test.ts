@@ -2178,9 +2178,15 @@ describe('配置迁移链', () => {
       const fromMissing = migrate({ version: 39 })
       const fromPresent = migrate({
         version: 39,
-        notifications: { smartEnabled: true, smartWindow: { start: '09:00', end: '11:30', daily: true, armedDate: '2026-11-07' } },
+        notifications: {
+          smartEnabled: true,
+          smartWindow: { start: '09:00', end: '11:30', daily: true, armedDate: '2026-11-07' },
+        },
       })
-      expect(fromMissing.data['notifications']).toMatchObject({ smartEnabled: false, smartWindow: null })
+      expect(fromMissing.data['notifications']).toMatchObject({
+        smartEnabled: false,
+        smartWindow: null,
+      })
       expect(fromPresent.data['notifications']).toMatchObject({
         smartEnabled: true,
         smartWindow: { start: '09:00', end: '11:30', daily: true, armedDate: '2026-11-07' },

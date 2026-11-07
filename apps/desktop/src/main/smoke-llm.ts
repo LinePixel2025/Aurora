@@ -243,7 +243,11 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       requests.push(record)
       // 对话请求另存一份定型快照（**在分流之前**：分流只决定回什么，不影响"收到了什么"）。
       // 只收 `/chat/completions`：`/models` 没有 messages，分类与子代理由标记字段区分。
-      if (path.endsWith('/chat/completions') && !isTitleRequest(record) && !isDigestRequest(record)) {
+      if (
+        path.endsWith('/chat/completions') &&
+        !isTitleRequest(record) &&
+        !isDigestRequest(record)
+      ) {
         recordedRequests.push({
           messages: body?.messages ?? [],
           tools: Array.isArray(body?.tools)
