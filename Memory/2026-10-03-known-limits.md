@@ -19,7 +19,7 @@ source: 模型自动记录
 8. Code Mode 是占位实现；Work Mode 已初步实装（guide + systemPrompt）。
 9. `integrations/classisland-bridge` 不参与 CI 编译（流水线没有 .NET SDK）。
 10. 办公文件已有 `office_read/help/create/edit/render/pdf/raw_edit` 七件专用工具，走 utilityProcess 中固定版 OfficeCLI；旧格式与复杂 COM 能力仍是显式兜底。
-11. Markdown 渲染 P3（目录 / 折叠 / 脚注 / 引用 chip）尚未落地，唯一副本在 `git stash@{0}`。
+11. Markdown 渲染 P3（目录 / 折叠 / 脚注 / 引用 chip）尚未落地；实施副本（原 `git stash@{0}`）已于 2026-11-07 按用户决定删除，要做得从零重做。
 
 ## 原因
 
@@ -32,7 +32,7 @@ source: 模型自动记录
 ## 影响
 
 - 把注册失败改成静默成功、把未渲染的按钮当成渲染 bug、给八件套加上总开关门控，都是把预期行为「修」成缺陷。
-- 把 `git stash@{0}` 当废物清掉会永久丢失 P3 的实施。
+- P3 只存在于 stash 时误清会永久丢实施；2026-11-07 已按用户决定主动删除（见文末修订说明）。
 
 ## 结论与做法
 
@@ -42,4 +42,8 @@ source: 模型自动记录
 - ClassIsland 桥接读取有默认路径回落（`%APPDATA%\ClassIsland\aurora-bridge\schedule.json`），读取失败按「错误是否变化」分级记日志。
 - Skill 的 `scripts/` 永不自动执行；本地 OCR 未启用，自感知图片走视觉模型，关闭 vision 时降级为文件名 / 尺寸 / 格式元数据。多语言、ARM64 / 便携版、macOS / Linux 未开始。
 - Work Mode 的 `modes.work.workspaceDir` 已接进工具执行链的统一回落链（见 `Memory/2026-10-03-permissions-and-project-root.md`）。
-- **清 `git stash@{0}` 前先落地或转分支**（`git stash list` 可验；7 文件、约 329 行）。
+- P3 的实施已随 `stash@{0}` 删除（2026-11-07，当时 7 文件 / 约 329 行），当前 `git stash list` 为空；再提这件事时别去找 stash。
+
+---
+
+_修订说明（2026-11-07）：用户明确决定直接删掉 P3 的 `git stash@{0}`、不并 main —— stash 已 drop，当前 `git stash list` 为空。上面第 11 条与「清 stash 前先落地或转分支」的口径随之作废：P3 现在是从零重做的状态，仓库内已无实施副本。_

@@ -293,4 +293,5 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **Agent 内置浏览器不接管 `target="_blank"` 弹窗**：页面自己开的窗口仍按普通用户标签打开，Agent 不操作它；需要继续就对该 URL 重新 `browser_open`。
 - 办公文件（docx / xlsx / pptx）已有 `office_read/help/create/edit/render/pdf/raw_edit` 专用工具：
   走 utilityProcess 中固定版 OfficeCLI；普通编辑禁止 raw/COM，默认另存、显式覆盖才写回并先做二进制快照。
-- Markdown 渲染 P3（目录 / 折叠 / 脚注 / 引用 chip）唯一副本在 `git stash@{0}` —— **清 stash 前先落地或转分支**。
+- Markdown 渲染 P3（目录 / 折叠 / 脚注 / 引用 chip）**未落地，且实施副本已删除**（2026-11-07 用户决定清掉
+  原 `stash@{0}`、不并 main）：要做得从零重做，别再找 stash。
