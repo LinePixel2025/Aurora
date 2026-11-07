@@ -2724,6 +2724,8 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
     图片随工具结果作为图片分片回到模型（当前模型 `vision` 关闭时仍落盘并回传路径与说明）。
   - Agent 会话占用期间该标签**不参与 10 分钟空闲回收**（否则网页跑到一半被导航到 `about:blank`）；
     控制结束后恢复常规回收（07 §2.3）。
+  - **UA 按标签隔离**：用户与 Agent 标签都可在浏览器工具条选择 Chromium 兼容默认、常见桌面 / 移动端预设或自定义 UA；普通标签缺省使用 Chromium 兼容默认，Agent 标签初始值受 `agent.browser.compatUserAgent` 控制。选择仅存于当前运行中的标签，不持久化；切换会重建该标签并重载当前 http(s) 地址，页面可能丢失未提交状态。Agent 控制期间禁用 UA 切换，用户先停止控制再调整，避免替换主进程登记的 guest。自定义 UA 仅接受非空、最多 512 字符的 http(s) 页面标签，不改变 Chromium 版本、Client Hints 或 TLS 指纹。
+  - **Agent 操控流光**：浏览器内容边框只在该标签存在 Agent 会话且 Agent 正忙时显示四边流光；已就绪、停止 / 释放后隐藏。动画不覆盖页面、不拦鼠标事件，并遵循减少动态效果偏好。
 
 - **安全边界**：
   - **只接受 `http` / `https`**：地址栏与工具参数同一道校验，`file:` / `javascript:` / `data:` /
@@ -2768,7 +2770,7 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 | `maxSessions` | `2`（1–4，硬上限 4） | 同时并存的 Agent 浏览器会话数（全局）；满额拒绝不排队 |
 | `idleMinutes` | `10`（1–60） | 单会话空闲多久自动释放（结束控制、保留标签页） |
 | `allowPrivateNetwork` | `true` | 是否允许 localhost / 内网地址；关闭后只允许公网 http(s) |
-| `compatUserAgent` | `true` | 给 Agent 标签用桌面 Chrome UA（去掉 Electron / 应用标识），避免站点因 UA 降级或拒绝 |
+| `compatUserAgent` | `true` | Agent 标签初始使用去除 Electron / Aurora 标识的 Chromium UA；运行中的标签可独立覆盖 |
 | `allowMedia` | `false` | 是否放行 Agent 标签的摄像头 / 麦克风权限请求 |
 
   - **`v35` 迁移**：`v34 → v35` 只为**已存在的 `agent`** 补 `browser`（以默认值为底、已有对象在上），

@@ -4161,7 +4161,32 @@ export const CHAT_BROWSER_AGENT_CHECK = `(async () => {
       await wait(150)
     }
     const badgeText = badge === null ? '' : (badge.textContent || '').replace(/\\s+/g, ' ').trim()
+    // Agent 操控流光（四边流动边框）：本探针在 runner 收尾**之后**才跑，此刻会话已经是
+    // ready，现场本来就不带 is-agent-busy —— 直接断言「正忙」是必然红的伪判据
+    // （2026-11-07 实测 glowClass=bp-content-frame / animationName=none）。
+    // 改成三段确定性判据：① 结构（帧包住 guest）；② 空闲负对照（ready 时不许带 busy 类）；
+    // ③ 用**克隆节点**加上 busy 类去量应用自己那份 CSS（动画名 + 2px 边框），
+    // 只验证样式接线、不冒充应用状态。
+    const glow = document.querySelector('[data-field="chat.browser-agent-glow"]')
+    const glowHost = glow === null ? null : glow.querySelector('webview')
+    const glowIdleBusy = glow !== null && glow.classList.contains('is-agent-busy')
+    let busyAnimation = ''
+    let busyBorder = ''
+    if (glow !== null) {
+      const clone = glow.cloneNode(false)
+      clone.classList.add('is-agent-busy')
+      clone.setAttribute('style', 'position:fixed;left:-9999px;top:0;width:200px;height:200px')
+      document.body.appendChild(clone)
+      const busyStyle = getComputedStyle(clone, '::before')
+      busyAnimation = busyStyle.animationName
+      busyBorder = busyStyle.borderTopWidth
+      clone.remove()
+    }
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const conditions = [
+      glow !== null && glowHost !== null,
+      glowIdleBusy === false,
+      busyBorder === '2px' && (reduceMotion || busyAnimation.indexOf('bp-agent-border-flow') === 0),
       activeTabId().indexOf('browser') === 0,
       badge !== null,
       stop !== null,
@@ -4177,6 +4202,11 @@ export const CHAT_BROWSER_AGENT_CHECK = `(async () => {
       conditions,
       badgeText,
       activeTabText: activeTabText(),
+      glowClass: glow === null ? '' : glow.className,
+      glowAnimation: busyAnimation,
+      glowBorder: busyBorder,
+      glowIdleBusy,
+      reduceMotion,
       loaded,
       stopSize:
         stopRect === null ? null : { width: stopRect.width, height: stopRect.height },

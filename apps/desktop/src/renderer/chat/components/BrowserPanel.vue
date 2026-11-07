@@ -31,8 +31,13 @@ export interface BrowserTarget {
  * 再切回来，当前页面会重新加载（v1 取舍；与终端的「常驻 shell」不同，浏览器没有
  * 可迁移的会话状态，接受这个简化）。
  */
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft, ArrowRight, CircleStop, House, Plus, RotateCw, X } from '@aurora/shared/browser'
+import {
+  BROWSER_USER_AGENTS,
+  browserUserAgentId,
+  validateCustomUserAgent,
+} from '../composables/browserUserAgent.js'
 
 const HOME_URL = 'https://www.bing.com'
 
@@ -49,11 +54,10 @@ const props = defineProps<{
   agentDetail?: string
   /** Agent 会话是否正忙（徽章点动效） */
   agentBusy?: boolean
-  /**
-   * 兼容 UA（仅 Agent 标签，v35）：由 App.vue 按 `agent.browser.compatUserAgent`
-   * 传 `navigator.userAgent` 剥掉 Electron token 后的值；缺省不设置属性。
-   */
+  /** 当前标签的 User-Agent；空串表示不设置自定义 UA 属性 */
   userAgent?: string
+  /** 该窗口动态生成的 Chromium 兼容默认 UA，用于在选择器中识别默认项 */
+  compatibilityUserAgent?: string
 }>()
 /**
  * 上报两件事：
@@ -68,6 +72,7 @@ const emit = defineEmits<{
   (event: 'new-tab'): void
   (event: 'agent-attach', payload: { webContentsId: number }): void
   (event: 'agent-stop'): void
+  (event: 'user-agent-change', value: string): void
 }>()
 
 /** 主机名回落（离线 / 加载失败时页面标题往往不会有）：`https://a.b/c` → `a.b` */
@@ -86,6 +91,43 @@ const canGoBack = ref(false)
 const canGoForward = ref(false)
 /** 加载失败提示（did-fail-load；离线 / 域名不存在 / 代理不可用都会走到这里） */
 const failure = ref('')
+const customUserAgentInput = ref('')
+const userAgentError = ref('')
+const userAgentPreset = computed(() =>
+  browserUserAgentId(props.userAgent ?? '', props.compatibilityUserAgent ?? ''),
+)
+const selectedUserAgent = ref(userAgentPreset.value)
+const canChangeUserAgent = computed(() => !isAgentControlled())
+
+watch(userAgentPreset, (preset) => {
+  if (preset !== 'custom') selectedUserAgent.value = preset
+})
+
+function onUserAgentPresetChange(): void {
+  userAgentError.value = ''
+  if (selectedUserAgent.value === 'custom') {
+    customUserAgentInput.value = props.userAgent ?? ''
+    return
+  }
+  const preset = BROWSER_USER_AGENTS.find((item) => item.id === selectedUserAgent.value)
+  if (preset !== undefined && canChangeUserAgent.value) {
+    const value = preset.value === '' ? (props.compatibilityUserAgent ?? '') : preset.value
+    if (value !== (props.userAgent ?? '')) emit('user-agent-change', value)
+  }
+}
+
+function applyCustomUserAgent(): void {
+  const error = validateCustomUserAgent(customUserAgentInput.value)
+  if (error !== null) {
+    userAgentError.value = error
+    return
+  }
+  const value = customUserAgentInput.value.trim()
+  if (canChangeUserAgent.value && value !== (props.userAgent ?? '')) {
+    userAgentError.value = ''
+    emit('user-agent-change', value)
+  }
+}
 
 /**
  * 隐藏标签的**空闲页面回收**（2026-10-04 性能轮，docs/07 §2.3）。
@@ -435,6 +477,41 @@ watch(
         工具条右端一枚 ＋，就地再开一个浏览器标签（新标签加载主页）——
         入口不再只藏在右栏标签条的「＋」菜单里。关标签仍走标签条上的 ✕。
       -->
+      <select
+        v-model="selectedUserAgent"
+        class="bp-ua-select"
+        data-field="chat.browser-user-agent"
+        aria-label="网页 User-Agent"
+        title="更换 User-Agent 会重载当前页面"
+        :disabled="!canChangeUserAgent"
+        @change="onUserAgentPresetChange"
+      >
+        <option v-for="preset in BROWSER_USER_AGENTS" :key="preset.id" :value="preset.id">
+          {{ preset.label }}
+        </option>
+        <option value="custom">自定义 UA</option>
+      </select>
+      <input
+        v-if="selectedUserAgent === 'custom'"
+        v-model="customUserAgentInput"
+        class="bp-ua-custom"
+        data-field="chat.browser-user-agent-custom"
+        type="text"
+        maxlength="512"
+        placeholder="输入自定义 UA"
+        :disabled="!canChangeUserAgent"
+        @keydown.enter="applyCustomUserAgent"
+      />
+      <button
+        v-if="selectedUserAgent === 'custom'"
+        type="button"
+        class="bp-btn bp-ua-apply"
+        title="应用自定义 UA"
+        :disabled="!canChangeUserAgent"
+        @click="applyCustomUserAgent"
+      >
+        应用
+      </button>
       <button
         type="button"
         class="bp-btn"
@@ -462,10 +539,19 @@ watch(
         <CircleStop :size="13" :stroke-width="1.8" aria-hidden="true" />
       </button>
     </div>
+    <p v-if="userAgentError !== ''" class="bp-failure tiny" data-field="chat.browser-ua-error">
+      {{ userAgentError }}
+    </p>
     <p v-if="failure !== ''" class="bp-failure tiny" data-field="chat.browser-failure">
       {{ failure }}
     </p>
-    <div ref="hostEl" class="bp-host" data-field="chat.browser-host" />
+    <div
+      class="bp-content-frame"
+      :class="{ 'is-agent-busy': agentSessionId && agentBusy === true }"
+      data-field="chat.browser-agent-glow"
+    >
+      <div ref="hostEl" class="bp-host" data-field="chat.browser-host" />
+    </div>
   </div>
 </template>
 
@@ -512,6 +598,41 @@ watch(
   color: var(--text-muted);
   opacity: 0.55;
   cursor: default;
+}
+
+.bp-ua-select {
+  flex: 0 1 184px;
+  min-width: 92px;
+  max-width: 184px;
+  height: 26px;
+  padding: 0 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.bp-ua-select:disabled {
+  opacity: 0.55;
+}
+
+.bp-ua-custom {
+  flex: 0 1 180px;
+  min-width: 80px;
+  height: 26px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 10px;
+}
+
+.bp-ua-apply {
+  width: auto;
+  padding: 0 6px;
+  font-size: 10px;
 }
 
 .bp-url {
@@ -586,12 +707,61 @@ watch(
   overflow-wrap: anywhere;
 }
 
-.bp-host {
+.bp-content-frame {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
   border-radius: var(--radius-sm);
+  isolation: isolate;
+}
+
+.bp-host {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  min-width: 0;
+  border-radius: inherit;
   overflow: hidden;
   background: var(--bg-base);
+}
+
+.bp-content-frame.is-agent-busy::before {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  border: 2px solid transparent;
+  border-radius: inherit;
+  background: linear-gradient(
+      90deg,
+      transparent 8%,
+      #55d6be 28%,
+      #ffd166 50%,
+      #f78c6b 72%,
+      transparent 92%
+    )
+    border-box;
+  background-size: 240% 100%;
+  background-position: 0 0;
+  mask:
+    linear-gradient(#000 0 0) padding-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  content: '';
+  pointer-events: none;
+  animation: bp-agent-border-flow 2.2s linear infinite;
+}
+
+@keyframes bp-agent-border-flow {
+  to {
+    background-position: 240% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bp-content-frame.is-agent-busy::before {
+    animation: none;
+    background: linear-gradient(90deg, #55d6be, #ffd166, #f78c6b) border-box;
+  }
 }
 </style>

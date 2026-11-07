@@ -413,6 +413,7 @@ function onCloseCtxTab(id: string): void {
     void window.aurora.browser.agentStop({ sessionId: agentSessionId })
   }
   closeCtxTab(id)
+  clearBrowserUserAgent(id)
   if (ctxMountedTabs.value.has(id)) {
     const next = new Set(ctxMountedTabs.value)
     next.delete(id)
@@ -451,8 +452,27 @@ const agentTabSessions = ref<AgentTabMap>({})
 const agentStatusDetail = ref<Record<string, string>>({})
 const agentBusy = ref<Record<string, boolean>>({})
 const agentRequests = ref<Record<string, string>>({})
-/** 兼容 UA（仅 Agent 标签用；设置关闭时返回 undefined → 面板不设属性） */
+/** 窗口的 Chromium 兼容 UA（去掉 Electron / Aurora 标识）：普通标签的缺省值，也是 UA 选择器里的默认项 */
 const compatAgentUserAgent = computed(() => compatUserAgent(navigator.userAgent))
+const browserUserAgentOverrides = ref<Record<string, string>>({})
+const browserUserAgentRevisions = ref<Record<string, number>>({})
+
+function setBrowserUserAgent(tabId: string, value: string): void {
+  if (agentSessionOfTabId(tabId) !== null) return
+  browserUserAgentOverrides.value = { ...browserUserAgentOverrides.value, [tabId]: value }
+  browserUserAgentRevisions.value = {
+    ...browserUserAgentRevisions.value,
+    [tabId]: (browserUserAgentRevisions.value[tabId] ?? 0) + 1,
+  }
+  const live = ctxTabs.value.find((tab) => tab.id === tabId)
+  if (live !== undefined) ctxMountedTabs.value = new Set(ctxMountedTabs.value).add(tabId)
+}
+
+function clearBrowserUserAgent(tabId: string): void {
+  const next = { ...browserUserAgentOverrides.value }
+  delete next[tabId]
+  browserUserAgentOverrides.value = next
+}
 
 function hostOfRawUrl(raw: string): string {
   try {
@@ -478,9 +498,18 @@ function agentBusyOfTab(tabId: string): boolean {
   return sessionId !== null && agentBusy.value[sessionId] === true
 }
 
-function agentUserAgentForTab(tabId: string): string | undefined {
-  if (agentSessionOfTabId(tabId) === null) return undefined
-  if (settingsStore.settings?.agent.browser.compatUserAgent !== true) return undefined
+/**
+ * 标签当前 UA：手动选择过就用覆盖值；否则普通标签缺省用 Chromium 兼容 UA，
+ * Agent 标签在 `agent.browser.compatUserAgent` 关闭时保持原生 UA（空串 = 面板不设属性，
+ * 否则设置开关等于失效 —— 模板不能再拿 `compatAgentUserAgent` 兜底）。
+ */
+function browserUserAgentForTab(tabId: string): string {
+  const override = browserUserAgentOverrides.value[tabId]
+  if (override !== undefined) return override
+  const sessionId = agentSessionOfTabId(tabId)
+  if (sessionId !== null && settingsStore.settings?.agent.browser.compatUserAgent !== true) {
+    return ''
+  }
   return compatAgentUserAgent.value
 }
 
@@ -2722,12 +2751,15 @@ async function markGuideDone(): Promise<void> {
             </div>
             <BrowserPanel
               v-else
+              :key="`${tab.id}:${browserUserAgentRevisions[tab.id] ?? 0}`"
               :target="tab.id === panelTargetTabId ? panelTarget : null"
               :active="tab.id === ctxActiveId"
               :agent-session-id="agentSessionOfTabId(tab.id)"
               :agent-detail="agentDetailOfTab(tab.id)"
               :agent-busy="agentBusyOfTab(tab.id)"
-              :user-agent="agentUserAgentForTab(tab.id)"
+              :user-agent="browserUserAgentForTab(tab.id)"
+              :compatibility-user-agent="compatAgentUserAgent"
+              @user-agent-change="(value) => setBrowserUserAgent(tab.id, value)"
               @title="(title) => onBrowserTabTitle(tab.id, title)"
               @new-tab="onNewCtxTab('browser')"
               @agent-attach="(payload) => onAgentAttach(tab.id, payload.webContentsId)"

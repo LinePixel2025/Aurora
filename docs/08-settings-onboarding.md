@@ -240,7 +240,7 @@
       "maxSessions": 2, // 1–4（硬上限 4）；满额拒绝不排队
       "idleMinutes": 10, // 1–60；单会话空闲多少分钟自动释放
       "allowPrivateNetwork": true, // false = 拒绝 localhost / 内网 / 私有网段
-      "compatUserAgent": true, // 只作用于 Agent 标签：改用桌面 Chrome UA
+      "compatUserAgent": true, // Agent 标签初始使用 Chromium 兼容 UA
       "allowMedia": false, // 是否放行 Agent 标签的摄像头 / 麦克风权限请求
     },
   },
@@ -605,9 +605,9 @@
   `browser_*` 工具全量注销、并结束全部 Agent 浏览器会话；`maxSessions`（1–4，默认 **2**，硬上限 4）
   是**全局**并存的 Agent 浏览器会话数，满额**拒绝不排队**；`idleMinutes`（1–60，默认 **10**）是
   单会话空闲多久自动释放（只结束控制、标签页保留）；`allowPrivateNetwork`（默认 `true`）允许
-  localhost / 内网地址，关掉后只允许公网 http(s)；`compatUserAgent`（默认 `true`）给 Agent 标签
-  改用桌面 Chrome UA（只作用于 Agent 标签，用户自己开的标签不受影响；已在运行的标签保持原 UA，
-  下一次新建生效）；`allowMedia`（默认 `false`）是否放行 Agent 标签的摄像头 / 麦克风权限请求
+  localhost / 内网地址，关掉后只允许公网 http(s)；`compatUserAgent`（默认 `true`）决定 Agent 标签的初始兼容 UA。
+  用户与 Agent 标签均可在浏览器工具条独立切换常见桌面 / 移动 UA 或自定义 UA；切换仅对当前运行标签有效，
+  并重建标签、重载当前 http(s) 页面；Agent 控制期间需先停止控制再切换；`allowMedia`（默认 `false`）是否放行 Agent 标签的摄像头 / 麦克风权限请求
   （不控制自动播放；播放策略仍由 Chromium 默认行为决定）。
   **整组在 `SETTINGS_READONLY_PREFIXES` 里**：放开并发 / 内网 / 媒体等于扩大 Agent 的数据外发面，
   AI 的 `set_setting` 一律拒绝，只能由用户在设置页改；`readonly` 权限档下整组**不注册**。
