@@ -177,8 +177,8 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
   **`slot = "edge-bar"` 只允许 `schema`**（不允许在提示条里塞 webview），也不接受 `defaultSize`；
   桌面小组件 `defaultSize` 宽 120–1200、高 80–900；同时存在的桌面小组件窗口总数 ≤ 8（防失控常量）。
 - 桌面小组件窗口：`windowLevel ∈ { "floating", "normal", "desktop" }`（默认 `"floating"`）；
-  `windowMaterial ∈ { "none", "acrylic" }`（默认 `"none"`）。两者只对 `slot = "desktop"` 生效，
-  提示条小组件声明非默认值时**清单校验直接拒绝**；不新增权限 / 宿主 API。
+  `windowMaterial ∈ { "none", "acrylic" }`（默认 `"none"`）保留为清单兼容字段，宿主忽略材质声明，
+  桌面小组件统一使用不透明卡片。提示条小组件声明非默认值时**清单校验直接拒绝**；不新增权限 / 宿主 API。
   使用这两个字段时把 `minAuroraVersion` 设为支持它们的宿主版本（旧宿主会静默忽略未知字段）。
 - 主题 ≤ 8；令牌走白名单（§7），颜色只接受 `#rgb/#rrggbb/rgb()/rgba()/hsl()/hsla()`；单主题 ≤ 64 个令牌。
 - `apiVersion` 必须等于宿主 `PLUGIN_API_VERSION = 1`；`minAuroraVersion` 与宿主版本比较。
@@ -314,9 +314,10 @@ window.auroraPlugin = {
 - `"desktop"`：不置顶；宿主把窗口的 Win32 owner 指向桌面 shell 视图（`SHELLDLL_DefView`），
   并带最小化恢复守护，让 Win+D / Win+M 后仍尽量可见；属尽力而为，失败回落 `"normal"`。
   它只是「普通窗口 + owner 亲和 + 恢复守护」，**不是**壁纸层嵌入 / 桌面图标层 / 点击穿透。
-- 材质由 `windowMaterial` 声明：`"none"`（默认）保持现有不透明卡片；`"acrylic"` 使用原生 Acrylic，
-  仅 Windows 11 22H2+ 且外观 `appearance.glass` 开启时逐 widget 生效，窗口 shape 按卡片四角圆角
-  裁剪；不满足条件或启用失败时保持不透明卡片。
+- 桌面小组件统一使用**不透明卡片**，不启用原生材质、CSS 毛玻璃或玻璃令牌；圆角由卡片 CSS 绘制，
+  不使用原生材质的窗口 shape 裁剪。`windowMaterial: "acrylic"` 继续通过清单校验并保留在摘要里，
+  仅用于兼容旧插件；宿主忽略该声明，外观 `appearance.glass` 的开关不改变小组件材质。
+  既有 `plugins:widgetMaterial` / `onWidgetMaterial` 契约保留，实际材质始终为 `"none"`。
 - 标题栏右上角的「×」由宿主绘制；清单 `hideCloseButton: true`（默认 `false`）可隐藏它，
   只对桌面小组件生效（提示条声明 `true` 会被拒绝）。
 - 标题栏另有一枚**固定按钮**（宿主绘制，不受清单控制）：点击固定 / 取消固定，只锁用户的

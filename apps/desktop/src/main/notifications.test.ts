@@ -215,6 +215,20 @@ describe('智慧提醒抑制闸与汇总投递（v40）', () => {
     expect(service.shownCount).toBe(1)
   })
 
+  it('notifyDigest 向流光载体透传绕闸标记，摘要不会被第二层重新入队', () => {
+    const seen: Array<{ bypassSmartGate?: boolean }> = []
+    const service = new NotificationService({
+      logger: quietLogger(),
+      channel: () => 'banner',
+      banner: (request) => {
+        seen.push(request)
+        return true
+      },
+      smartGate: () => 'suppress',
+    })
+    expect(service.notifyDigest({ title: '摘要', body: '汇总内容' })).toBe(true)
+    expect(seen[0]).toMatchObject({ bypassSmartGate: true })
+  })
   it('notifyDigest 的 bannerDurationMs 传给流光载体（汇总读得完）', () => {
     const seen: Array<{ title: string; durationMs?: number }> = []
     const service = new NotificationService({

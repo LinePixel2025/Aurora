@@ -904,14 +904,8 @@ export function smokeScript(
         JSON.stringify(widgetLayout).slice(0, 300),
       )
 
-      // 层级 / 材质（v37，docs/14 §5.3）：清单默认值、用户覆盖、原生置顶状态
+      // 层级仍应用用户覆盖；旧材质字段保留摘要，但运行态固定为 none
       const dutyWidget = hello?.widgets.find((widget) => widget.id === 'duty-week')
-      record(
-        '桌面小组件声明层级 / 材质默认值与 Acrylic 夹具',
-        dutyWidget?.windowLevel === 'floating' &&
-          dutyWidget?.windowMaterial === 'acrylic',
-        JSON.stringify(dutyWidget),
-      )
       const readWidgetDiagnostics = async () => {
         const result = await window.aurora.app.getSmokeDiagnostics()
         const list = result?.ok ? (result.value.widgetWindows ?? []) : []
@@ -919,6 +913,14 @@ export function smokeScript(
           (item) => item.pluginId === PLUGIN_ID && item.widgetId === 'duty-week',
         )
       }
+      const diagMaterial = await readWidgetDiagnostics()
+      record(
+        '旧 Acrylic 清单仍显示摘要但桌面材质始终关闭',
+        dutyWidget?.windowLevel === 'floating' &&
+          dutyWidget?.windowMaterial === 'acrylic' &&
+          diagMaterial?.materialActive === false,
+        JSON.stringify({ dutyWidget, diagMaterial }),
+      )
       const setNormal = await window.aurora.plugins.setWidgetWindowLevel({
         pluginId: PLUGIN_ID,
         widgetId: 'duty-week',

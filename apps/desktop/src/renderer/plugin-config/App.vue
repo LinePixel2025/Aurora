@@ -360,7 +360,6 @@ onBeforeUnmount(() => {
                 @change="toggleWidgetVisible(widget)"
               />
               <span>{{ widget.title }}</span>
-              <span v-if="widget.windowMaterial === 'acrylic'" class="badge">毛玻璃</span>
               <span class="tiny muted">{{ widget.kind === 'page' ? '页面型' : '声明式' }}</span>
             </label>
             <select

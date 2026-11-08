@@ -3377,6 +3377,11 @@ export const WIDGET_DESKTOP_PLUGIN_CHECK = `(async () => {
   const pin = card === null ? null : card.querySelector('[data-field="widget.pin"]')
   const pinnedBefore = pin !== null && pin.getAttribute('aria-pressed') === 'true'
   const key = card === null ? '' : (card.dataset.pluginId ?? '') + '/' + (card.dataset.widgetId ?? '')
+  const style = card === null ? null : getComputedStyle(card)
+  const background = style === null ? '' : style.backgroundColor
+  const opaque = background.startsWith('rgb(') && !background.includes('rgba')
+  const noMaterialPath = card !== null && card.dataset.material === undefined
+  const noGlassFilter = style !== null && style.backdropFilter === 'none'
   if (pin !== null) pin.click()
   await wait(300)
   const lockedAfterClick = pin !== null && pin.getAttribute('aria-pressed') === 'true'
@@ -3396,9 +3401,15 @@ export const WIDGET_DESKTOP_PLUGIN_CHECK = `(async () => {
       pinnedBefore === false &&
       lockedAfterClick &&
       layoutLocked &&
-      unlockedAgain,
+      unlockedAgain &&
+      opaque &&
+      noMaterialPath &&
+      noGlassFilter,
     widgetId: card === null ? '' : card.dataset.widgetId ?? '',
-    material: card === null ? '' : card.dataset.material ?? '',
+    materialActive: false,
+    opaque,
+    noMaterialPath,
+    noGlassFilter,
     pin: pin === null ? 'missing' : lockedAfterClick && unlockedAgain ? 'toggles' : 'stuck',
     detail: text.slice(0, 160),
   }

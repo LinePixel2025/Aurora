@@ -12,6 +12,8 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-11-08 | 桌面小组件统一不透明，`windowMaterial` 仅作兼容字段                                      | 插件, 小组件, 毛玻璃, Electron, 窗口, 材质, 兼容, 口径 | [2026-11-08-widget-opaque-material.md](2026-11-08-widget-opaque-material.md) |
+| 2026-11-08 | 智慧提醒统一拦截默认通知与显式流光入口                                            | 智慧提醒, 提醒, 通知, 流光提醒, banner, 插件, ask_user, 队列, 坑, 口径 | [2026-11-08-smart-reminder-global-gate.md](2026-11-08-smart-reminder-global-gate.md) |
 | 2026-11-07 | 多会话并行：渲染层按会话保存运行态、后台状态点 / 确认卡数组 / capture act 两个坑 | agent, session, 并发, 渲染, IPC, 性能, 探针, capture, 桩 LLM, 坑, 口径 | [2026-11-07-multi-session-parallel-runtime.md](2026-11-07-multi-session-parallel-runtime.md) |
 | 2026-11-07 | 轮终改动卡片 + 任务完成提醒：主进程汇总、只在内存、提醒点击跳会话                | agent, UI, IPC, 快照, 提醒, 通知, 探针, 冒烟, 口径 | [2026-11-07-turn-changes-and-task-notice.md](2026-11-07-turn-changes-and-task-notice.md) |
 | 2026-11-07 | 全量验收两处假红：探针别断言瞬时 busy 态；冒烟紧跟重负载后正文增量会被事件合并窗口吃掉 | 测试, 探针, 截图, 冒烟, 事件合并, 口径, 坑 | [2026-11-07-capture-probe-transient-state.md](2026-11-07-capture-probe-transient-state.md) |

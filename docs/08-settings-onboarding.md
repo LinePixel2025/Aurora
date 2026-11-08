@@ -652,8 +652,9 @@
   `daily: false` 时仅 `armedDate`（YYYY-MM-DD）当天一次性生效、结束后自动清空）、
   ClassRoom 模式上课期间不提醒（从课程表推导「上课中」，不用 ClassIsland status 快照触发）、
   结束后由 Agent 总结被抑制的提醒（失败回落逐条纯文本，不丢提醒）。
-  智慧提醒只作用于**默认提醒方式的路由**（`notify()` 里的抑制闸，去重之后、通道判定之前）；
-  显式流光（`notify_banner` / `ctx.banner`）与 `ask_user` 旁路播报不被抑制。
+  智慧提醒统一拦截默认通知、显式流光（`notify_banner` / 插件 `ctx.banner`）与
+  `ask_user` 旁路播报：去重后、投递前入同一汇总队列；已排队的流光在出队时重查。
+  仅汇总投递可在通知与流光两层跳过抑制闸，避免摘要被重新收集；提问卡与作答流程不变。
   被抑制的提醒队列不进配置：落盘 `<userData>/smart-reminder-queue.json`（上限 50 条，见 §1.2）。
   `sound` / `speak` 是**总闸**：关掉后请求级 `true` 也不越过。`channel` 只决定 Aurora 自己发起的提醒
   （分类完成 / 课前提醒 / 引导 / `notify_user`）；`notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，

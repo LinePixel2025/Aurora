@@ -27,11 +27,6 @@ import { validatePanelSchema } from '../plugins/pluginSchema.js'
 const params = new URLSearchParams(window.location.search)
 const pluginId = params.get('pluginId') ?? ''
 const widgetId = params.get('widgetId') ?? ''
-/**
- * 原生材质：主进程确认 Acrylic 真正挂上时用 `material=acrylic` 写入 URL；
- * 之后随外观开关 / 平台能力变化由 `plugins:widgetMaterial` 推送（v37）。
- */
-const material = ref<'none' | 'acrylic'>(params.get('material') === 'acrylic' ? 'acrylic' : 'none')
 /** 建窗查询参数先给出首帧；插件摘要加载后再以清单值为准（开发态改清单可即时生效）。 */
 const hideCloseButton = ref(params.get('hideCloseButton') === '1')
 
@@ -47,7 +42,6 @@ const locked = ref(false)
 const pinBusy = ref(false)
 
 let offWidgetEvent: (() => void) | null = null
-let offWidgetMaterial: (() => void) | null = null
 let offChanged: (() => void) | null = null
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -241,10 +235,6 @@ onMounted(() => {
   offChanged = window.aurora.plugins.onChanged(() => {
     void refreshIfReady()
   })
-  offWidgetMaterial = window.aurora.plugins.onWidgetMaterial((event) => {
-    if (event.pluginId !== pluginId || event.widgetId !== widgetId) return
-    material.value = event.material
-  })
   void refreshIfReady()
 })
 
@@ -256,8 +246,6 @@ onBeforeUnmount(() => {
   }
   offWidgetEvent?.()
   offWidgetEvent = null
-  offWidgetMaterial?.()
-  offWidgetMaterial = null
   offChanged?.()
   offChanged = null
   if (toastTimer !== undefined) clearTimeout(toastTimer)
@@ -265,12 +253,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    class="widget-card"
-    :data-plugin-id="pluginId"
-    :data-widget-id="widgetId"
-    :data-material="material"
-  >
+  <div class="widget-card" :data-plugin-id="pluginId" :data-widget-id="widgetId">
     <header class="widget-head">
       <span class="widget-title">{{ title }}</span>
       <span v-if="statusHint !== ''" class="widget-status">{{ statusHint }}</span>
@@ -346,21 +329,11 @@ onBeforeUnmount(() => {
   font-size: var(--text-sm);
 }
 
-/*
- * 玻璃卡片：仅当主进程确认原生 Acrylic 已挂上（material=acrylic）且外观毛玻璃开启时，
- * 把卡片内用到的实色令牌重映射到玻璃令牌；关毛玻璃或材质回落时保持上面的不透明外观。
- * 令牌在卡片上局部重定义，内部渲染器不用改就能一起透出系统材质。
- */
-:global(:root[data-glass='on']) .widget-card[data-material='acrylic'] {
-  --bg-raised: var(--bg-glass);
-  --bg-overlay: var(--glass-panel);
-  --fill-1: var(--glass-surface);
-  --fill-2: var(--glass-surface-strong);
-  border-color: var(--glass-border);
-}
-
-:global(:root[data-glass='on']) .widget-card[data-material='acrylic'] .widget-head {
-  background: var(--glass-bar);
+/* 页面根背景是不透明表面，避免透明窗口的卡片圆角露出桌面。 */
+:global(html:has(body.transparent)),
+:global(body.transparent) {
+  background: var(--bg-raised);
+  background-image: none;
 }
 
 .widget-head {

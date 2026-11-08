@@ -13,7 +13,7 @@
 - [ ] 面板 ≤ 8，`schema` / `entry` 二选一，引用文件存在
 - [ ] 小组件 ≤ 4，`slot` 正确；提示条只有 `schema`、没有 `defaultSize`
 - [ ] 桌面小组件若声明窗口层级 / 材质：`windowLevel` 取 `floating`（默认）/ `normal` / `desktop`，
-      `windowMaterial` 取 `none`（默认）/ `acrylic`；提示条不得声明非默认值
+      `windowMaterial` 取 `none`（默认）/ `acrylic`（兼容旧清单，宿主忽略；卡片始终不透明）；提示条不得声明非默认值
 - [ ] `hideCloseButton` 必须是布尔值；提示条不得声明 `true`
 - [ ] 用到 `windowLevel` / `windowMaterial` / `hideCloseButton` 时，`minAuroraVersion` 已设为支持它们的宿主版本
 - [ ] 图标在 `PLUGIN_PANEL_ICONS` 白名单内（不在白名单会**安装失败**，不是回落）
@@ -53,5 +53,5 @@
 - [ ] （在 Aurora 源码环境）`node scripts/verify-plugin.mjs <目录|zip>` 通过
 - [ ] `node <工具包>/tools/pack-plugin.mjs <插件目录>` 成功产出 zip（包根是 `manifest.json`）
 - [ ] 真机安装：设置 → 插件 → 开发 / 安装插件包，状态为「运行中」
-- [ ] 面板、桌面小组件、提示条小组件、推送刷新各试一次；声明了层级 / 毛玻璃的 widget 在真机确认实际表现
+- [ ] 面板、桌面小组件、提示条小组件、推送刷新各试一次；桌面 widget 的层级 / 固定 / 缩放正常，且外观毛玻璃开关切换后仍是不透明卡片
 - [ ] 停用 / 卸载后对应小组件窗口与面板正确关闭

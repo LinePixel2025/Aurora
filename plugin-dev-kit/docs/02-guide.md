@@ -397,7 +397,7 @@ const off = window.auroraPlugin.onEvent((event, payload) => console.log(event, p
 { "permissions": ["ui.widgets"],
   "contributes": { "widgets": [
     { "id": "duty-week", "title": "本周值日", "icon": "CalendarClock", "slot": "desktop",
-      "windowLevel": "desktop", "windowMaterial": "acrylic",
+      "windowLevel": "desktop", "windowMaterial": "none",
       "schema": "ui/widget.json", "defaultSize": { "width": 300, "height": 200 } },
     { "id": "todo-strip", "title": "事务", "icon": "ListChecks", "slot": "edge-bar",
       "schema": "ui/strip.json" }
@@ -416,8 +416,9 @@ const off = window.auroraPlugin.onEvent((event, payload) => console.log(event, p
 - `windowLevel`：`"floating"`（默认，置顶浮动）/ `"normal"`（普通 z-order）/
   `"desktop"`（不置顶并尽力贴合桌面层，Win+D / Win+M 后仍尽量可见，失败回落 `normal`）。
   `desktop` 是普通窗口 + Win32 owner 亲和 + 最小化恢复守护，不是壁纸嵌入 / 桌面图标层 / 点击穿透；
-- `windowMaterial`：`"none"`（默认，不透明卡片）/ `"acrylic"`（原生 Acrylic，需 Windows 11 22H2+
-  且外观毛玻璃开启；不满足时保持不透明卡片）；
+- `windowMaterial`：兼容字段，仍接受 `"none"`（默认）/ `"acrylic"`；宿主忽略该声明，
+  小组件始终使用不透明卡片，不启用原生材质、CSS 毛玻璃或玻璃令牌，也不随外观毛玻璃开关变化；
+  新插件可省略此字段或填写 `"none"`；
 - 两个字段只对桌面小组件有效：`slot = "edge-bar"` 声明非默认值会在清单校验被拒绝；
 - 用户在设置 → 插件详情可给每个桌面 widget 覆盖层级（跟随插件 / 置顶 / 普通 / 桌面层），
   覆盖值写在 `<userData>/plugin-widget-layout.json` 的 `windowLevelOverride`，不改清单；

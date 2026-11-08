@@ -92,6 +92,8 @@ export type NotificationBanner = (request: {
   durationMs?: number
   sessionId?: string
   level?: BannerLevel
+  /** 仅智慧提醒摘要透传到流光服务，防止第二层闸门重新收集摘要。 */
+  bypassSmartGate?: boolean
 }) => boolean
 
 export interface NotificationServiceOptions {
@@ -184,11 +186,11 @@ export class NotificationService {
    * 通道语义与 `notify()` 完全一致（off = 只日志；流光下 `bannerDurationMs` 拉长停留）。
    */
   notifyDigest(request: NotificationRequest): boolean {
-    return this.deliver(request)
+    return this.deliver(request, true)
   }
 
   /** 通道判定与双通道投递（`notify` / `notifyDigest` 共用，判据只有这一份）。 */
-  private deliver(request: NotificationRequest): boolean {
+  private deliver(request: NotificationRequest, bypassSmartGate = false): boolean {
     let channel: ReminderChannel = 'system'
     try {
       channel = this.channel()
@@ -234,6 +236,7 @@ export class NotificationService {
               : { durationMs: request.bannerDurationMs }),
             ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
             ...(request.level === undefined ? {} : { level: request.level }),
+            ...(bypassSmartGate ? { bypassSmartGate: true } : {}),
           }) ?? false
       } catch (error) {
         this.logger.warn('流光提醒展示失败（不影响主流程）', { error: String(error) })

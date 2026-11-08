@@ -21,6 +21,7 @@ import type {
   BannerShowPayload,
   Logger,
 } from '@aurora/shared'
+import type { SmartGateVerdict } from './smart-reminder.js'
 
 /**
  * 提醒来源：只用于日志与排障，不参与任何权限判定。
@@ -40,8 +41,21 @@ export interface BannerShowOutcome {
   queued?: boolean
 }
 
+export interface BannerShowOptions {
+  source?: BannerSource
+  /** 仅宿主的智慧提醒汇总可绕过抑制闸；不向 Agent / 插件请求开放。 */
+  bypassSmartGate?: boolean
+}
+
+interface PendingBanner {
+  payload: BannerShowPayload
+  options: BannerShowOptions
+}
+
 export interface BannerServiceOptions {
   logger: Logger
+  /** 所有来源共用的智慧提醒闸；抑制时已入汇总队列，不建窗、不播声音。 */
+  smartGate?: (request: { title: string; body: string }) => SmartGateVerdict
   /** 注入的展示载体（`WindowManager.showBanner`）：返回 false 表示窗口没能显示出来 */
   present: (payload: BannerShowPayload) => boolean
   /** 注入的隐藏载体（`WindowManager.hideBanner`）：必须幂等 */
@@ -111,6 +125,7 @@ const FALLBACK_PREFERENCES: BannerPreferences = {
  */
 export class BannerService {
   private readonly logger: Logger
+  private readonly smartGate: BannerServiceOptions['smartGate']
   private readonly present: (payload: BannerShowPayload) => boolean
   private readonly hide: () => void
   private readonly preferences: () => BannerPreferences
@@ -124,7 +139,7 @@ export class BannerService {
   /** 去重表：key → 上次展示时刻 */
   private readonly recent = new Map<string, number>()
   private current: BannerShowPayload | undefined
-  private readonly queue: BannerShowPayload[] = []
+  private readonly queue: PendingBanner[] = []
   /** 兜底收尾定时器（只在有 `current` 时存在） */
   private backstop: ReturnType<typeof setTimeout> | undefined
   private sequence = 0
@@ -133,6 +148,7 @@ export class BannerService {
 
   constructor(options: BannerServiceOptions) {
     this.logger = options.logger
+    this.smartGate = options.smartGate
     this.present = options.present
     this.hide = options.hide
     this.preferences = options.preferences ?? (() => FALLBACK_PREFERENCES)
@@ -150,7 +166,7 @@ export class BannerService {
    * 返回值只表示「**被接受**」（已显示或已排队），不表示用户看完了；
    * 需要知道是否真的显示出来，看 `ok` 与 `queued` 两个字段。
    */
-  show(request: BannerRequest, options: { source?: BannerSource } = {}): BannerShowOutcome {
+  show(request: BannerRequest, options: BannerShowOptions = {}): BannerShowOutcome {
     if (this.disposed) return { ok: false, reason: '流光提醒服务已停止' }
 
     const title = clampText(request.title, BANNER_TITLE_MAX) || 'Aurora 提醒'
@@ -166,6 +182,10 @@ export class BannerService {
     }
     this.recent.set(key, now)
     this.pruneRecent(now)
+
+    if (options.bypassSmartGate !== true && this.isSuppressed({ title, body })) {
+      return { ok: false, reason: '智慧提醒免打扰期内，本条已入队，结束后统一汇总（未展示）' }
+    }
 
     // 提醒细节来自用户设置（live getter）：请求级只能**再关**，不能越过总闸。
     // `sound` / `speak` 是总闸：`&&` 让「设置里关掉」永远优先于请求里的 `true`。
@@ -201,7 +221,7 @@ export class BannerService {
         })
         return { ok: false, reason: `提醒队列已满（${this.maxQueue} 条），本条未显示` }
       }
-      this.queue.push(payload)
+      this.queue.push({ payload, options: { ...options } })
       this.logger.info('流光提醒已排队', {
         source: options.source ?? 'unknown',
         title,
@@ -337,9 +357,24 @@ export class BannerService {
     this.startNext()
   }
 
+  /** 抑制失败沿用通知服务的降级口径，不让提醒异常影响调用方。 */
+  private isSuppressed(request: { title: string; body: string }): boolean {
+    try {
+      return this.smartGate?.(request) === 'suppress'
+    } catch (error) {
+      this.logger.warn('智慧提醒抑制闸失败，按不抑制处理', { error: String(error) })
+      return false
+    }
+  }
+
   private startNext(): void {
-    const next = this.queue.shift()
-    if (next !== undefined) this.display(next, undefined)
+    // 排队期间可能刚进入免打扰：展示前重查，避免旧队列继续弹卡 / 播声音。
+    while (this.queue.length > 0) {
+      const next = this.queue.shift()!
+      if (next.options.bypassSmartGate !== true && this.isSuppressed(next.payload)) continue
+      this.display(next.payload, next.options.source)
+      return
+    }
   }
 
   private pruneRecent(now: number): void {

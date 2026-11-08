@@ -1110,6 +1110,7 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('banner'),
     present: (payload) => windows?.showBanner(payload) ?? false,
     hide: () => windows?.hideBanner(),
+    smartGate: (request) => smartReminderService?.gate(request) ?? 'deliver',
     preferences: () => {
       const current = settings!.get()
       const notifications = current.notifications
@@ -1292,8 +1293,6 @@ async function bootstrap(): Promise<void> {
     rendererUrl: process.env['ELECTRON_RENDERER_URL'] ?? '',
     rendererDir,
     contributions: () => pluginManager?.widgetContributions() ?? [],
-    // 外观毛玻璃总开关：false 时小组件保持不透明（v37，docs/14 §5.3）
-    glassAllowed: () => settings?.get().appearance.glass ?? true,
   })
   await widgetManager.init()
   // 窗口创建推迟到 `registerIpc()` 之后（见 `widgetManager.markReady()`）：
@@ -3098,7 +3097,10 @@ async function bootstrap(): Promise<void> {
           // 「任务完成」带会话 id：卡片可点，主进程点击时跳回该会话
           ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
         },
-        { source: 'system' },
+        {
+          source: 'system',
+          ...(request.bypassSmartGate === true ? { bypassSmartGate: true } : {}),
+        },
       ).ok ?? false,
     openPath: (target) =>
       shell.openPath(target).then((error) => {
@@ -3492,8 +3494,6 @@ async function bootstrap(): Promise<void> {
       // 渲染层那半走 `settings:changed` 广播 → settings store 的 watch，不需要在这里推。
       syncThemeSource()
       windows?.applyGlass(next.appearance.glass)
-      // 插件桌面小组件（v37）：与上面同一份外观开关，摘 / 挂原生 Acrylic 与圆角 shape
-      widgetManager?.applyGlass(next.appearance.glass)
       // 快捷键改绑（幂等：值没变时内部直接返回，不会闪断）
       hotkeys?.apply(next.general.hotkey)
       if (!next.general.edgeBar.enabled) windows?.hide('edge-bar')

@@ -6,8 +6,8 @@
  * 都能在 Node 里完整单测。
  *
  * 语义边界（docs/07 §4）：
- * - 抑制闸只作用在 `NotificationService.notify()` 的默认路由上（去重之后、通道判定之前）；
- *   显式流光（`notify_banner` / `ctx.banner`）与 `ask_user` 旁路播报不被抑制。
+ * - 默认通知与所有显式流光入口共用 gate（去重后、投递前）；流光出队时也重查。
+ *   `notify_banner` / 插件 `ctx.banner` / `ask_user` 旁路播报均先攒后汇总。
  * - 手动时段（`smartWindow`）与「上课期间不提醒」（`smartDuringClass`，仅 ClassRoom 模式）
  *   是两个独立来源，任一命中即抑制；「上课中」与课前提醒同源，从
  *   `IScheduleProvider.getToday()` 推导，不读 ClassIsland status 快照。

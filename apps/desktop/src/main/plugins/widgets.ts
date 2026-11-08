@@ -22,7 +22,6 @@ import {
   type PluginWidgetLayout,
   type PluginWidgetLayoutEntry,
   type PluginWidgetWindowLevel,
-  type PluginWidgetWindowMaterial,
   type WidgetWindowDiagnostics,
 } from '@aurora/shared'
 import { ensurePluginPageProtocol, registerPluginPageGuest } from '../page-protocol.js'
@@ -39,9 +38,7 @@ import { attachDesktopOwner, detachDesktopOwner } from './widget-desktop-layer.j
 import {
   nativeHandleToNumber,
   resolveWidgetWindowLevel,
-  shouldUseWidgetMaterial,
-  widgetRoundedShape,
-  WIDGET_CARD_RADIUS,
+  resolveWidgetWindowMaterial,
 } from './widget-window.js'
 
 /** 同时存在的桌面小组件窗口上限（防失控常量，不做成设置项）。 */
@@ -62,8 +59,6 @@ export interface WidgetManagerOptions {
   rendererDir: string
   /** 按启用 + `ui.widgets` 权限过滤后的桌面小组件 */
   contributions: () => PluginWidgetInfo[]
-  /** 用户外观总开关；false 时所有小组件保持不透明（v37） */
-  glassAllowed: () => boolean
   /** 平台门控（默认 process.platform；单测 / 诊断可注入） */
   platform?: NodeJS.Platform
   /** 桌面层 owner 操作（默认走 PowerShell helper；测试可注入） */
@@ -80,7 +75,7 @@ interface WidgetRecord {
   signature: string
   /** 用户覆盖优先后的实际层级 */
   windowLevel: PluginWidgetWindowLevel
-  /** 原生 Acrylic 是否真的挂上（false 时渲染层保持不透明） */
+  /** 兼容诊断字段：桌面小组件不再启用原生材质 */
   materialActive: boolean
   /** desktop 层是否成功挂到桌面 shell owner */
   desktopOwner: boolean
@@ -264,18 +259,6 @@ export class WidgetManager {
     return true
   }
 
-  /**
-   * 外观毛玻璃总开关即时生效（v37）：只动已创建窗口的**原生材质**；
-   * 页面内的 `data-glass` 由现有的 `settings:changed` 广播负责，两侧同一份配置驱动。
-   */
-  applyGlass(enabled: boolean): void {
-    if (this.disposed) return
-    for (const record of this.records.values()) {
-      if (record.win.isDestroyed()) continue
-      this.applyRecordMaterial(record, enabled)
-    }
-  }
-
   /** 自测诊断：桌面小组件窗口的层级 / 置顶 / owner / 材质真实状态。 */
   diagnostics(): WidgetWindowDiagnostics[] {
     return [...this.records.values()]
@@ -431,18 +414,10 @@ export class WidgetManager {
     this.applyLocked(record, entry.locked === true)
     this.wireWebview(info, win)
     this.wireWindowEvents(key, record)
-    const materialActive = this.applyInitialMaterial(record)
     if (level === 'desktop') this.attachDesktopOwner(record)
-    record.loadTask = this.load(win, info, materialActive).then(
+    record.loadTask = this.load(win, info).then(
       () => {
         if (win.isDestroyed() || this.disposed) return
-        // 建窗时窗口还没显示，contentBounds 可能尚未稳定；加载完成后再裁圆角，
-        // 裁失败就按不透明卡片回落，避免「材质挂着、形状却是矩形」露角。
-        if (record.materialActive && !this.tryApplyShape(win)) {
-          this.dropMaterial(win)
-          record.materialActive = false
-          this.sendMaterial(record)
-        }
         if (entry.visible) win.showInactive()
       },
       (error: unknown) => {
@@ -455,15 +430,9 @@ export class WidgetManager {
     )
   }
 
-  private async load(
-    win: BrowserWindow,
-    info: PluginWidgetInfo,
-    materialActive: boolean,
-  ): Promise<void> {
+  private async load(win: BrowserWindow, info: PluginWidgetInfo): Promise<void> {
     const { rendererUrl, rendererDir } = this.options
-    // 只有原生材质真的挂上时才告诉渲染层用玻璃令牌；失败时保持不透明，避免裸漏桌面。
     const query: Record<string, string> = { pluginId: info.pluginId, widgetId: info.id }
-    if (materialActive) query['material'] = 'acrylic'
     if (info.hideCloseButton) query['hideCloseButton'] = '1'
     if (rendererUrl !== undefined && rendererUrl !== '') {
       const search = new URLSearchParams(query).toString()
@@ -498,10 +467,6 @@ export class WidgetManager {
     }
     win.on('move', schedule)
     win.on('resize', schedule)
-    // 材质开启时窗口 shape 必须跟着尺寸重算；`resized` 在拖拽结束后只触发一次，成本可控
-    win.on('resized', () => {
-      if (record.materialActive) this.tryApplyShape(win)
-    })
     // desktop 层：Win+D / Win+M / 任务栏「显示桌面」会最小化普通窗口；这里立即恢复
     win.on('minimize', () => this.onWidgetMinimize(record))
     win.on('closed', () => {
@@ -511,13 +476,7 @@ export class WidgetManager {
       record.restoreAttempts = []
     })
     win.webContents.on('did-finish-load', () => {
-      // 运行时切换玻璃时事件可能早于页面订阅；加载完成后再补一次确定态
       this.sendMaterial(record)
-      if (record.materialActive && !this.tryApplyShape(win)) {
-        this.dropMaterial(win)
-        record.materialActive = false
-        this.sendMaterial(record)
-      }
     })
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     if (this.options.isDev) {
@@ -665,102 +624,13 @@ export class WidgetManager {
     timer.unref?.()
   }
 
-  /** 按当前「声明 + 外观开关 + 平台」挂 / 摘原生材质，并通知渲染层。 */
-  private applyRecordMaterial(record: WidgetRecord, glassAllowed: boolean): void {
-    if (record.win.isDestroyed()) return
-    const wanted = shouldUseWidgetMaterial(record.info.windowMaterial, glassAllowed, this.platform)
-    if (wanted) {
-      if (record.materialActive) return
-      if (!this.tryApplyMaterial(record.win) || !this.tryApplyShape(record.win)) {
-        this.dropMaterial(record.win)
-        this.sendMaterial(record)
-        return
-      }
-      record.materialActive = true
-      this.sendMaterial(record)
-      return
-    }
-    if (!record.materialActive) return
-    this.dropMaterial(record.win)
-    record.materialActive = false
-    this.sendMaterial(record)
-  }
-
-  /** 建窗时尝试材质；任何一步失败都回落到不透明卡片。 */
-  private applyInitialMaterial(record: WidgetRecord): boolean {
-    if (
-      !shouldUseWidgetMaterial(
-        record.info.windowMaterial,
-        this.options.glassAllowed(),
-        this.platform,
-      )
-    ) {
-      return false
-    }
-    if (!this.tryApplyMaterial(record.win)) return false
-    record.materialActive = true
-    return true
-  }
-
-  private tryApplyMaterial(win: BrowserWindow): boolean {
-    try {
-      win.setBackgroundColor('#00000000')
-      win.setBackgroundMaterial('acrylic')
-      return true
-    } catch (error) {
-      this.options.logger.debug('小组件原生材质不可用，保持不透明', { error: String(error) })
-      return false
-    }
-  }
-
-  /**
-   * 把窗口 shape 裁成圆角。
-   *
-   * 坐标用**整个窗口矩形**（含 Windows 给无边框可缩放窗口补的不可见 resize 边框）：
-   * 只按内容区裁会把边框切出 shape，用户就点不到边缘缩放。内容区相对窗口的内缩量
-   * 加到圆角半径上，让材质的外缘弧与 CSS 卡片弧保持同一条曲线（多出的 1–2px 是
-   * 无边框窗口的 resize 边框，材质会在卡片外形成极细的一圈，属可接受代价）。
-   */
-  private tryApplyShape(win: BrowserWindow): boolean {
-    try {
-      const windowBounds = win.getBounds()
-      const content = win.getContentBounds()
-      const inset = Math.max(
-        0,
-        Math.round((content.x - windowBounds.x + (content.y - windowBounds.y)) / 2),
-      )
-      win.setShape(
-        widgetRoundedShape(
-          { x: 0, y: 0, width: windowBounds.width, height: windowBounds.height },
-          WIDGET_CARD_RADIUS + inset,
-        ),
-      )
-      return true
-    } catch (error) {
-      this.options.logger.debug('小组件圆角 shape 应用失败', { error: String(error) })
-      return false
-    }
-  }
-
-  private dropMaterial(win: BrowserWindow): void {
-    try {
-      win.setBackgroundMaterial('none')
-    } catch (error) {
-      this.options.logger.debug('摘除小组件材质失败', { error: String(error) })
-    }
-    try {
-      win.setShape([])
-    } catch (error) {
-      this.options.logger.debug('恢复小组件矩形失败', { error: String(error) })
-    }
-  }
-
+  /** 保留 IPC 契约，但运行时材质固定为 none。 */
   private sendMaterial(record: WidgetRecord): void {
     if (record.win.isDestroyed()) return
     const payload = {
       pluginId: record.info.pluginId,
       widgetId: record.info.id,
-      material: (record.materialActive ? 'acrylic' : 'none') as PluginWidgetWindowMaterial,
+      material: resolveWidgetWindowMaterial(record.info.windowMaterial),
     }
     const send = (): void => {
       if (record.win.isDestroyed()) return
@@ -858,7 +728,6 @@ export class WidgetManager {
         clamped.height !== current.height
       ) {
         record.win.setBounds(clamped)
-        if (record.materialActive) this.tryApplyShape(record.win)
         Object.assign(entry, clamped)
         changed = true
       }

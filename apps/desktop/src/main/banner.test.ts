@@ -63,6 +63,32 @@ describe('BannerService', () => {
     expect(service.diagnostics().visible).toBe(true)
   })
 
+  it('智慧提醒开启时，流光入口不建卡也不播声音', () => {
+    const { service, shown } = createHarness({
+      smartGate: () => 'suppress',
+    })
+    const outcome = service.show({ title: '插件提醒', body: '插件内容' }, { source: 'plugin' })
+    expect(outcome).toMatchObject({
+      ok: false,
+      reason: '智慧提醒免打扰期内，本条已入队，结束后统一汇总（未展示）',
+    })
+    expect(shown).toHaveLength(0)
+    expect(service.diagnostics()).toMatchObject({ visible: false, pending: 0, shownCount: 0 })
+  })
+
+  it('流光队列出队前重查智慧提醒，刚进入免打扰时不会继续弹出', () => {
+    let verdict: 'deliver' | 'suppress' = 'deliver'
+    const { service, shown } = createHarness({ smartGate: () => verdict })
+    const first = service.show({ title: '第一条', body: '' })
+    service.show({ title: '第二条', body: '' })
+    verdict = 'suppress'
+
+    service.dismiss(first.id ?? '')
+
+    expect(shown).toHaveLength(1)
+    expect(shown[0]?.title).toBe('第一条')
+    expect(service.diagnostics()).toMatchObject({ visible: false, pending: 0, shownCount: 1 })
+  })
   it('提醒细节来自用户设置；请求级只能再关，不能越过总闸', () => {
     let prefs = { sound: true, speak: true, volume: 0.4, durationMs: 9000 }
     const { service, shown } = createHarness({ preferences: () => prefs })

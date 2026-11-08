@@ -246,7 +246,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   `nodeIntegration:false`，拒绝调用方自带 preload / partition；页面不得暴露 `window.aurora`。
 - **桌面小组件窗口只在 `main/plugins/widgets.ts` 创建**（唯一 import electron 的 widget 模块）：
   无边框 / 透明 / 不占任务栏，**默认置顶**；清单可声明 `windowLevel`（floating / normal / desktop）
-  与 `windowMaterial`（none / acrylic，需 Win11 22H2+ 且外观毛玻璃开启）；`desktop` 只是
+  与兼容字段 `windowMaterial`（none / acrylic，宿主忽略；卡片统一不透明，不启用原生材质 / CSS 毛玻璃 / 玻璃令牌）；`desktop` 只是
   Win32 owner 亲和 + 最小化恢复守护（不是壁纸层嵌入，失败回落 normal）；位置、尺寸、显隐、可选
   `windowLevelOverride` 与固定状态 `locked` 写 `<userData>/plugin-widget-layout.json`，**不进 settings、不升
   `CONFIG_VERSION`**；桌面窗口总数上限 8（防失控常量）。
