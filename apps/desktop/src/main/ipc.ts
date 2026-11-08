@@ -1020,9 +1020,16 @@ export function registerIpc(deps: DesktopDeps): () => void {
   })
   // 「当前会话」由渲染层判定：不同窗口用的是不同会话（quick / main），
   // 主进程不知道哪个正在被看，因此不在这里标 active。
+  // `running` 是例外：它由主进程的 active 表现取（2026-11-07，docs/06 §4.3），渲染层把它当
+  // 运行态初值 / 兜底（窗口创建前就开跑、渲染层重载后仍能显示"在跑"），实时状态仍以事件流为准。
   handle<ChatSessionSummary[]>(IPC.chat.sessions, () =>
     deps.sessions.summaries().then(
-      (items) => ok(items.filter((item) => !isFileAwarenessSession(item.id))),
+      (items) =>
+        ok(
+          items
+            .filter((item) => !isFileAwarenessSession(item.id))
+            .map((item) => ({ ...item, running: deps.agent.isBusy(item.id) })),
+        ),
       (error: unknown) => err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
     ),
   )

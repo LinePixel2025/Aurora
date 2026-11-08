@@ -21,7 +21,7 @@ import type { SensitiveToolRequest } from '@aurora/shared'
 import AppButton from './AppButton.vue'
 import StatusDot from './StatusDot.vue'
 
-const props = defineProps<{ request: SensitiveToolRequest }>()
+const props = defineProps<{ request: SensitiveToolRequest; sessionTitle?: string }>()
 const emit = defineEmits<{ resolved: [approved: boolean] }>()
 
 const now = ref(Date.now())
@@ -108,7 +108,13 @@ async function decide(approved: boolean, always = false): Promise<void> {
     <header class="row">
       <StatusDot tone="error" title="敏感工具确认" />
       <strong>敏感工具执行前需确认</strong>
-      <span class="badge">会话 {{ request.sessionId }}</span>
+      <!-- 来源会话（多会话并行时可能同时存在多张卡，标题比裸 id 可读；找不到标题时退回 id） -->
+      <span class="badge"
+        >会话
+        {{
+          sessionTitle !== undefined && sessionTitle !== '' ? sessionTitle : request.sessionId
+        }}</span
+      >
       <span class="grow" />
       <span class="tiny countdown" :class="{ urgent }"> {{ remainingSeconds }} 秒后自动拒绝 </span>
     </header>

@@ -23,6 +23,10 @@ import { computed } from 'vue'
 import type { ChatSessionSummary } from '@aurora/shared'
 import { CENTER_SESSION_PREFIX } from '@aurora/shared/browser'
 import { Archive, ArchiveRestore } from '@aurora/shared/browser'
+import StatusDot from '../../shared/components/StatusDot.vue'
+
+/** 会话行状态点（2026-11-07，docs/06 §4.3 / docs/07 §2.3）：与头部状态灯同一套三档色 */
+type SessionRowState = 'running' | 'unread' | 'error'
 
 const props = defineProps<{
   item: ChatSessionSummary
@@ -30,6 +34,8 @@ const props = defineProps<{
   activeId: string
   /** 已归档行：动作按钮换成「取消归档」（列表容器 / 锚点由外层分区负责） */
   archived?: boolean
+  /** 非当前会话的活动态（running / unread / error；缺省 = 不显示状态点） */
+  state?: SessionRowState
 }>()
 
 const emit = defineEmits<{
@@ -40,6 +46,14 @@ const emit = defineEmits<{
 const isActive = computed(() => props.item.id === props.activeId)
 const title = computed(() => (props.item.title.trim() === '' ? '新会话' : props.item.title))
 const isCenter = computed(() => props.item.id.startsWith(CENTER_SESSION_PREFIX))
+
+/** 状态点的悬浮说明（读屏走 StatusDot 自己的 aria-label） */
+const stateTitle = computed(() => {
+  if (props.state === 'running') return '该会话正在回复中'
+  if (props.state === 'unread') return '该会话有新回复'
+  if (props.state === 'error') return '该会话上次请求失败'
+  return ''
+})
 
 /** 相对时间：刚刚 / N 分钟前 / 当天时刻 / 昨天 / 月-日（会话摘要来自 ISO 时间戳） */
 function formatRelativeTime(iso: string): string {
@@ -77,6 +91,16 @@ function formatRelativeTime(iso: string): string {
       <span v-if="item.llm" class="item-tag item-llm tiny" :title="`本会话模型：${item.llm.model}`">
         {{ item.llm.model }}
       </span>
+      <!-- 会话运行态（2026-11-07）：后台 / 未读 / 失败三档，空闲不渲染；探针锚点固定 -->
+      <StatusDot
+        v-if="props.state !== undefined"
+        class="item-state"
+        :tone="props.state"
+        :size="8"
+        :title="stateTitle"
+        data-field="chat.session-state"
+        :data-state="props.state"
+      />
       <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
     </button>
     <!--
@@ -224,6 +248,12 @@ function formatRelativeTime(iso: string): string {
   flex: 0 0 auto;
   white-space: nowrap;
   font-variant-numeric: var(--num-tabular);
+}
+
+/* 会话状态点（2026-11-07）：8px，不收缩；窄栏时宁可让模型徽标让位也不隐藏它
+   （运行中 / 未读是"这个会话在干什么"的唯一行内信号） */
+.item-state {
+  flex: 0 0 auto;
 }
 
 /*

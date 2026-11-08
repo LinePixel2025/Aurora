@@ -366,6 +366,14 @@
        Center `chat.center-older-toggle`，默认收起，`aria-expanded` 跟展开态）；
        当前激活会话落在溢出里时强制可见（提到可见列表末尾）。折叠态均为组件内视图偏好，
        不落配置。
+       **会话运行态（2026-11-07，见 06 §4.3）**：每个会话行可在标题与相对时间之间显示一枚
+       8px 状态点（`data-field="chat.session-state"`，`data-state` = `running` / `unread` /
+       `error`，复用 `StatusDot` 的既有三档色；空闲 **不渲染**）——`running` = 该会话仍在跑
+       （前台或后台），`unread` = 切走期间已收尾，`error` = 上次请求失败。状态点也用于
+       **把有状态的会话提到可见区**：与当前激活会话同一条规则，即使落在「更早」溢出里也不折叠。
+       切到该会话即清掉它的未读 / 失败态；状态只存在内存（活动态），重启后由 `chat:sessions`
+       的 `running` 与事件流重建。四类会话行（项目 / 工作 / Agent / 归档）共用 `SessionRow`，
+       因此状态点在那里都显示。
        固定顶置项其余三个不变：子代理（`chat.subagent-item`）/ 自动化（`chat.auto-item`）/
        任务（`chat.jobs-entry`）—— 前一个切**主区**，后两个开关**右栏面板**；「快速对话」不再
        是固定顶置项（它的入口随 Agent对话区下沉）。空态文案按分区显示：项目对话区空时不渲染
@@ -410,12 +418,20 @@
     （对齐 ChatGPT / Claude Desktop；`data-field="chat.modelSource"` / `chat.model` /
     `chat.reasoningEffort`，旧 `chat.model` 锚点保留），「收起」文字按钮由 caption
     「关闭」按钮取代（隐藏语义不变）。
+    **后台会话汇总（2026-11-07）**：左栏可收起，后台仍在跑的会话不能因此消失。主区头部在
+    存在**非当前会话**的 running / unread 时显示一枚药丸按钮
+    `data-field="chat.background-sessions"`（「N 个会话进行中」/「N 个会话有新结果」，
+    `title` 列出会话标题），点击展开左栏；没有后台活动时不渲染。它只是入口，不替代左栏
+    逐行状态点。
   - **composer（2026-09 输入框重做，2026-09-29 减负轮，见下方「输入框规格」）**：单张悬浮卡
     （附件缩略图 → textarea → 工具行 → 上下文详解条）；附件缩略图在**卡内顶部**，支持拖拽与
     `Ctrl+V` 粘贴图片；工具行 = 权限模式 + 模型来源 + 模型 + 思考等级（四枚自绘芯片，
     浮层统一贴在卡上方）+（右侧）麦克风 + 停止 / 打断并发送 / 发送（后两者只在流式中）；
     旧「会话：xxx · 可调用 Skill 与 MCP 工具」常驻 meta 文案移除，三枚工具控件是 28px 零边框「芯片」，
     占位文案只留一句（`输入消息…`）。
+    **切回正在流式的会话（2026-11-07，见 06 §4.3）**：流式态属于会话运行态而不是当前视图，
+    输入区恢复「正在回复中」语义（占位文案 / 停止 / 打断并发送都在），不需要等下一次事件；
+    切换会话本身造成的 `streaming` 下降沿**不触发** TTS 自动朗读（自动朗读只认真正收尾的那次）。
   - **右栏「任务」面板（v15 新增，`data-field="chat.jobs"`；面板自身 `chat.job-panel`）**：
     停在右栏**最上方、`ContextPanel` 之上**（右栏是两行网格：任务面板按内容高度、上下文栏占满
     剩余高度；面板收起时上下文栏独占整列）。位置比上下文信息更靠前，是因为"长任务停了"是
@@ -1163,6 +1179,10 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   不再询问）、「拒绝」。倒计时（≤15s 转错误色）与拒绝路径不变；
   会话级授权表在**内核**（`KernelAgentHost`，不落盘），`'always'` 只由用户点按钮产生，
   拒绝永远不会被升级成会话级授权（见 06 §11.2）。
+  **并发会话的确认卡是数组（2026-11-07）**：主进程允许多条 pending，渲染层按 `confirmId`
+  并存并按会话显示来源（`data-session-id` 在卡根），逐张结算；一张卡被批准 / 拒绝 / 超时
+  只收起它自己。单槽位会让后到的卡覆盖先到的，先到的那张只能等 60s 超时按拒绝 —— 并发会话
+  下这是必然发生的（见 06 §4.3）。
 - **斜杠命令**（`SlashCommandMenu.vue` + `slashCommands.ts`，`data-field="chat.slash-menu"`）：
   输入框内容整串匹配 `/xxx`（无空格换行）时，在输入卡**上方**弹出候选浮层，分
   **命令** / **技能** 两组：
@@ -1917,6 +1937,8 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      `chat-trace-wheel.png`（**CDP 真实滚轮**：展开轨迹后连发小幅上滚，视口必须单调上移；
      见下面「真实滚轮跟随」一条 —— JS 合成事件测不到原生滚轮管线，这条与
      `chat-follow-wheel-up` 必须并存）。
+     2026-11-07 新增一条：`chat-parallel-sessions.png`（双会话并行 + 后台状态点 / 药丸；
+     见下面「多会话并行」一条）。
      历史现场由 `runCapture` 在跑计划前经 `seedChatTtsHistory` 种进 `sessions/main.json`：
      一条助手消息，内容含裸 URL 与行内代码（核对链接样式），并带 `reasoning` 字段
      （**探针标记 `capture-reasoning-probe`**，思考块探针靠它确认「展开后看到的就是 seed 的思考全文」）；
@@ -2149,6 +2171,18 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     `frameGapsTop5` / `overLimitHeartbeats` 与 `limits.guards`，便于判"单点 vs 整体"。
     为什么必须有这一条：原有 `chat-stream.png` 的桩只发 2 条分片，密度低到
     「每条增量都重解析整份对话」也来得及 —— 这类 BUG 在它面前**必然 PASS**（见 06 §16.3）。
+  - **多会话并行**（`chatParallelAct` / `chatParallelCheck`，产物 `chat-parallel-sessions.png`，
+    2026-11-07）：会话 A 发一条约 2s 的离线桩长流 → 新建会话 B 再发一条 → 立刻切回 A
+    （此时 A 仍在流式、B 在后台跑）。check 断言：A 的正文含**首片标记**（切走期间的前半段
+    没丢，这是本次修的核心症状）、左栏 B 行 `chat.session-state` 为 `running`、头部
+    `chat.background-sessions` 显示「进行中」；两条流收尾后 B 行变 `unread`、药丸变
+    「有新结果」；打开 B 后状态点与药丸消失；A / B 正文各自只含自己的 token（事件没有串会话）。
+    收尾切到 quick 并删除两个临时会话，不给后续场景留多余行。
+    桩分流用**内容寻址**的 `PARALLEL_SESSION_MARKER`（与 `burst-probe` 同理，不参与
+    `chatRequests().length === 1` 的计数寻址 —— 并行场景会多发对话请求，计数分派会被顶掉）。
+    **act 的两个时序坑**：reload 后「消息区为空」会假成立（历史还没水合），发送会落进旧会话
+    → 必须等标题变成「新会话」；「点了发送按钮」不等于发出去了（v-model 未更新时 `send()`
+    直接 return）→ 以用户气泡真的出现为发送成功判据。
   - **主界面左栏结构 + 门控现场**（`CHAT_SIDEBAR_SCRIPT`，产物 `chat-sidebar.png`，BetaV2）：
     断言三栏重构后左栏的固定锚点全在 —— `chat.quick-item`（固定顶置「快速对话」）、
     `chat.session-list`（**有会话行**：隔离 userData 由 `seedChatTtsHistory` 种了 main 会话）、

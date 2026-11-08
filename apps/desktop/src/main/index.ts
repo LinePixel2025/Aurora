@@ -182,6 +182,9 @@ import {
   BURST_REASONING_START_MARKER,
   BURST_TEXT_END_MARKER,
   BURST_TEXT_START_MARKER,
+  PARALLEL_END_MARKER,
+  PARALLEL_SESSION_MARKER,
+  PARALLEL_START_MARKER,
   REASONING_MARKER,
   SKILL_ONLY_MARKER,
   JOB_LOOP_MARKER,
@@ -219,6 +222,8 @@ import {
   SETTINGS_AWARENESS_RECORDS_CHECK,
   chatStreamAct,
   chatAutoTitleAct,
+  chatParallelAct,
+  chatParallelCheck,
   chatStreamBurstAct,
   chatStreamBurstCheck,
   chatStreamCheck,
@@ -3842,6 +3847,33 @@ async function runCapture(dir: string): Promise<void> {
     check: CHAT_AUTO_TITLE_CHECK,
   }
 
+  /**
+   * 多会话并行（2026-11-07，docs/06 §4.3）：A 发长流 → 新建 B 再发 → 切回 A。
+   * 探针断言「A 的首片在切走后仍保留 / B 行是 running / 收尾后 unread 与药丸 / 两边正文不串」，
+   * 收尾删除两个临时会话。token 带时间戳，避免与上一轮留下的会话内容撞串。
+   */
+  const parallelTokenA = `PAR_A_${Date.now().toString(36)}`
+  const parallelTokenB = `PAR_B_${Date.now().toString(36)}`
+  const chatParallelTarget: CaptureTarget = {
+    name: 'chat',
+    file: 'chat-parallel-sessions.png',
+    prepare: useCaptureStub,
+    act: chatParallelAct({
+      marker: PARALLEL_SESSION_MARKER,
+      tokenA: parallelTokenA,
+      tokenB: parallelTokenB,
+      startMarker: PARALLEL_START_MARKER,
+    }),
+    check: chatParallelCheck({
+      tokenA: parallelTokenA,
+      tokenB: parallelTokenB,
+      startMarker: PARALLEL_START_MARKER,
+      endMarker: PARALLEL_END_MARKER,
+    }),
+    // 截图落在 A 流式中段：给左栏状态点 / 头部药丸一帧稳定时间
+    settleMs: 200,
+  }
+
   const chatComputerUseTarget: CaptureTarget = {
     // Computer Use 授权入口（v39，2026-10-31 改为斜杠命令）：先打开总开关 + 当前模型 vision，
     // 再在输入框敲 `/computer` 唤起候选。只验证入口与候选，不真的 start（start 会占用会话）。
@@ -3906,6 +3938,7 @@ async function runCapture(dir: string): Promise<void> {
       chatTraceFoldTarget,
       chatBurstTarget,
       chatAutoTitleTarget,
+      chatParallelTarget,
       chatComputerUseTarget,
       // 记忆库独立窗口放在性能场景之后：多一个可见渲染窗口会污染 burst 的帧间隔读数。
       {

@@ -818,6 +818,14 @@ export interface ChatSessionSummary {
   /** 最后一条消息时间（ISO 时间戳）；空会话取创建/发现时间 */
   updatedAt: string
   messageCount: number
+  /**
+   * 该会话此刻是否有 Agent 请求在跑（2026-11-07，docs/06 §4.3）。
+   *
+   * 主进程在 `chat:sessions` 里现取 `agent.isBusy(sessionId)`。渲染层**只把它当运行态的
+   * 初值 / 兜底**（窗口创建前就开跑的请求、渲染层重载后才订阅事件），实时状态由事件流维护；
+   * 不能用它覆盖本地事件已经建立的 running / streaming（IPC 快照可能略早于事件）。
+   */
+  running?: boolean
   /** 当前窗口正在使用的会话 */
   active?: boolean
   /**

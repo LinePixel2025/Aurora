@@ -97,13 +97,14 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   再细一级 `$env:AURORA_CAPTURE_ONLY='<PNG 名子串>'`（逗号分隔，特殊值 `failed` = 只重跑上次没过的）。
   **张数与构成以 `report.json` 为准；「截了没有」只看日志 count 与报告，退出码 0 不等于截到了**；
   ⚠️ 筛选跑会产生假 FAIL（看到 FAIL 先问"是不是筛选跑的"，再用全量确认）。userData 自动隔离。规则见 docs/07 §5.3。
-  当前基线（2026-11-07 实测；2026-10-25 提醒页新增 `settings-notifications-schedule` 场景；
+  当前基线（2026-11-08 实测；2026-10-25 提醒页新增 `settings-notifications-schedule` 场景；
   v39 Computer Use 新增浮层 / 顶部状态胶囊 / 设置页 / `/computer` 斜杠入口 4 个场景；
   v40 智慧提醒新增 `settings-notifications-smart` 1 个场景；
-  v41 新增 `chat-changed-files`（轮终改动卡片）与 `settings-notifications-task`（任务完成提醒）2 个场景）：
-  **全量 120 条 checks** ——
-  本机全量单轮 111 条（四窗 99 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
-  提醒设置页 5）
+  v41 新增 `chat-changed-files`（轮终改动卡片）与 `settings-notifications-task`（任务完成提醒）2 个场景；
+  多会话并行新增 `chat-parallel-sessions`（后台状态点 / 头部汇总药丸）1 个场景）：
+  **全量 121 条 checks** ——
+  本机全量单轮 112 条（四窗 99 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
+  提醒设置页 5 + 多会话并行 1）
   + onboarding 6 + memory/awareness-glow 3。
   四窗 99 含 v36 插件场景 `chat-plugin-panel` /
   `chat-plugin-page` / `settings-plugins-installed` / `settings-plugins-detail`（设置列表 + 配置入口）/
@@ -112,11 +113,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   桌面 widget 窗口不在 `WindowName` 里，走 `captureWindows` 的 `widgetWindow` 现取。
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 120 条：
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 121 条：
   `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config,banner-card,banner-glow,computer-use-overlay,computer-use-hud'`
-  （111 checks，仅
+  （112 checks，仅
   `chat-model-picker` 红；**两个 Computer Use 内部窗口必须显式列进 `AURORA_CAPTURE_WINDOWS`** ——
-  按 `target.name` 精确过滤，漏了它们只会得到 108 条，看起来「少了两张」）
+  按 `target.name` 精确过滤，漏了它们只会得到 109 条，看起来「少了两张」）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
   （3 checks 全绿）；这是 capture 环境问题，不是子代理改动的回归。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`

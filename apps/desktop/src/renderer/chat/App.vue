@@ -121,6 +121,10 @@ const {
   usage,
   jobs,
   pendingNotice,
+  sessionStates,
+  backgroundRunningCount,
+  backgroundUnreadCount,
+  backgroundSessionTitles,
   send: sendMessage,
   abort,
   compactContext,
@@ -742,8 +746,38 @@ const currentSessionTitle = computed(
 /** 是否还有子代理在跑（左栏角标用 running 色 + 子代理页概览） */
 const subagentRunning = computed(() => subagentRuns.value.some((run) => run.status === 'running'))
 
-/** 待确认的敏感工具调用（主进程同一时刻最多推一条） */
-const sensitiveRequest = ref<SensitiveToolRequest | null>(null)
+/**
+ * 后台会话汇总文案（2026-11-07，docs/07 §2.3）：左栏可收起，后台仍在跑的会话不能因此消失。
+ * 有进行中的优先报「进行中」，否则报「有新结果」；没有后台活动时整枚药丸不渲染。
+ */
+const backgroundLabel = computed<string>(() => {
+  if (backgroundRunningCount.value > 0) return `${backgroundRunningCount.value} 个会话进行中`
+  if (backgroundUnreadCount.value > 0) return `${backgroundUnreadCount.value} 个会话有新结果`
+  return ''
+})
+
+/** 药丸的悬浮说明：列出有状态会话的标题（最多 5 个，其余给数量） */
+const backgroundTitle = computed<string>(() => {
+  const titles = backgroundSessionTitles.value
+  if (titles.length === 0) return ''
+  const head = titles.slice(0, 5).join('、')
+  return titles.length > 5 ? `${head} 等 ${titles.length} 个会话` : head
+})
+
+/** 会话标题（给跨会话卡片标来源；列表里找不到时退回 id） */
+function sessionTitleOf(id: string): string {
+  const title = sessions.value.find((item) => item.id === id)?.title?.trim() ?? ''
+  return title === '' ? id : title
+}
+
+/**
+ * 待确认的敏感工具调用（2026-11-07 起是**数组**，见 docs/06 §4.3）。
+ *
+ * 主进程 `ProactiveScheduler.pending` 允许多条并发：多会话并行时两个会话可以各弹一张。
+ * 此前是单槽位 ref，后到的会覆盖先到的，先到的那张只能等 60s 超时按拒绝 —— 用户再也
+ * 看不到它。现在按 `confirmId` 并存、逐张结算（与 `askUserRequests` 同一条口径）。
+ */
+const sensitiveRequests = ref<SensitiveToolRequest[]>([])
 let offSensitiveTool: (() => void) | null = null
 /**
  * Agent 提问卡片（`ask_user`，docs/06 §21）的当前请求列表（本轮改为**按会话并存**）。
@@ -898,7 +932,8 @@ const currentTitle = computed(() => {
 
 onMounted(() => {
   offSensitiveTool = window.aurora.proactive.onSensitiveTool((request) => {
-    sensitiveRequest.value = request
+    if (sensitiveRequests.value.some((item) => item.confirmId === request.confirmId)) return
+    sensitiveRequests.value = [...sensitiveRequests.value, request]
   })
   offAskUserRequest = window.aurora.askUser.onRequest((request) => {
     if (askUserRequests.value.some((item) => item.requestId === request.requestId)) return
@@ -991,8 +1026,9 @@ onUnmounted(() => {
   disposeRecording()
 })
 
-function resolveSensitive(): void {
-  sensitiveRequest.value = null
+/** 敏感确认收尾：回执已由卡片自己发出，这里只把**那一张**收起（同 confirmId 才生效） */
+function resolveSensitive(confirmId: string): void {
+  sensitiveRequests.value = sensitiveRequests.value.filter((item) => item.confirmId !== confirmId)
 }
 
 /** 提问卡片的收尾：回执已由卡片自己发出，这里只把**那一张**收起（超时 / 跳过 / 已结算都走它） */
@@ -1382,10 +1418,33 @@ const showThinking = computed<boolean>(
  */
 let lastReadId: string | null = null
 
+/**
+ * 进入当前流式态的那个会话（2026-11-07）。
+ *
+ * 多会话并行后 `streaming` 是**当前会话**的投影：从流式中的 A 切到空闲 B 会让它 true→false，
+ * 但这不是「A 答完了」—— 直接朗读会把 B 的旧回复读出来。下降沿必须校验「收尾的就是当前
+ * 会话」：切到另一个流式会话时由 `sessionId` 的 watch 把归属改成新会话。
+ */
+let streamingSessionId: string | null = null
+
+watch(sessionId, (id) => {
+  if (streaming.value) streamingSessionId = id
+})
+
 watch(
   () => streaming.value,
   (now, before) => {
+    if (!before && now) {
+      streamingSessionId = sessionId.value
+      return
+    }
     if (!before || now) return
+    // 收尾的不是当前会话（切会话造成的下降沿）：不朗读
+    if (streamingSessionId !== sessionId.value) {
+      streamingSessionId = null
+      return
+    }
+    streamingSessionId = null
     if (!ttsReady.value || settingsStore.settings?.tts.autoRead !== true) return
     const message = chat.lastAssistant.value
     if (message === null || message.id === lastReadId) return
@@ -2330,6 +2389,7 @@ async function markGuideDone(): Promise<void> {
         :agent-sessions="agentSessions"
         :archived-sessions="archivedSessionItems"
         :active-id="sessionId"
+        :session-states="sessionStates"
         :right-open="contextOpen"
         :view="view"
         :subagent-count="subagentRuns.length"
@@ -2371,6 +2431,21 @@ async function markGuideDone(): Promise<void> {
         </button>
         <StatusDot :tone="statusTone" title="AI 状态" />
         <strong class="head-name">{{ currentTitle }}</strong>
+        <!--
+          后台会话汇总（2026-11-07，docs/07 §2.3）：左栏可收起，后台仍在跑的会话不能因此消失。
+          只在存在**非当前会话**的 running / unread 时出现；点击展开左栏，悬浮说明列出会话标题。
+          它只是入口，不替代左栏逐行状态点（`chat.session-state`）。
+        -->
+        <button
+          v-if="backgroundLabel !== ''"
+          type="button"
+          class="background-pill press"
+          data-field="chat.background-sessions"
+          :title="backgroundTitle"
+          @click="navOpen = true"
+        >
+          {{ backgroundLabel }}
+        </button>
         <!--
           已归档提示条（docs/07 §2.3）：归档只是标记——当前会话被归档时**不切走、不清空**，
           对话内容留在原地继续可读，这里只给一条明确的状态 + 一次性撤销入口。
@@ -2423,12 +2498,18 @@ async function markGuideDone(): Promise<void> {
         @resolved="resolveAskUser(request.requestId)"
       />
 
+      <!--
+        敏感工具确认卡（2026-11-07 起是数组，docs/06 §4.3）：并发会话可以各弹一张，
+        逐张显示来源会话、逐张结算（只收起被处理的那一张）。
+      -->
       <SensitiveToolCard
-        v-if="sensitiveRequest"
-        :key="sensitiveRequest.confirmId"
-        :request="sensitiveRequest"
+        v-for="request in sensitiveRequests"
+        :key="request.confirmId"
+        :request="request"
+        :session-title="sessionTitleOf(request.sessionId)"
+        :data-session-id="request.sessionId"
         class="sensitive-host"
-        @resolved="resolveSensitive"
+        @resolved="resolveSensitive(request.confirmId)"
       />
 
       <div
@@ -3126,6 +3207,27 @@ body.col-resizing .nav {
   stroke-width: 1.4;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* 后台会话汇总药丸（2026-11-07，docs/07 §2.3）：左栏收起时的后台活动入口 */
+.background-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  max-width: 180px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--aurora-blue) 14%, transparent);
+  color: var(--accent-text);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--transition-fast);
+}
+
+.background-pill:hover {
+  background: color-mix(in srgb, var(--aurora-blue) 22%, transparent);
 }
 
 .sensitive-host {

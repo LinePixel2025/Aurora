@@ -159,6 +159,22 @@ const BURST_CHUNK_GAP_MS = 5
 const BURST_PRELUDE_ROUNDS = 2
 const BURST_PRELUDE_CHARS = 20_000
 
+/**
+ * 「多会话并行」截图场景的标记（2026-11-07，docs/06 §4.3 / docs/07 §2.3）。
+ *
+ * 内容寻址：最后一条 user 消息带它时，桩服务回一段约 2s 的**纯文本**长流，正文里带
+ * 调用方给的 token —— 两个会话同时各跑一条，探针据此证明「A 的内容不会跑到 B、切回正在
+ * 跑的会话仍能看到最早的片段」。刻意不进计数寻址：并行场景会多发几条对话请求，按
+ * `chatRequests().length === 1` 分派的那一支会被顶掉（同 `BURST_MARKER` 的理由）。
+ */
+export const PARALLEL_SESSION_MARKER = 'AURORA_PARALLEL_SESSIONS'
+/** 并行场景回复的首 / 末标记：探针据此断言「切回时前半段没丢」 */
+export const PARALLEL_START_MARKER = '【并行开始】'
+export const PARALLEL_END_MARKER = '【并行结束】'
+/** 分片密度：约 60 片 × 35ms ≈ 2.1s，够用户在 B 发完并切回 A 还在流式 */
+const PARALLEL_CHUNK_COUNT = 60
+const PARALLEL_CHUNK_GAP_MS = 35
+
 export interface StubRequest {
   path: string
   body: { messages?: Array<{ role?: string; content?: unknown }>; tools?: unknown[] } | null
@@ -324,6 +340,13 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         sendSseStop(res)
         res.write('data: [DONE]\n\n')
         res.end()
+        return
+      }
+
+      // ── 多会话并行场景（2026-11-07）：内容寻址，回一段带 token 的约 2s 纯文本长流 ──
+      // 必须排在计数寻址（`toolCallRound`）之前：两个会话会各发一次，计数寻址会被顶掉。
+      if (lastUserContent(record).includes(PARALLEL_SESSION_MARKER)) {
+        void sendParallelStream(res, parallelTokenOf(record), log)
         return
       }
 
@@ -922,6 +945,54 @@ function hasToolResultSinceLastUser(request: StubRequest): boolean {
     }
   }
   return messages.slice(lastUserIndex + 1).some((message) => message.role === 'tool')
+}
+
+/**
+ * 并行场景：带 token 的纯文本长流（约 `PARALLEL_CHUNK_COUNT × PARALLEL_CHUNK_GAP_MS`）。
+ *
+ * 首片带 `PARALLEL_START_MARKER`、末片带 `PARALLEL_END_MARKER`，正文里每片都带 token ——
+ * 探针既能断言「切回后台会话时最早的片段还在」，也能断言两个会话的正文没有串。
+ * 客户端中途断开（切会话 / 关窗）只销毁连接、不抛错，与爆发分流同款处理。
+ */
+async function sendParallelStream(res: ServerResponse, token: string, log?: Logger): Promise<void> {
+  const startedAt = Date.now()
+  try {
+    for (let index = 0; index < PARALLEL_CHUNK_COUNT; index += 1) {
+      const head = index === 0 ? `${PARALLEL_START_MARKER} ` : ''
+      const tail = index === PARALLEL_CHUNK_COUNT - 1 ? ` ${PARALLEL_END_MARKER}` : ''
+      sendSse(res, {
+        choices: [
+          {
+            index: 0,
+            delta: { content: `${head}${token} 并行片段 ${index + 1}。${tail}` },
+            finish_reason: null,
+          },
+        ],
+      })
+      if (!(await gap(res, PARALLEL_CHUNK_GAP_MS))) {
+        res.destroy()
+        return
+      }
+    }
+    sendSseStop(res)
+    res.write('data: [DONE]\n\n')
+    res.end()
+    log?.info('并行场景流发送完成', {
+      chunks: PARALLEL_CHUNK_COUNT,
+      elapsedMs: Date.now() - startedAt,
+    })
+  } catch {
+    res.destroy()
+  }
+}
+
+/**
+ * 并行场景的 token：标记之后同一行的第一个词（探针自己拼，桩只原样回显）。
+ * 空 token 也照常回（探针会因正文里没有 token 判失败，而不是靠桩代判）。
+ */
+function parallelTokenOf(request: StubRequest): string {
+  const after = lastUserContent(request).split(PARALLEL_SESSION_MARKER)[1] ?? ''
+  return (after.split('\n')[0] ?? '').trim().slice(0, 60)
 }
 
 /** 最后一条 user 消息的文本内容（非字符串一律当空串） */

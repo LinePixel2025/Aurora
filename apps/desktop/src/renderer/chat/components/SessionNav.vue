@@ -46,7 +46,11 @@ import {
   Workflow,
   Zap,
 } from '@aurora/shared/browser'
+import StatusDot from '../../shared/components/StatusDot.vue'
 import SessionRow from './SessionRow.vue'
+
+/** 会话行状态点（与 SessionRow 的三档一致；2026-11-07，docs/06 §4.3） */
+type SessionRowState = 'running' | 'unread' | 'error'
 
 /** 项目对话的子分组：一个项目一组（含还没有会话的项目 —— 组头 `+` 是新建入口） */
 interface ProjectSessionGroup {
@@ -67,6 +71,11 @@ const props = defineProps<{
   archivedSessions: ChatSessionSummary[]
   /** 当前会话 id（激活态判定） */
   activeId: string
+  /**
+   * 非当前会话的活动态（2026-11-07，docs/06 §4.3）：`running` / `unread` / `error`。
+   * 缺省（不含该 id）= 不显示状态点；运行中 / 未读的会话即使溢进「更早」也会被提到可见区。
+   */
+  sessionStates: Record<string, SessionRowState>
   /** 右栏是否展开（开关图标的方向 / 激活态） */
   rightOpen: boolean
   /** 主区正在展示的内容：对话流 / 子代理页面 / 自动化页面（docs/13 §11） */
@@ -142,18 +151,32 @@ const centerOlderOpen = ref(false)
 /** Center 子分组展开态：默认**展开**（用户要能立刻看到网页端会话），组件内视图偏好 */
 const centerOpen = ref(true)
 
-/** 按 updatedAt 倒序的数组拆成「最近 N 条 + 溢出」；激活会话在溢出里时提到可见列表末尾 */
+/** 按 updatedAt 倒序的数组拆成「最近 N 条 + 溢出」；激活会话与**有状态的会话**
+ *  （后台运行 / 未读 / 失败）在溢出里时一并提到可见列表末尾（2026-11-07）。 */
 function splitRecent(sessions: ChatSessionSummary[]): {
   recent: ChatSessionSummary[]
   older: ChatSessionSummary[]
 } {
   if (sessions.length <= RECENT_LIMIT) return { recent: sessions, older: [] }
   const recent = sessions.slice(0, RECENT_LIMIT)
-  const older = sessions.slice(RECENT_LIMIT)
-  const activeIndex = older.findIndex((item) => item.id === props.activeId)
-  if (activeIndex >= 0) recent.push(...older.splice(activeIndex, 1))
+  const recentIds = new Set(recent.map((item) => item.id))
+  for (const item of sessions.slice(RECENT_LIMIT)) {
+    if (item.id !== props.activeId && stateOf(item.id) === undefined) continue
+    recent.push(item)
+    recentIds.add(item.id)
+  }
+  const older = sessions.filter((item) => !recentIds.has(item.id))
   return { recent, older }
 }
+
+/** 某个会话行要显示的状态点（当前会话不显示：它就在主区里，状态灯由头部承担） */
+function stateOf(id: string): SessionRowState | undefined {
+  if (id === props.activeId) return undefined
+  return props.sessionStates[id]
+}
+
+/** quick 固定行的状态（quick 不在 agentSessions 里，单独取一次） */
+const quickState = computed(() => stateOf('quick'))
 
 /** Agent区的本地会话（拆掉 center- 前缀后的部分） */
 const localAgentSessions = computed(() =>
@@ -359,6 +382,7 @@ const noSessionsAtAll = computed(
                     :key="item.id"
                     :item="item"
                     :active-id="props.activeId"
+                    :state="stateOf(item.id)"
                     @select="emit('select', $event)"
                     @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
                   />
@@ -394,6 +418,7 @@ const noSessionsAtAll = computed(
             :key="item.id"
             :item="item"
             :active-id="props.activeId"
+            :state="stateOf(item.id)"
             @select="emit('select', $event)"
             @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
           />
@@ -437,6 +462,22 @@ const noSessionsAtAll = computed(
             >
               <Zap class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
               <span class="item-title">快速对话</span>
+              <!-- quick 也是真实会话（提示条面板共用），同样显示运行态（2026-11-07） -->
+              <StatusDot
+                v-if="quickState !== undefined"
+                class="item-state"
+                :tone="quickState"
+                :size="8"
+                :title="
+                  quickState === 'running'
+                    ? '正在回复中'
+                    : quickState === 'error'
+                      ? '上次请求失败'
+                      : '有新回复'
+                "
+                data-field="chat.session-state"
+                :data-state="quickState"
+              />
             </button>
           </div>
           <!--
@@ -448,6 +489,7 @@ const noSessionsAtAll = computed(
             :key="item.id"
             :item="item"
             :active-id="props.activeId"
+            :state="stateOf(item.id)"
             @select="emit('select', $event)"
             @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
           />
@@ -479,6 +521,7 @@ const noSessionsAtAll = computed(
               :key="item.id"
               :item="item"
               :active-id="props.activeId"
+              :state="stateOf(item.id)"
               @select="emit('select', $event)"
               @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
             />
@@ -523,6 +566,7 @@ const noSessionsAtAll = computed(
                   :key="item.id"
                   :item="item"
                   :active-id="props.activeId"
+                  :state="stateOf(item.id)"
                   @select="emit('select', $event)"
                   @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
                 />
@@ -550,6 +594,7 @@ const noSessionsAtAll = computed(
                     :key="item.id"
                     :item="item"
                     :active-id="props.activeId"
+                    :state="stateOf(item.id)"
                     @select="emit('select', $event)"
                     @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
                   />
@@ -595,6 +640,7 @@ const noSessionsAtAll = computed(
             :key="item.id"
             :item="item"
             :active-id="props.activeId"
+            :state="stateOf(item.id)"
             archived
             @select="emit('select', $event)"
             @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
@@ -937,6 +983,11 @@ const noSessionsAtAll = computed(
 .quick-row-btn .icon {
   flex: 0 0 auto;
   stroke: currentColor;
+}
+
+/* quick 行的状态点（2026-11-07）：与 SessionRow 的 .item-state 同一视觉/优先级 */
+.quick-row-btn .item-state {
+  flex: 0 0 auto;
 }
 
 /* ── 分区结构：caption（或组头）+ 会话列表 ── */

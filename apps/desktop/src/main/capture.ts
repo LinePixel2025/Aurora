@@ -3807,6 +3807,8 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
 
     // 收尾：切回原会话 + 撤销项目登记（两条都要成功才认 restored）
     let restored = false
+    let clearOk = null
+    let projectsAfter = -1
     const prevText = window.__auroraFileProjectPrevText || ''
     if (prevText !== '') {
       const rowsAll = Array.from(document.querySelectorAll('button.nav-item'))
@@ -3815,9 +3817,19 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
     }
     const state = await window.aurora.settings.get()
     if (state.ok) {
-      await window.aurora.settings.update({ projects: { ...state.value.projects, list: [] } })
-      await wait(300)
+      const clear = await window.aurora.settings.update({
+        projects: { ...state.value.projects, list: [] },
+      })
+      clearOk = clear.ok
+      // 轮询等还原生效：settings:changed 回推 + 左栏重算是异步的，固定 300ms 在重负载下
+      // 会偶发 restored:false（2026-11-08 全量首跑实测）；判据只认「项目分组标签消失」。
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (text('.nav').indexOf('截图项目') === -1) break
+        await wait(150)
+      }
     }
+    const stateAfter = await window.aurora.settings.get()
+    projectsAfter = stateAfter.ok ? stateAfter.value.projects.list.length : -1
     // 还原判据：项目分组标签消失（项目登记确实撤掉了）
     restored = text('.nav').indexOf('截图项目') === -1
 
@@ -3841,6 +3853,8 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
       toolbarInView,
       wideExitOk,
       restored,
+      clearOk,
+      projectsAfter,
       pass:
         act.ok === true &&
         rootLabel.indexOf('项目：截图项目') !== -1 &&
@@ -6826,6 +6840,329 @@ export const CHAT_AUTO_TITLE_CHECK = `(async () => {
     return { reason: String(error), pass: false }
   }
 })()`
+
+/**
+ * 多会话并行截图场景（2026-11-07，docs/06 §4.3 / docs/07 §2.3）。
+ *
+ * 现场：会话 A 发一条长流（桩服务 `PARALLEL_SESSION_MARKER` 分流，约 2s）→ 新建会话 B 再发
+ * 一条 → 立刻切回 A。此刻 A 在流式中、B 在后台跑。截图后由 check 断言：
+ * ① A 的正文含**首片标记**（切走期间的前半段没丢，这是本次修的核心症状）；
+ * ② B 行有 `running` 状态点、头部有「进行中」汇总药丸；
+ * ③ 两条流收尾后 B 行变 `unread`、药丸变「有新结果」；打开 B 后状态点与药丸消失；
+ * ④ B 的正文只含 token B、A 的正文只含 token A（事件没有串会话）。
+ *
+ * act 把 A/B 的 id 与切换瞬间的 DOM 证据存到 `window.__auroraParallelProbe`（截图是
+ * act 之后、check 之前，实时状态到 check 时可能已经变了）；check 收尾切到 quick 并
+ * 删除两个临时会话，避免给后续场景留下多余的会话行。
+ */
+export function chatParallelAct(input: {
+  marker: string
+  tokenA: string
+  tokenB: string
+  startMarker: string
+}): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const composer = () => document.querySelector('.composer-input')
+  const headName = () => {
+    const el = document.querySelector('.head-name')
+    return el === null ? '' : (el.textContent || '').trim()
+  }
+  const messageCount = () =>
+    document.querySelectorAll('.message.r-user, .message.r-assistant').length
+  const userCount = () => document.querySelectorAll('.message.r-user').length
+  const activeSessionId = () => {
+    const row = document.querySelector('.nav-row.active[data-session-id]')
+    return row === null ? '' : (row.getAttribute('data-session-id') || '')
+  }
+  const setText = (el, value) => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    setter.call(el, value)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  const clickNew = async () => {
+    const button = document.querySelector('[data-action="chat.new-session"]')
+    if (button === null) return false
+    button.click()
+    // 新会话是空会话（不落空文件、也不在左栏出列表）：等**标题变成「新会话」**且消息区为空。
+    // 只等「消息区为空」会在窗口刚 reload、主会话历史还没水合时立刻成立 —— 那样发送会落进
+    // 旧会话（2026-11-07 实测的 act 假失败）。
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (headName() === '新会话' && messageCount() === 0 && composer() !== null) return true
+      await wait(50)
+    }
+    return false
+  }
+  const sendPrompt = async (text) => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      for (let waitAttempt = 0; waitAttempt < 40; waitAttempt += 1) {
+        if (composer() !== null) break
+        await wait(50)
+      }
+      const box = composer()
+      if (box === null) return false
+      box.focus()
+      setText(box, text)
+      await wait(200)
+      const send = document.querySelector('.composer-box [aria-label="发送"]')
+      if (send === null) continue
+      const before = userCount()
+      send.click()
+      // 以「用户气泡真的出现」为发送成功判据：只证明点到了按钮会把
+      // 「v-model 还没更新、send() 提前 return」误当成已发出
+      for (let waitAttempt = 0; waitAttempt < 40; waitAttempt += 1) {
+        if (userCount() > before) return true
+        await wait(50)
+      }
+    }
+    return false
+  }
+  const waitStreaming = async () => {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      if (document.querySelector('.thread.streaming') !== null && userCount() > 0) return true
+      await wait(40)
+    }
+    return false
+  }
+  try {
+    window.__auroraParallelActResult = { step: 'start' }
+    // 窗口刚 reload（useCaptureStub）：等一次水合 / 首屏渲染再点，避免「空消息区」假信号
+    await wait(800)
+    // 诊断用：act 期间把 chat:event 的到达顺序记一份（check 读），用于区分
+    // 「主进程没发」与「渲染层没落」。跑完由 check 解绑。
+    window.__auroraParallelEvents = []
+    window.__auroraParallelOff = window.aurora.chat.onEvent((event) => {
+      const list = window.__auroraParallelEvents
+      if (list === undefined || list.length >= 800) return
+      list.push({
+        type: event.type,
+        sessionId: event.type === 'job' ? event.job.sessionId : event.sessionId,
+        chars: event.type === 'text' ? event.delta.length : 0,
+      })
+    })
+    if (!(await clickNew())) return { ready: false, reason: '新建会话 A 失败' }
+    window.__auroraParallelActResult = { step: 'a-created' }
+    if (!(await sendPrompt(${JSON.stringify(input.marker)} + ' ' + ${JSON.stringify(input.tokenA)}))) {
+      return { ready: false, reason: '会话 A 未发出' }
+    }
+    window.__auroraParallelActResult = { step: 'a-sent' }
+    if (!(await waitStreaming())) return { ready: false, reason: '会话 A 未开始流式' }
+    const a = activeSessionId()
+    if (a === '') return { ready: false, reason: '拿不到会话 A 的 id' }
+    window.__auroraParallelActResult = { step: 'a-streaming', a }
+
+    if (!(await clickNew())) return { ready: false, reason: '新建会话 B 失败' }
+    window.__auroraParallelActResult = { step: 'b-created', a }
+    if (!(await sendPrompt(${JSON.stringify(input.marker)} + ' ' + ${JSON.stringify(input.tokenB)}))) {
+      return { ready: false, reason: '会话 B 未发出' }
+    }
+    window.__auroraParallelActResult = { step: 'b-sent', a }
+    if (!(await waitStreaming())) return { ready: false, reason: '会话 B 未开始流式' }
+    const b = activeSessionId()
+    if (b === '' || b === a) return { ready: false, reason: '拿不到会话 B 的 id', a, b }
+    window.__auroraParallelActResult = { step: 'b-streaming', a, b }
+
+    const rowA = document.querySelector('[data-session-id="' + a + '"] .nav-item')
+    if (rowA === null) return { ready: false, reason: '左栏找不到会话 A 的行', a, b }
+    rowA.click()
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (activeSessionId() === a) break
+      await wait(40)
+    }
+    const streamingA = await waitStreaming()
+    const rowBState = document.querySelector(
+      '[data-session-id="' + b + '"] [data-field="chat.session-state"]',
+    )
+    const pill = document.querySelector('[data-field="chat.background-sessions"]')
+    const threadAtSwitch = document.querySelector('.thread')
+    const textAtSwitch = threadAtSwitch === null ? '' : (threadAtSwitch.textContent || '')
+    window.__auroraParallelProbe = {
+      a,
+      b,
+      streamingA,
+      bStateAtSwitch: rowBState === null ? '' : (rowBState.getAttribute('data-state') || ''),
+      pillAtSwitch: pill === null ? '' : (pill.textContent || '').trim(),
+      aHasStartAtSwitch: textAtSwitch.indexOf(${JSON.stringify(input.startMarker)}) !== -1,
+      aAssistantAtSwitch: document.querySelectorAll('.message.r-assistant').length,
+      aTextLengthAtSwitch: textAtSwitch.length,
+    }
+    return { ready: true, a, b, streamingA }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+}
+
+export function chatParallelCheck(input: {
+  tokenA: string
+  tokenB: string
+  startMarker: string
+  endMarker: string
+}): string {
+  const tokenA = JSON.stringify(input.tokenA)
+  const tokenB = JSON.stringify(input.tokenB)
+  const startMarker = JSON.stringify(input.startMarker)
+  const endMarker = JSON.stringify(input.endMarker)
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const activeSessionId = () => {
+    const row = document.querySelector('.nav-row.active[data-session-id]')
+    return row === null ? '' : (row.getAttribute('data-session-id') || '')
+  }
+  const stateOf = (id) => {
+    const el = document.querySelector(
+      '[data-session-id="' + id + '"] [data-field="chat.session-state"]',
+    )
+    return el === null ? '' : (el.getAttribute('data-state') || '')
+  }
+  const threadText = () => {
+    const el = document.querySelector('.thread')
+    return el === null ? '' : (el.textContent || '').trim()
+  }
+  const pillText = () => {
+    const el = document.querySelector('[data-field="chat.background-sessions"]')
+    return el === null ? '' : (el.textContent || '').trim()
+  }
+  const switchTo = async (id) => {
+    const button = document.querySelector('[data-session-id="' + id + '"] .nav-item')
+    if (button === null) return false
+    button.click()
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      if (activeSessionId() === id) return true
+      await wait(50)
+    }
+    return false
+  }
+  try {
+    const probe = window.__auroraParallelProbe
+    if (!probe) {
+      return {
+        pass: false,
+        reason: 'act 没有留下并行探针状态',
+        act: window.__auroraParallelActResult ?? null,
+        active: activeSessionId(),
+      }
+    }
+    delete window.__auroraParallelActResult
+    const a = probe.a
+    const b = probe.b
+    const checks = {}
+    checks.activeIsA = activeSessionId() === a
+    const textAtA = threadText()
+    checks.aHasStart = textAtA.indexOf(${startMarker}) !== -1
+    checks.aHasToken = textAtA.indexOf(${tokenA}) !== -1
+    checks.aHasNoB = textAtA.indexOf(${tokenB}) === -1
+    checks.streamingAAtSwitch = probe.streamingA === true
+    checks.bRunningAtSwitch = probe.bStateAtSwitch === 'running'
+    checks.pillAtSwitch = probe.pillAtSwitch.indexOf('进行中') !== -1
+    checks.aHasStartAtSwitch = probe.aHasStartAtSwitch === true
+    checks.aAssistantAtSwitch = probe.aAssistantAtSwitch > 0
+
+    // 等两条流都收尾（A 是当前会话；B 在后台，收尾后活动态变 unread）
+    let bStateAfter = ''
+    for (let attempt = 0; attempt < 250; attempt += 1) {
+      const aStreaming = document.querySelector('.thread.streaming') !== null
+      bStateAfter = stateOf(b)
+      if (!aStreaming && bStateAfter !== 'running') break
+      await wait(80)
+    }
+    const textAAfterDone = threadText()
+    checks.aHasStartAfterDone = textAAfterDone.indexOf(${startMarker}) !== -1
+    checks.aHasEnd = textAAfterDone.indexOf(${endMarker}) !== -1
+    checks.bUnreadAfterDone = bStateAfter === 'unread'
+    checks.pillAfterDone = pillText().indexOf('新结果') !== -1
+
+    // 打开 B：内容完整、且只有它自己的 token；看过之后状态点与药丸都消失
+    checks.switchedToB = await switchTo(b)
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (document.querySelector('.thread.streaming') === null) break
+      await wait(50)
+    }
+    const textAtB = threadText()
+    checks.bHasStart = textAtB.indexOf(${startMarker}) !== -1
+    checks.bHasEnd = textAtB.indexOf(${endMarker}) !== -1
+    checks.bHasToken = textAtB.indexOf(${tokenB}) !== -1
+    checks.bHasNoA = textAtB.indexOf(${tokenA}) === -1
+    checks.bStateAfterView = stateOf(b) === ''
+    checks.pillGoneAfterView = pillText() === ''
+
+    // 切回 A：内容仍在、且仍只有它自己的 token
+    checks.switchedBackToA = await switchTo(a)
+    const textBackAtA = threadText()
+    checks.aHasStartAfterSwitch = textBackAtA.indexOf(${startMarker}) !== -1
+    checks.aHasTokenAfterSwitch = textBackAtA.indexOf(${tokenA}) !== -1
+    checks.aHasNoBAfterSwitch = textBackAtA.indexOf(${tokenB}) === -1
+
+    // 收尾：切到 quick（稳定入口）再删掉两个临时会话，不给后续场景留多余行
+    const quick = document.querySelector('[data-field="chat.quick-item"]')
+    if (quick !== null) quick.click()
+    await wait(300)
+    for (const id of [a, b]) {
+      try {
+        await window.aurora.chat.deleteSession(id)
+      } catch (error) {
+        // 删除失败不影响本场景的展示断言，但会把临时会话留在左栏
+      }
+    }
+    await wait(200)
+    delete window.__auroraParallelProbe
+    delete window.__auroraParallelActResult
+
+    const pass =
+      checks.activeIsA &&
+      checks.aHasStart &&
+      checks.aHasToken &&
+      checks.aHasNoB &&
+      checks.streamingAAtSwitch &&
+      checks.bRunningAtSwitch &&
+      checks.pillAtSwitch &&
+      checks.aHasStartAtSwitch &&
+      checks.aAssistantAtSwitch &&
+      checks.aHasStartAfterDone &&
+      checks.aHasEnd &&
+      checks.bUnreadAfterDone &&
+      checks.pillAfterDone &&
+      checks.switchedToB &&
+      checks.bHasStart &&
+      checks.bHasEnd &&
+      checks.bHasToken &&
+      checks.bHasNoA &&
+      checks.bStateAfterView &&
+      checks.pillGoneAfterView &&
+      checks.switchedBackToA &&
+      checks.aHasStartAfterSwitch &&
+      checks.aHasTokenAfterSwitch &&
+      checks.aHasNoBAfterSwitch
+    const eventLog = window.__auroraParallelEvents ?? []
+    const byType = {}
+    for (const item of eventLog) {
+      byType[item.type] = (byType[item.type] || 0) + 1
+    }
+    const aText = eventLog.filter((item) => item.type === 'text' && item.sessionId === a)
+    const bText = eventLog.filter((item) => item.type === 'text' && item.sessionId === b)
+    const diagnostics = {
+      eventTypes: byType,
+      eventSessions: [...new Set(eventLog.map((item) => item.sessionId))],
+      aTextEvents: aText.length,
+      aTextChars: aText.reduce((total, item) => total + (item.chars || 0), 0),
+      bTextEvents: bText.length,
+    }
+    if (typeof window.__auroraParallelOff === 'function') window.__auroraParallelOff()
+    delete window.__auroraParallelOff
+    delete window.__auroraParallelEvents
+    return {
+      ...checks,
+      pass,
+      aHasStartAtSwitch: probe.aHasStartAtSwitch,
+      aAssistantAtSwitch: probe.aAssistantAtSwitch,
+      aTextLengthAtSwitch: probe.aTextLengthAtSwitch,
+      diagnostics,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+}
 
 /**
  * 爆发场景在渲染层存放观测结果的槽位（act 装仪器、check 读结果，两段脚本不共享作用域）

@@ -3,104 +3,69 @@
  *
  * 与主进程的契约：`chat:send` → `chat:event` 流式事件 + `chat:history` 水合。
  * 事件按 `sessionId` 过滤，并按 `requestId` 丢弃**已结束请求的迟到事件**
- * （docs/06 §16.1：`done` / `error` 之后同一 requestId 的事件一律是陈旧事件，
- * 曾经这些事件会被当成新一轮内容插进对话，表现为「工具卡跑到别的回复里」）。
+ * （docs/06 §16.1：`done` / `error` 之后同一 requestId 的事件一律是陈旧事件）。
  *
- * 顺序与归属（2026-09 增强）：
- * - 消息顺序由事件 `seq` 决定：新消息按 seq **插到正确位置**，而不是一律追加到末尾；
- * - 思考链与正文都**边收边写进同一条助手消息**（docs/06 §16.2）：该消息的 id 由内核在
- *   这一轮流开始前预领，`reasoning` / `text` 事件都带着它，因此「正在思考」在正文之前
- *   就能显示出来，也不需要再按轮次聚合（早先思考不带 messageId，只能先攒着、等正文到达
- *   才绑到消息上，代价是**纯思考阶段界面一片空白**）。
+ * 多会话并行（2026-11-07，docs/06 §4.3）：内核本就允许不同会话同时各跑一个请求；
+ * 本模块为**每个会话**保存一份运行态（`ChatSessionRuntime`，纯逻辑见 `chatRuntime.ts`），
+ * 事件按 `sessionId` 归属、请求级过滤（`finishedRequests` / `activeRequest`）也是每会话一套。
+ * 当前会话只是把对应那份**投影**到界面：切会话不搬状态、不清空，后台会话的流式内容因此
+ * 不会丢；切回正在跑的会话立刻是完整内容 + 「停止」可用。另有轻量的活动态
+ * （`SessionActivity`）供左栏状态点 / 后台汇总使用，不随运行态淘汰而丢失。
  *
- * 多会话（docs/06 §4）：`sessionId` 是可切换的 ref；`chat:sessions` 提供列表，
- * `chat:newSession` 新建。默认会话由入参 `context` 决定（`main` / `quick` / `settings`）。
+ * 多会话下的两条额外口径：
+ * - 隐藏后台会话（`auto-` / `awareness-` / `-sub`）不在 chat 里累积运行态；
+ * - 运行态最多保留 `RUNTIME_CACHE_LIMIT` 个（LRU，当前 / 流式中的永不淘汰），已结束会话
+ *   被淘汰后切回时由 `chat:history` 水合恢复，活动态（未读 / 失败点）独立保留。
  */
-import { computed, onScopeDispose, ref } from 'vue'
+import { computed, onScopeDispose, reactive, ref } from 'vue'
 import { deepClone } from '@aurora/shared/browser'
 import type {
   AgentJob,
-  AgentToolCall,
   ChangedFileInfo,
   ChatMessageDto,
   ChatSessionSummary,
   ChatTurnChangesPayload,
-  JobSummary,
   SendMessageRequest,
-  SubagentSnapshot,
-  TokenUsage,
   WindowName,
 } from '@aurora/shared'
 import { createDeltaBuffer } from '@aurora/shared/browser'
+import {
+  activityTone,
+  applyActivityEvent,
+  applyChatEvent,
+  applyStreamDelta,
+  createSessionActivity,
+  createSessionRuntime,
+  evictRuntimeIds,
+  isHiddenSessionId,
+  markActivityViewed,
+  mergeHydratedMessages,
+  rebuildHistoricalSubagents,
+  seedActivityRunning,
+  toChatMessage,
+  type ChatDelta,
+  type ChatSessionRuntime,
+  type ChatMessage,
+  type QueuedDraft,
+  type SessionActivity,
+  type SessionStateTone,
+  type SubagentRun,
+} from './chatRuntime.js'
 
-export interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant' | 'system'
-  content: string
-  pending?: boolean
-  error?: boolean
-  createdAt: number
-  /**
-   * 创建这条消息的事件序号（主进程分配的会话内单调序号）。
-   * 本地消息（自己发的 user 气泡、发送失败提示）push 时没有 seq、保持数组原位；
-   * user 气泡随后会由 `user-message` 广播补上 seq（同一条消息的确认）。
-   */
-  seq?: number
-  /** 产生这条消息的 Agent 请求 id（实时事件 / 历史回放透传）。 */
-  requestId?: string
-  /**
-   * 排队中（docs/06 §5.3）：会话正在回复时发出去的那句话，内核把它排进了队列而不是立即执行，
-   * 会在下一次轮次边界插进正在跑的请求。界面据此在气泡上挂一枚「排队中」，
-   * 并由 `user-message` 的回声（同文本对账）把它转正；点「停止」时这些气泡会被收回输入框。
-   */
-  queued?: boolean
-  /** 工具执行卡片（运行中 / 成功 / 失败） */
-  toolCalls?: AgentToolCall[]
-  /** 本条用户消息携带的附件文件名（仅用于气泡内展示） */
-  attachments?: string[]
-  /**
-   * 模型思考过程（reasoning_content 聚合）。
-   * 流式期间由 `reasoning` 事件按轮次实时同步进对应助手消息；请求收尾后固化，
-   * 历史（`chat:history`）水合的消息自带该字段。
-   */
-  reasoning?: string
-}
+export type { ChatMessage, QueuedDraft, SubagentRun } from './chatRuntime.js'
+export {
+  matchUserMessageEcho,
+  PENDING_REASON_TEXT,
+  USER_MESSAGE_ECHO_WINDOW_MS,
+} from './chatRuntime.js'
 
-/** 子代理运行记录：快照 + 它挂在哪条助手消息上（「子代理」页面按会话聚合展示） */
-export interface SubagentRun extends SubagentSnapshot {
-  messageId: string
-}
-
-/**
- * 排队中又被收回的那句话（docs/06 §5.3）：文本 + 原始附件路径。
- *
- * 单独一份是因为气泡上只有**文件名**（展示用），而「停止 / 打断并发送」要能把这句话
- * 连同附件一起还原回输入框或立刻发出去。
- */
-export interface QueuedDraft {
-  text: string
-  attachments: string[]
-}
-
-/**
- * 一条待写入的流式增量（text / reasoning 两条链路共用同一个缓冲）。
- *
- * `kind` 不参与缓冲的分组键（键是 messageId）：同一条消息在同帧内的
- * 思考增量与正文增量必须按**到达顺序**依次落库，否则「正文开始写就把思考中标记清掉」
- * 这条语义会在帧边界上翻车。
- */
-type ChatDelta =
-  | { kind: 'text'; messageId: string; requestId: string; seq: number; delta: string }
-  | { kind: 'reasoning'; messageId: string; requestId: string; seq: number; delta: string }
-
-/** 对话上下文（原为窗口名映射；mini-chat 删除后改为显式声明，会话 id 保持不变） */
+/** 当前窗口的会话上下文（原为窗口名映射；mini-chat 删除后改为显式声明，会话 id 保持不变） */
 export type ChatContext = 'main' | 'quick' | 'settings'
 
 /**
  * 上下文 → 会话 id。
  *
- * 映射刻意保持不变（`quick` / `main` / `settings`）：老会话文件继续可读，
- * 现在「快速会话」由交互窗侧栏与提示条共用（docs/06 §4）。
+ * 映射刻意保持不变（`quick` / `main` / `settings`）：老会话文件继续可读。
  */
 export function sessionIdFor(context: ChatContext): string {
   if (context === 'quick') return 'quick'
@@ -161,16 +126,11 @@ export function readTurnChanges(sessionId: string): Map<string, readonly Changed
   return map
 }
 
-/**
- * 暂停原因 → 用户可读文案（docs/06 §4.1 的 Job 契约）。
- *
- * `done` 事件的提示与「任务」面板（`JobPanel.vue` 的「暂停原因」一行）**共用这一份**：
- * 同一句话在两处各写一遍迟早会漂移（面板说「轮次上限」、提示说「预算」）。
- */
-export const PENDING_REASON_TEXT: Record<NonNullable<AgentJob['pendingReason']>, string> = {
-  'max-rounds': '已达到轮次上限，已暂停',
-  aborted: '已取消',
-}
+/** 没有运行态时的稳定空数组（computed 不返回新引用，避免每帧触发下游重算） */
+const EMPTY_MESSAGES: ChatMessage[] = []
+
+/** 后台会话列表刷新的防抖间隔（done / error 后对齐时间 / 排序 / running） */
+const SESSIONS_REFRESH_DEBOUNCE_MS = 250
 
 /**
  * `windowName` 仍然保留：它是 `chat:send` 的 `origin`（`SendMessageRequest.origin` 是 `WindowName`），
@@ -178,87 +138,66 @@ export const PENDING_REASON_TEXT: Record<NonNullable<AgentJob['pendingReason']>,
  */
 export function useChat(windowName: WindowName, context: ChatContext) {
   const defaultSessionId = sessionIdFor(context)
-  /** 当前会话 id（可切换）。切换会话后旧会话的流式状态一并复位。 */
+  /** 当前会话 id（可切换）。会话运行态独立保存，切换只改这个 ref。 */
   const sessionId = ref(defaultSessionId)
-  const messages = ref<ChatMessage[]>([])
-  const streaming = ref(false)
-  /**
-   * 最近一次「本轮收尾」的 requestId（`done` / `error` 分支置位，含**非本窗口发起**的轮次）。
-   *
-   * 折叠收尾的**第二个触发入口**（docs/07 §2.3，P2-20）：跨窗口观看 / 中途切走再切回时，
-   * 本窗口的 `streaming` 全程为 false —— MessageList 只挂 `streaming` 边沿的话，边沿
-   * 从不触发，本轮轨迹与思考块会永远停在展开态。改用这个显式信号后，只要本窗口看到了
-   * 收尾事件（requestId 变化）就会收拢一次。本窗口自己发起的轮次也会置位，与边沿走
-   * 同一条收拢路径（幂等，重复无害）；切会话 / 清空时复位为 null。
-   */
-  const lastSettledRequestId = ref<string | null>(null)
-  /** 最近一次正常完成请求的时刻与可折叠标记；历史水合默认按已完成处理。 */
-  const lastSettledAt = ref<number | null>(null)
-  const latestTurnGroupable = ref(true)
-  const unread = ref(false)
-  const error = ref<string | null>(null)
-  /** 会话列表（`chat:sessions`），仅交互窗使用 */
+  /** 会话 id → 运行态（响应式 Map；值在创建时已 reactive，所有读写都经 Map.get） */
+  const runtimes = reactive(new Map<string, ChatSessionRuntime>())
+  /** 会话 id → 活动态（轻量、不随运行态淘汰；左栏状态点 / 后台汇总） */
+  const activities = reactive(new Map<string, SessionActivity>())
   const sessions = ref<ChatSessionSummary[]>([])
-  let activeRequest: string | null = null
-  /** 当前正在流式接收的助手消息 id（服务端生成的存储 id） */
-  let assistantId: string | null = null
-  /** 已水合过的会话 id（切换会话时按新 id 重新水合） */
-  const hydrated = new Set<string>()
-  /**
-   * 已结束的请求 id（本窗口视角）：`done` / `error` 到达后同一 requestId 的后续事件
-   * 一律丢弃。集合只保留最近若干条，避免长会话无限增长。
-   */
-  const finishedRequests = new Set<string>()
-  const FINISHED_REQUEST_LIMIT = 64
-  /**
-   * 正在流式接收思考的助手消息 id（MessageList 的「自动展开 + 思考中动效」依据，docs/06 §16.1）。
-   *
-   * 该轮正文一开始写就把这里清空 —— 思考已经结束，块头文案随之从「思考中…」翻回
-   * 「已深度思考」，但已展开的思考内容不会自己收起来（收起来是请求结束的事）。
-   * 界面上「思考中」的判据就是这一个 ref（早先还有一个只增不减的 `reasoningLive` 镜像，
-   * 没有任何消费方，已删除）。
-   */
-  const reasoningTargetId = ref<string | null>(null)
-  /** 本会话的子代理运行（实时，key = 工具调用 id）；切换会话时清空 */
-  const liveSubagents = ref<SubagentRun[]>([])
-  /** 已落盘子代理快照索引：避免每次实时进度都扫描整份消息历史。 */
-  const historicalSubagents = new Map<string, SubagentRun>()
-  const historicalSubagentsVersion = ref(0)
-  /**
-   * 本会话的**任务（Job）**列表（新的在前）：「任务」面板的数据源（docs/06 §4.1）。
-   *
-   * 两个来源合并进同一份状态：`chat:jobs` 水合（切换会话 / 挂载）+ `job` 事件推送
-   * （就地更新，见事件分支）。长任务暂停后用户必须能看到它并点「继续」——
-   * 因此这里存的是**完整** `AgentJob`（含 stepsDone / todos），不是事件里的 `JobSummary`。
-   */
-  const jobs = ref<AgentJob[]>([])
-  /**
-   * 长任务被暂停的一句话提示（`done` 事件的 `pendingReason`）。
-   *
-   * 只在**带了原因**时写值；没有原因（正常收尾 / 未落地的老事件）保持 null，
-   * 既有行为一字不变。下一次发送、清空消息区或切会话时复位。
-   */
-  const pendingNotice = ref<string | null>(null)
-  /**
-   * 最近一轮 LLM 调用的 token 用量（输入框底部「上下文详解」的数据源，docs/07 §2.3）。
-   *
-   * `latest` 的 `promptTokens` 就是**当前上下文占用**（系统提示词 + 历史 + 本轮内容），
-   * `totals` 是本会话自窗口打开以来逐轮累加的消耗。provider 未回传 usage 时保持 null，
-   * 界面此时只显示条数与字符数，**不编造 token 数**。
-   */
-  const usage = ref<{
-    /** 最近一轮的用量（`promptTokens` 即当前上下文占用） */
-    latest: TokenUsage | null
-    /** 本会话累计（逐轮相加） */
-    totals: TokenUsage
-  }>({
-    latest: null,
-    totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
-  })
-  /** 已计入 `usage.totals` 的 `(requestId, round)`，防重复累加（同一序号只来一次） */
+  /** 已计入 `usage.totals` 的 `(requestId, round)`：全局一份（键本身全局唯一） */
   const countedUsage = new Set<string>()
-  /** 防重集合上限：与 `finishedRequests` 同一套「只留最近」口径，长会话不无限增长 */
-  const COUNTED_USAGE_LIMIT = 512
+
+  function ensureRuntime(id = sessionId.value): ChatSessionRuntime {
+    const existing = runtimes.get(id)
+    if (existing !== undefined) return existing
+    const created = reactive(createSessionRuntime(id)) as ChatSessionRuntime
+    runtimes.set(id, created)
+    return created
+  }
+
+  function ensureActivity(id = sessionId.value): SessionActivity {
+    const existing = activities.get(id)
+    if (existing !== undefined) return existing
+    const created = reactive(createSessionActivity()) as SessionActivity
+    activities.set(id, created)
+    return created
+  }
+
+  // 当前会话的投影（切会话只改 sessionId，下面这些 computed 自动指向新的运行态）
+  const currentRuntime = computed<ChatSessionRuntime | undefined>(() =>
+    runtimes.get(sessionId.value),
+  )
+  const messages = computed<ChatMessage[]>(() => currentRuntime.value?.messages ?? EMPTY_MESSAGES)
+  const streaming = computed<boolean>(() => currentRuntime.value?.streaming ?? false)
+  /** 当前会话的错误提示：可写（附件 / 语音等壳层错误也走这条通道） */
+  const error = computed<string | null>({
+    get: () => currentRuntime.value?.error ?? null,
+    set: (value) => {
+      ensureRuntime().error = value
+    },
+  })
+  const unread = computed<boolean>({
+    get: () => currentRuntime.value?.unread ?? false,
+    set: (value) => {
+      ensureRuntime().unread = value
+    },
+  })
+  const pendingNotice = computed<string | null>(() => currentRuntime.value?.pendingNotice ?? null)
+  const usage = computed(() => currentRuntime.value?.usage ?? EMPTY_USAGE)
+  const jobs = computed<AgentJob[]>(() => currentRuntime.value?.jobs ?? EMPTY_JOBS)
+  /** 正在接收思考过程的助手消息 id（供 MessageList 自动展开思考块）；空闲时为 null */
+  const reasoningTargetId = computed<string | null>(
+    () => currentRuntime.value?.reasoningTargetId ?? null,
+  )
+  /** 最近一次「本轮收尾」的 requestId（done / error 置位，含非本窗口发起的轮次） */
+  const lastSettledRequestId = computed<string | null>(
+    () => currentRuntime.value?.lastSettledRequestId ?? null,
+  )
+  const lastSettledAt = computed<number | null>(() => currentRuntime.value?.lastSettledAt ?? null)
+  const latestTurnGroupable = computed<boolean>(
+    () => currentRuntime.value?.latestTurnGroupable ?? true,
+  )
 
   const statusTone = computed<'idle' | 'running' | 'unread' | 'error'>(() => {
     if (error.value) return 'error'
@@ -268,292 +207,217 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   })
 
   const lastAssistant = computed(() => {
-    for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-      const message = messages.value[index]
+    const list = messages.value
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index]
       if (message && message.role === 'assistant') return message
     }
     return null
   })
 
-  /**
-   * 「子代理」页面用：本会话的子代理运行（新的在前）。
-   *
-   * 两个来源合并：实时事件（`liveSubagents`，含未落盘的步骤）与历史消息里的工具卡快照
-   * （重启后仍可回看）。同一 `callId` 以实时那份为准 —— 它更新。
-   */
+  /** 「子代理」页面用：本会话的子代理运行（新的在前，实时 + 历史快照合并） */
   const subagentRuns = computed<SubagentRun[]>(() => {
+    const rt = currentRuntime.value
+    if (rt === undefined) return []
     // 显式读取版本号：索引是非响应式 Map，只有真正改变时才重新合并排序。
-    void historicalSubagentsVersion.value
+    void rt.historicalSubagentsVersion
     const merged = new Map<string, SubagentRun>()
-    for (const run of liveSubagents.value) {
+    for (const run of rt.liveSubagents) {
       merged.set(run.callId === '' ? run.taskId : run.callId, run)
     }
-    for (const [key, run] of historicalSubagents) {
+    for (const [key, run] of rt.historicalSubagents) {
       if (merged.has(key)) continue
       merged.set(key, run)
     }
     return [...merged.values()].sort((left, right) => right.startedAt - left.startedAt)
   })
 
+  /** 当前会话的轮终改动（requestId → files）。`turnChangesVersion` 只是触发器。 */
+  const turnChangesForSession = computed<ReadonlyMap<string, readonly ChangedFileInfo[]>>(() =>
+    readTurnChanges(sessionId.value),
+  )
+
+  // ───────────────────────── 后台活动（左栏状态点 / 头部汇总） ─────────────────────────
+
+  /** 非当前会话的状态点数据（running > error > unread；无状态不出现） */
+  const sessionStates = computed<Record<string, SessionStateTone>>(() => {
+    const record: Record<string, SessionStateTone> = {}
+    for (const [id, activity] of activities) {
+      if (id === sessionId.value || isHiddenSessionId(id)) continue
+      const tone = activityTone(activity)
+      if (tone !== undefined) record[id] = tone
+    }
+    return record
+  })
+
+  const backgroundRunningCount = computed<number>(() => {
+    let count = 0
+    for (const [id, activity] of activities) {
+      if (id !== sessionId.value && !isHiddenSessionId(id) && activity.running) count += 1
+    }
+    return count
+  })
+
+  const backgroundUnreadCount = computed<number>(() => {
+    let count = 0
+    for (const [id, activity] of activities) {
+      if (id === sessionId.value || isHiddenSessionId(id) || activity.running) continue
+      if (activity.unread || activity.attention !== null) count += 1
+    }
+    return count
+  })
+
+  /** 头部汇总药丸的 `title`：列出有状态会话的标题（最多 5 个，其余「等 N 个」） */
+  const backgroundSessionTitles = computed<string[]>(() => {
+    const titles: string[] = []
+    for (const [id, activity] of activities) {
+      if (id === sessionId.value || isHiddenSessionId(id)) continue
+      if (!activity.running && !activity.unread && activity.attention === null) continue
+      const title = sessions.value.find((item) => item.id === id)?.title?.trim() ?? ''
+      titles.push(title === '' ? id : title)
+    }
+    return titles
+  })
+
   /**
    * 流式增量的按帧合并缓冲。
    *
-   * 一个 SSE token = 一次 IPC 推送，真实推理模型 100+ token/s 时渲染层每秒被叫醒上百次；
-   * text / reasoning 只入队，真正的累加合并到**下一帧**一次做完（每帧一次组件渲染）。
-   * 语义与边界见共享的 `@aurora/shared/browser` 的 `deltaBuffer`（2026-10-02 起单源，网页端同用一份）；这里只负责注入 rAF 与把批次写进消息。
+   * 一个 SSE token = 一次 IPC 推送；text / reasoning 只入队，真正的累加合并到**下一帧**
+   * 一次做完（每帧一次组件渲染）。值里带 `sessionId`：帧回调按它找回**自己的**运行态，
+   * 因此后台会话的增量不会写进当前会话。
+   *
+   * 隐藏窗口的兜底：页面不可见时 rAF 可能整帧暂停，缓冲区会一直涨；改用 16ms 定时器，
+   * 恢复可见时再 flush（见下方的 visibilitychange 监听）。
    */
-  const deltaBuffer = createDeltaBuffer<ChatDelta>(
-    (batches) => {
-      for (const batch of batches) {
-        for (const delta of batch.values) {
-          // messageFor 必须**在 apply 时**才调用：它可能新建消息并按 seq 插入，
-          // 提前调用会把「入队顺序」换成「到达顺序」，帧边界上的插入位置就会变
-          const message = messageFor(delta.messageId, delta.seq, delta.requestId)
-          if (message === undefined) continue
-          if (delta.kind === 'text') {
-            message.content += delta.delta
-            // 正文开始写 = 这一轮的思考已经结束：撤掉「思考中…」的实时标记
-            //（块本身仍保持展开，直到请求结束才收起为摘要行）
-            if (reasoningTargetId.value === message.id) reasoningTargetId.value = null
-            continue
-          }
-          // 思考增量带该轮预领的 messageId，因此**在正文之前**就能建出这条助手消息并把
-          // 「正在思考」显示出来（纯思考阶段界面不再空白）。逐条增量直接累加到消息上，
-          // 不再需要按轮次聚合 —— 每条增量都明确属于哪条消息（docs/06 §16.2）。
-          message.reasoning = (message.reasoning ?? '') + delta.delta
-          reasoningTargetId.value = message.id
-        }
+  const deltaFrameScheduler = {
+    requestFrame: (callback: () => void): number =>
+      document.visibilityState === 'hidden'
+        ? window.setTimeout(callback, 16)
+        : window.requestAnimationFrame(callback),
+    cancelFrame: (handle: number): void => {
+      window.cancelAnimationFrame(handle)
+      window.clearTimeout(handle)
+    },
+  }
+  const deltaBuffer = createDeltaBuffer<ChatDelta>((batches) => {
+    for (const batch of batches) {
+      for (const delta of batch.values) {
+        const rt = runtimes.get(delta.sessionId)
+        if (rt === undefined) continue
+        applyStreamDelta(rt, delta)
       }
-    },
-    {
-      requestFrame: (callback) => window.requestAnimationFrame(callback),
-      cancelFrame: (handle) => window.cancelAnimationFrame(handle),
-    },
-  )
-
-  const dispose = window.aurora.chat.onEvent((event) => {
-    // 任务（Job）事件是**会话级**的、逐条到达，必须走在「在途请求」两道过滤之前：
-    // 暂停恰恰发生在请求收尾之后（`done` 已把 requestId 记进 finishedRequests），
-    // 按 requestId 过滤会让「任务已暂停」这条最该看到的更新永远进不来。
-    // 会话归属按事件里的 `job.sessionId` 判定（它一定带着，不依赖事件的公共字段）。
-    if (event.type === 'job') {
-      if (event.job.sessionId !== sessionId.value) return
-      applyJobSummary(event.job)
-      return
     }
+  }, deltaFrameScheduler)
+
+  /** 页面重新可见：把隐藏期间按定时器积压的增量立刻落地一次 */
+  function onVisibilityChange(): void {
+    if (document.visibilityState === 'visible') deltaBuffer.flush()
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange)
+
+  // ───────────────────────── 事件订阅 ─────────────────────────
+
+  /** 喂给事件 reducer 的上下文（每次现取当前会话，避免闭包旧值） */
+  function eventContext(): {
+    currentSessionId: string
+    countedUsage: Set<string>
+    jobOrigin: AgentJob['origin']
+    now: () => number
+  } {
+    return {
+      currentSessionId: sessionId.value,
+      countedUsage,
+      jobOrigin: windowName === 'edge-bar' ? 'edge-bar' : 'chat',
+      now: () => Date.now(),
+    }
+  }
+
+  /** 会话收尾后的对齐：只有「本地可能缺前半段」的当前会话才自愈水合；任何会话都防抖重拉列表 */
+  function onRequestSettled(rt: ChatSessionRuntime): void {
+    if (sessionId.value === rt.id && rt.resyncOnSettle) {
+      rt.resyncOnSettle = false
+      void hydrateRuntime(rt.id, { force: true })
+    }
+    scheduleSessionsRefresh()
+    evictIdleRuntimes()
+  }
+
+  const disposeEvent = window.aurora.chat.onEvent((event) => {
+    const eventSessionId = event.type === 'job' ? event.job.sessionId : event.sessionId
+
+    // 隐藏后台会话（自动化 / 文件自感知 / 子代理）不在 chat 里累积运行态；当前会话例外
+    if (eventSessionId !== sessionId.value && isHiddenSessionId(eventSessionId)) return
+
+    // 迟到事件（该会话的这个请求已收尾）：既不该重新点亮活动态，也不该进消息区。
+    // job 事件例外：暂停恰恰发生在 done 之后（见 `applyChatEvent` 的同款注释）。
+    const tracked = runtimes.get(eventSessionId)
+    if (event.type !== 'job' && tracked?.finishedRequests.has(event.requestId) === true) return
+
+    // 活动态先记：即使后面被「请求级过滤」丢掉（排队满的 error 等），左栏状态也要准
+    applyActivityEvent(ensureActivity(eventSessionId), event, {
+      currentSessionId: sessionId.value,
+      now: () => Date.now(),
+    })
+
     // 远程会话（center-*，docs/12 §5）由网页端发起：会话在主进程落盘后，本窗口的
-    // 会话列表可能还没拉到它 —— 事件来自列表里没有的会话时补拉一次。拉回来之后
-    // 列表里就有了，后续事件不再触发；in-flight 守卫挡住流式期间的高频重入。
+    // 会话列表可能还没拉到它 —— 事件来自列表里没有的会话时补拉一次。代次守卫挡住
+    // 流式期间的高频重入把旧列表写回。
     if (
-      event.sessionId !== sessionId.value &&
-      !sessions.value.some((item) => item.id === event.sessionId)
+      eventSessionId !== sessionId.value &&
+      !sessions.value.some((item) => item.id === eventSessionId)
     ) {
       void refreshSessionsForUnknown()
     }
-    if (event.sessionId !== sessionId.value) return
-    if (finishedRequests.has(event.requestId)) return
-    if (activeRequest !== null && event.requestId !== activeRequest) return
 
-    // text / reasoning 之外的事件一律**先把在途增量刷出去**再走原分支：它们的语义与顺序
-    // 必须逐字不变 —— 尤其 `done` 读的是消息终态（正文是否为空、还有没有 pending），
-    // 不先 flush 就会在「正文还在缓冲里」时判定成「暂无回复」。
+    // 当前会话与非当前会话走**同一条** reducer：事件落到它自己的运行态。后台会话的内容
+    // 因此在本窗口内持续累积，切回时不会缺前半段（2026-11-07 起不再整条丢弃）。
+    const rt = ensureRuntime(eventSessionId)
+    // 非增量事件先把在途增量刷出去：它们的语义与顺序必须逐字不变 —— 尤其 `done` 读的是
+    // 消息终态（正文是否为空、还有没有 pending），不先 flush 就会在「正文还在缓冲里」时
+    // 判定成「暂无回复」。
     if (event.type !== 'text' && event.type !== 'reasoning') deltaBuffer.flush()
 
-    switch (event.type) {
-      case 'user-message': {
-        // user 消息广播（docs/06 §4）：主界面 / 提示条任一侧发出的提问，另一侧实时可见。
-        // **不能按 requestId 过滤**：该事件在内核 run() 开始时广播，早于 chat:send 的
-        // invoke 返回 —— 发送方此刻的 activeRequest 还没拿到这个 requestId，而且发送方
-        // 在 send() 里已本地 push 过同一条消息。
-        // 去重判定见 `matchUserMessageEcho`（P2-19）：只与**无 seq 的本地临时气泡**对账，
-        // 已带 seq 的气泡一律跳过 —— 否则跨窗口 30 秒内重发同文本会命中上一轮的
-        // `u-evt-` 气泡，把它的 seq/createdAt 覆写成这一轮的（吞掉第二条、错锚第一条）。
-        // 刻意不动 streaming / assistantId / activeRequest 等流式状态。
-        const content = event.content
-        const matched = matchUserMessageEcho(messages.value, content, event.createdAt)
-        if (matched >= 0) {
-          // 命中的是发送方本地 push 的气泡（临时 id、无 seq）：把主进程分配的 seq /
-          // 时间对齐回去 —— 它就是同一条消息。不补 seq 的话，后续按 seq 插入的回复
-          // 会越过这条气泡排到它前面（用户消息被压到整轮回复之后，2026-09-25 报告）。
-          const existing = messages.value[matched]
-          if (existing) {
-            existing.seq = event.seq
-            existing.createdAt = event.createdAt
-            existing.requestId = event.requestId
-            // 排队的那句此刻真的进了请求（docs/06 §5.3）：气泡摘掉「排队中」转正。
-            // 靠文本对账而不是靠 id —— 注入事件的 requestId 属于正在跑的那次请求，
-            // 拿排队时那个 id 去比对永远不相等（内核刻意这么广播，见 docs/06 §5.3）。
-            existing.queued = false
-            // 这句已经真的进了请求，草稿不再是"待发"（docs/06 §5.3）
-            queuedDrafts.delete(existing.id)
-          }
-          break
-        }
-        messages.value.push({
-          id: `u-evt-${event.requestId}`,
-          role: 'user',
-          content,
-          createdAt: event.createdAt,
-          seq: event.seq,
-          requestId: event.requestId,
-        })
-        break
-      }
-      case 'text': {
-        deltaBuffer.push(event.messageId, {
-          kind: 'text',
-          messageId: event.messageId,
-          requestId: event.requestId,
-          seq: event.seq,
-          delta: event.delta,
-        })
-        break
-      }
-      case 'reasoning': {
-        deltaBuffer.push(event.messageId, {
-          kind: 'reasoning',
-          messageId: event.messageId,
-          requestId: event.requestId,
-          seq: event.seq,
-          delta: event.delta,
-        })
-        break
-      }
-      case 'usage': {
-        // token 用量（docs/06 §16.2）：`latest` 供「上下文占用」展示，`totals` 逐轮累加。
-        // 同一 (requestId, round) 只计一次 —— 事件重放 / 迟到事件不该把用量翻倍。
-        // 缓存命中量（docs/06 §21.4）provider 未回传时缺省，累加按 0 计 —— 但不影响
-        // `latest` 上「有没有这个字段」的判定（展示侧靠缺省决定整段渲不渲染）。
-        const key = `${event.requestId}#${event.round}`
-        if (!countedUsage.has(key)) {
-          countedUsage.add(key)
-          // 只留最近若干条（插入序即 FIFO）：集合跨会话切换**不清** —— 切走再切回后
-          // 迟到的 usage 事件（该轮已包含在主进程的 meta.usage 种子里）靠它防重复累加
-          while (countedUsage.size > COUNTED_USAGE_LIMIT) {
-            const oldest = countedUsage.values().next().value
-            if (oldest === undefined) break
-            countedUsage.delete(oldest)
-          }
-          usage.value = {
-            latest: event.usage,
-            totals: {
-              promptTokens: usage.value.totals.promptTokens + event.usage.promptTokens,
-              completionTokens: usage.value.totals.completionTokens + event.usage.completionTokens,
-              totalTokens: usage.value.totals.totalTokens + event.usage.totalTokens,
-              cachedTokens:
-                (usage.value.totals.cachedTokens ?? 0) + (event.usage.cachedTokens ?? 0),
-            },
-          }
-        }
-        break
-      }
-      case 'tool': {
-        const message = messageFor(event.messageId, event.seq, event.requestId)
-        if (message) upsertToolCall(message, event.call)
-        break
-      }
-      case 'subagent': {
-        // 子代理进度（docs/06 §19）：同时更新工具卡上的快照（卡片就地长出进度）
-        // 与「子代理」页面的实时列表
-        const message = messageFor(event.messageId, event.seq, event.requestId)
-        if (message) patchToolCall(message, event.callId, event.subagent)
-        const run: SubagentRun = { ...event.subagent, messageId: event.messageId }
-        const key = run.callId === '' ? run.taskId : run.callId
-        const existingIndex = liveSubagents.value.findIndex(
-          (item) => (item.callId === '' ? item.taskId : item.callId) === key,
-        )
-        if (existingIndex >= 0) liveSubagents.value.splice(existingIndex, 1, run)
-        else liveSubagents.value = [run, ...liveSubagents.value]
-        break
-      }
-      case 'done': {
-        streaming.value = false
-        const message = currentAssistant()
-        settleReasoning()
-        settlePending()
-        if (message) {
-          if (message.content === '') message.content = '（暂无回复）'
-        }
-        // 暂停原因（Job 契约，docs/06 §4.1）：v15 起 `done` 会带 `pendingReason`，
-        // 文案由它决定；**没有它时保持 null**（既有行为一字不变）。
-        // 刻意不看保留字段 `pending`：它只能说「还有未完的轮次」，说不出是轮次用尽还是预算触顶。
-        pendingNotice.value =
-          event.pendingReason === undefined ? null : PENDING_REASON_TEXT[event.pendingReason]
-        unread.value = true
-        finishRequest(event.requestId)
-        // 收尾信号（P2-20）：MessageList 的折叠收尾据此触发 —— 非本窗口发起的轮次
-        // 在 `streaming` 上无边沿，只有这条显式信号能让它收拢成一行摘要。
-        lastSettledRequestId.value = event.requestId
-        lastSettledAt.value = Date.now()
-        latestTurnGroupable.value = event.pendingReason === undefined
-        // 任务可能刚进入 paused（轮次用尽 / 预算触顶）：立即对齐一次列表，
-        // 让「继续」按钮在回复结束的同一刻出现，而不是等下一次切会话。
-        void refreshJobs()
-        // 切走时在流式的会话：那轮已整轮落盘，重拉一次把完整正文换进来
-        maybeResyncAfterSettle()
-        break
-      }
-      case 'error': {
-        streaming.value = false
-        error.value = event.message
-        const message = currentAssistant() ?? lastAssistant.value
-        settleReasoning()
-        settlePending()
-        if (message) {
-          message.error = true
-          message.content = message.content === '' ? `请求失败：${event.message}` : message.content
-        }
-        finishRequest(event.requestId)
-        // 出错同样是「本轮收尾」：轨迹与思考块照收（与 done 同一条收拢路径，P2-20）
-        lastSettledRequestId.value = event.requestId
-        lastSettledAt.value = Date.now()
-        latestTurnGroupable.value = false
-        // 错误前已落盘的部分（正文 / 思考 / 工具卡）同样可能只有半截在屏，重拉对齐
-        maybeResyncAfterSettle()
-        break
-      }
-      default:
-        break
+    const effect = applyChatEvent(rt, event, eventContext())
+    if (!effect.accepted) return
+
+    if (event.type === 'text' || event.type === 'reasoning') {
+      deltaBuffer.push(event.messageId, {
+        kind: event.type,
+        sessionId: eventSessionId,
+        messageId: event.messageId,
+        requestId: event.requestId,
+        seq: event.seq,
+        delta: event.delta,
+      })
     }
+    // 面板只显示当前会话的任务：别的会话的 job 事件只更新它自己的运行态
+    if (effect.refreshJobs && eventSessionId === sessionId.value) void refreshJobs()
+    if (event.type === 'done' || event.type === 'error') onRequestSettled(rt)
   })
+
+  // ───────────────────────── 远程 / 列表推送 ─────────────────────────
 
   /**
    * 远程会话激活（docs/12 §6.3 `chat:remoteActivate`）：Center 网页端要求客户端主界面
    * 切到指定会话时，主进程向本窗口推送 `{ sessionId }`。推送前主进程已对该会话
    * `sessions.get()` 兜底装载（未落盘的登记为空会话），因此这里直接走现成
-   * `switchSession` 就能走通「网页端打开一个历史 center- 会话」：`hydrate` 能读到
-   * 历史（新装载的会话是空），收尾的 `loadSessions()` 把列表里原本没有的会话补进来。
-   * 被隐藏（`centerVisible === false`）的会话同样响应 —— 隐藏只是左栏不展示，
-   * 不影响远程输入与激活（docs/12 §5）。
+   * `switchSession` 就能走通「网页端打开一个历史 center- 会话」。
    */
   const disposeRemoteActivate = window.aurora.chat.onRemoteActivate((event) => {
     void activateRemoteSession(event.sessionId)
   })
 
-  /**
-   * 远程会话可见性变更（docs/12 §5 第 8 步 `chat:centerVisibilityChanged`）：
-   * Center 网页端开关某会话在客户端左栏的可见性且落盘成功后，主进程推到这里。
-   * 会话列表是左栏过滤（`centerVisible === false` 不进列表）的唯一数据源，
-   * 重拉一次即可对齐 —— 与 remoteActivate 不同，这不切换当前会话。
-   */
+  /** 远程会话可见性变更：重拉列表（不切换当前会话） */
   const disposeCenterVisibility = window.aurora.chat.onCenterVisibilityChanged(() => {
     void loadSessions()
   })
 
-  /**
-   * 会话删除推送（docs/07 §2.3，P2-22）：设置页「会话管理」删除某会话后，主进程
-   * 在**删除成功后**广播被删 id。这里重拉会话列表；若被删的正是当前会话，按
-   * 「最近会话回落 / 列表空则新建」处理 —— 否则被删会话会一直留在左栏、
-   * `activeId` 仍指着它。与 remoteActivate 同口径：推送处理**不许抛未捕获错误**。
-   */
+  /** 会话删除推送：重拉列表；若删的是当前会话按「最近会话 / 新建」回落 */
   const disposeSessionDeleted = window.aurora.chat.onSessionDeleted((event) => {
     void handleSessionDeleted(event.sessionId)
   })
 
-  /**
-   * 会话自动标题推送（docs/06 §4）：标题已落盘，按 id 原位替换会话项。
-   * 不重新水合消息、不切换会话；列表尚未包含目标时补拉一次列表即可。
-   */
+  /** 会话自动标题推送：原位更新左栏，不重新水合、不切换 */
   const disposeSessionTitle = window.aurora.chat.onSessionTitleChanged((event) => {
     const target = sessions.value.find((item) => item.id === event.sessionId)
     if (target !== undefined) {
@@ -563,458 +427,66 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     void loadSessions()
   })
 
-  /**
-   * 轮终改动汇总（2026-11-07，docs/06 §4.2）：写进模块级缓存，**不按当前会话过滤** ——
-   * 事件对其它会话也会到（主进程直接推给 chat 窗口），切回该会话时要能立刻显示卡片。
-   */
+  /** 轮终改动汇总：**不按当前会话过滤**，切回该会话要能立刻显示卡片 */
   const disposeTurnChanges = window.aurora.chat.onTurnChanges((payload) => {
     cacheTurnChanges(payload)
   })
 
-  /**
-   * 当前会话的轮终改动（requestId → files）。`turnChangesVersion` 只是触发器：
-   * 模块级 Map 不是响应式的，写缓存后自增一次让它重算。
-   */
-  const turnChangesForSession = computed<ReadonlyMap<string, readonly ChangedFileInfo[]>>(() =>
-    readTurnChanges(sessionId.value),
-  )
+  let sessionsRefreshTimer: number | null = null
 
-  onScopeDispose(() => {
-    // 先 flush 再 dispose：卸载瞬间已入队的增量不能丢（消息正文会缺尾），
-    // dispose 只负责取消在途帧与清空缓冲（组件已经没了，不再 apply）
+  /** done / error 后防抖重拉列表：左栏时间 / 排序 / running 与主进程对齐 */
+  function scheduleSessionsRefresh(): void {
+    if (sessionsRefreshTimer !== null) window.clearTimeout(sessionsRefreshTimer)
+    sessionsRefreshTimer = window.setTimeout(() => {
+      sessionsRefreshTimer = null
+      void loadSessions()
+    }, SESSIONS_REFRESH_DEBOUNCE_MS)
+  }
+
+  function dispose(): void {
     deltaBuffer.flush()
     deltaBuffer.dispose()
-    dispose()
+    disposeEvent()
     disposeRemoteActivate()
     disposeCenterVisibility()
     disposeSessionDeleted()
     disposeSessionTitle()
     disposeTurnChanges()
-  })
-
-  /**
-   * 处理 `chat:sessionDeleted`（上面推送的处理体，docs/07 §2.3）。
-   *
-   * 先重拉列表（被删会话一定不在里面了），再判断当前会话是否被删：
-   * **不是** → 只刷新左栏；**是** → 按「左栏最近一条会话回落」（列表新的在前），
-   * 列表里再没有别的会话时新建一个。回落走现成入口（`switchSession` / `newSession`），
-   * 任何失败只 warn 一句（推送处理不许抛未捕获错误）。
-   *
-   * `quick`（提示条快速对话）**不作为回落目标**：它有独立入口，落在它上面会让主界面
-   * 标题变成「快速对话」（docs/07 §2.3 的回落口径）。
-   */
-  async function handleSessionDeleted(deletedId: string): Promise<void> {
-    try {
-      await loadSessions()
-      if (sessionId.value !== deletedId) return
-      const next = sessions.value.find((item) => item.id !== deletedId && item.id !== 'quick')
-      if (next === undefined) {
-        await newSession()
-        return
-      }
-      await switchSession(next.id)
-    } catch (cause) {
-      window.console?.warn('会话删除后的回落失败', deletedId, cause)
+    if (sessionsRefreshTimer !== null) {
+      window.clearTimeout(sessionsRefreshTimer)
+      sessionsRefreshTimer = null
     }
+    document.removeEventListener('visibilitychange', onVisibilityChange)
   }
 
-  /**
-   * 执行一次远程激活（`chat:remoteActivate` 的处理体，docs/12 §6.3）。
-   *
-   * 目标会话不在本地列表时先补拉一次（与未知会话事件的补拉共用
-   * `refreshSessionsForUnknown` 的 in-flight 守卫；`switchSession` 收尾也会
-   * `loadSessions`，这里提前拉只是让切换动作与列表状态对齐）。
-   * 推送驱动的切换**不允许抛未捕获错误**：任何失败只 warn 一句，界面留在原会话。
-   */
-  async function activateRemoteSession(id: string): Promise<void> {
-    try {
-      if (!sessions.value.some((item) => item.id === id)) await refreshSessionsForUnknown()
-      await switchSession(id)
-    } catch (cause) {
-      window.console?.warn('远程会话激活失败', id, cause)
-    }
-  }
+  onScopeDispose(dispose)
 
-  function finishRequest(requestId: string): void {
-    activeRequest = null
-    assistantId = null
-    finishedRequests.add(requestId)
-    // 只保留最近若干条：Set 的迭代顺序即插入顺序，超限时丢最早的
-    while (finishedRequests.size > FINISHED_REQUEST_LIMIT) {
-      const oldest = finishedRequests.values().next().value
-      if (oldest === undefined) break
-      finishedRequests.delete(oldest)
-    }
-  }
-
-  function messageById(id: string): ChatMessage | undefined {
-    return messages.value.find((message) => message.id === id)
-  }
-
-  /**
-   * 找到事件所属的助手消息；不在列表里则新建，并**按事件 seq 插到正确位置**。
-   *
-   * 早先一律 `push` 到末尾：一旦事件顺序略有出入（陈旧请求、水合竞态），
-   * 工具卡就会挂到列表末尾的新消息上，看起来就是「顺序错乱」。
-   */
-  function messageFor(messageId: string, seq: number, requestId: string): ChatMessage | undefined {
-    const existing = messageById(messageId)
-    if (existing) {
-      if (existing.requestId === undefined) existing.requestId = requestId
-      assistantId = messageId
-      return existing
-    }
-    const created: ChatMessage = {
-      id: messageId,
-      role: 'assistant',
-      content: '',
-      pending: true,
-      createdAt: Date.now(),
-      seq,
-      requestId,
-    }
-    assistantId = messageId
-    insertOrdered(created)
-    return created
-  }
-
-  /**
-   * 按 seq 插入：放在最后一个 seq 更小的消息之后；尾部有无 seq 的本地消息时停在它后面。
-   *
-   * 无 seq 的消息（发送方本地 push 的 user 气泡、发送失败提示）在时间上晚于列表中
-   * 它之前的所有内容 —— 新消息**不能越过它**往前插。曾经跳过无 seq 消息继续前扫，
-   * 结果同一会话第二轮起每条新回复都插到用户气泡前面，看起来就是「消息顺序错乱」
-   * （2026-09-25 报告；见 docs/06 §16.1 症状表）。
-   */
-  function insertOrdered(message: ChatMessage): void {
-    const seq = message.seq
-    if (seq === undefined) {
-      messages.value.push(message)
-      return
-    }
-    for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-      const candidate = messages.value[index]
-      if (candidate === undefined) break
-      if (candidate.seq === undefined || candidate.seq < seq) {
-        messages.value.splice(index + 1, 0, message)
-        return
-      }
-    }
-    messages.value.push(message)
-  }
-
-  function currentAssistant(): ChatMessage | undefined {
-    if (assistantId === null) return undefined
-    return messageById(assistantId)
-  }
-
-  /**
-   * 请求收尾（done / error / abort）：复位思考的实时镜像。
-   *
-   * 思考文本从 2026-09 流式轮起**逐条累加在它自己的消息上**（增量自带 messageId），
-   * 因此收尾没有「无主草稿」可固化 —— 这里只剩下把「正在思考」的实时标记清掉，
-   * 免得下一个请求还带着上一轮的目标消息。
-   */
-  function settleReasoning(): void {
-    resetReasoning()
-  }
-
-  /**
-   * 请求收尾（done / error / abort）：把**所有**还在 `pending` 的消息一次性收口。
-   *
-   * 为什么不能只清「当前那条助手消息」：一轮只调工具、没有正文时（模型直接 `read_file`），
-   * 那条消息由 `tool` 事件建出来，`currentAssistant()` 早已指向后面轮次的消息 ——
-   * 只清最后一条，前面那条会永远停在 `pending: true`，界面上的三点动画在已结束的消息上一直转
-   * （2026-09 复核发现；见 docs/06 §16.2）。
-   */
-  function settlePending(): void {
-    for (const message of messages.value) {
-      if (message.pending === true) message.pending = false
-    }
-  }
-
-  /**
-   * 复位 token 用量的「最近一轮」并把累计清零（切会话 / 清空视图时调用）。
-   *
-   * 累计**不会就此丢失**：切回会话时 `seedUsageFromSummary` 会以主进程落盘的
-   * `meta.usage`（`chat:sessions` 摘要带出）为种子恢复 —— 那是跨切换、跨重启连续的
-   * 持久累计（平均缓存命中率按**会话**算，不按「本窗口本次观看期间」算）。
-   * `countedUsage` 刻意**不在这里清**：它的键是全局唯一的 `requestId#round`，
-   * 保留它才能挡住切回后迟到的旧事件把种子里的轮次再加一遍。
-   */
-  function resetUsage(): void {
-    usage.value = {
-      latest: null,
-      totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
-    }
-  }
-
-  /**
-   * 以会话摘要里带出的 `meta.usage` 为种子恢复累计（切回会话 / 窗口首次装载时调用）。
-   *
-   * 主进程在每轮 usage 事件处**先累计 meta、后广播事件**，因此任何时刻的 meta 值
-   * 都 ≥ 渲染层已计入的部分 —— 用「覆盖」而不是「相加」不会丢轮次；此后到达的
-   * usage 事件继续在种子之上逐轮累加。
-   */
-  function seedUsageFromSummary(summary: ChatSessionSummary | undefined): void {
-    const stats = summary?.usage
-    if (stats === undefined) return
-    usage.value = {
-      ...usage.value,
-      totals: {
-        promptTokens: stats.promptTokens,
-        completionTokens: stats.completionTokens,
-        totalTokens: stats.totalTokens,
-        cachedTokens: stats.cachedTokens,
-      },
-    }
-  }
-
-  /** 切换会话 / 发起新请求前复位思考镜像（旧请求的增量不能泄进新请求） */
-  function resetReasoning(): void {
-    reasoningTargetId.value = null
-  }
-
-  /** 同一 call id 原地更新状态（running → success/error） */
-  function upsertToolCall(message: ChatMessage, call: AgentToolCall): void {
-    const list = message.toolCalls ?? []
-    const index = list.findIndex((item) => item.id === call.id)
-    if (index >= 0) list[index] = { ...call }
-    else list.push({ ...call })
-    message.toolCalls = [...list]
-    if (call.subagent !== undefined) {
-      const key = call.subagent.callId === '' ? call.subagent.taskId : call.subagent.callId
-      historicalSubagents.set(key, { ...call.subagent, messageId: message.id })
-      historicalSubagentsVersion.value += 1
-    }
-    // 刻意**不碰 `pending`**：它表达的是「这条消息还在生成中」，只有请求收尾（done / error /
-    // abort）才该把它清掉。早先这里写 `pending = content === ''`，后果是「正文已到、工具还在跑」
-    // 的那一轮中途就把 pending 清成 false —— 依赖 `pending === false` 的入口（朗读按钮）
-    // 会在流式途中闪出来，而工具轮那条没正文的消息又永远清不掉（三点动画在已结束的消息上一直转）。
-  }
-
-  /** 把子代理快照补进已存在的工具卡（子代理进度事件不带完整工具调用） */
-  function patchToolCall(message: ChatMessage, callId: string, snapshot: SubagentSnapshot): void {
-    const list = message.toolCalls ?? []
-    const index = list.findIndex((item) => item.id === callId)
-    if (index < 0) return
-    const current = list[index]
-    if (current === undefined) return
-    list[index] = { ...current, subagent: snapshot }
-    message.toolCalls = [...list]
-    const key = snapshot.callId === '' ? snapshot.taskId : snapshot.callId
-    historicalSubagents.set(key, { ...snapshot, messageId: message.id })
-    historicalSubagentsVersion.value += 1
-  }
-
-  function rebuildHistoricalSubagents(nextMessages: readonly ChatMessage[]): void {
-    historicalSubagents.clear()
-    for (const message of nextMessages) {
-      for (const call of message.toolCalls ?? []) {
-        if (call.subagent === undefined) continue
-        const key = call.subagent.callId === '' ? call.subagent.taskId : call.subagent.callId
-        historicalSubagents.set(key, { ...call.subagent, messageId: message.id })
-      }
-    }
-    historicalSubagentsVersion.value += 1
-  }
-
-  /**
-   * 挂载时水合历史（docs/06 §4：重启后交互窗仍能看到历史）。
-   *
-   * - `options.force`：绕过 `hydrated` 守卫强制重拉 —— 窗口常驻，只在挂载时水合一次的话，
-   *   切回同一会话 / 其它窗口发出的新消息永远进不来（docs/07 §2.2 提示条实时刷新）；
-   * - `options.limit`：只拉最近 N 条（220px 提示条面板装不下长历史）。
-   *
-   * 合并策略（曾经是「服务端快照整体替换本地」）：
-   * - 服务端没有的本地消息保底保留；
-   * - 服务端有、本地也有的同 id 消息**就地合并**：内容取更长的那份，本地流式状态
-   *   （`pending` / `error` / 附件 / 思考中）优先保留 —— 否则水合会把正在流式接收的
-   *   消息对象换掉，界面上的「正在输入」与已长出的工具卡会闪一下甚至消失。
-   */
-  async function hydrate(options?: { force?: boolean; limit?: number }): Promise<void> {
-    const target = sessionId.value
-    if (options?.force !== true && hydrated.has(target)) return
-    hydrated.add(target)
-    const result = await window.aurora.chat.history({
-      sessionId: target,
-      ...(options?.limit === undefined ? {} : { limit: options.limit }),
-    })
-    // 水合期间用户可能已经切走了会话：丢弃这次结果，避免把 A 的历史塞进 B
-    if (sessionId.value !== target) return
-    if (!result.ok) {
-      window.console?.warn('会话历史读取失败', result.message)
-      return
-    }
-    const server = result.value.map(toChatMessage)
-    const localById = new Map(messages.value.map((message) => [message.id, message]))
-    const merged = server.map((item) => {
-      const local = localById.get(item.id)
-      if (local === undefined) return item
-      localById.delete(item.id)
-      return {
-        ...item,
-        content: local.content.length > item.content.length ? local.content : item.content,
-        ...(local.reasoning !== undefined ? { reasoning: local.reasoning } : {}),
-        ...(local.pending === undefined ? {} : { pending: local.pending }),
-        ...(local.error === undefined ? {} : { error: local.error }),
-        ...(local.attachments === undefined ? {} : { attachments: local.attachments }),
-      }
-    })
-    // 本地多出来的消息（服务端还没有的流式消息 / 自己刚发的 user 气泡）按原顺序跟在后面。
-    // 本地 user 气泡用的是 `u-` 临时 id，与服务端 id 不同：同 role 同文本视为同一条，不重复追加。
-    for (const message of messages.value) {
-      if (!localById.has(message.id)) continue
-      localById.delete(message.id)
-      if (sameAsServer(server, message)) continue
-      merged.push(message)
-    }
-    messages.value = merged
-    rebuildHistoricalSubagents(merged)
-  }
-
-  /**
-   * 只读拉取「快速会话」的最近几条（交互窗侧栏「快速」栏用）。
-   *
-   * 刻意**不碰** `sessionId` / `messages`：快速会话是独立于当前会话的预览，
-   * 塞进消息流会把两个会话串在一起。渲染成什么样由调用方决定。
-   */
-  async function loadQuickPreview(): Promise<ChatMessageDto[]> {
-    const result = await window.aurora.chat.history({ sessionId: 'quick', limit: 5 })
-    if (!result.ok) {
-      window.console?.warn('快速会话预览读取失败', result.message)
-      return []
-    }
-    return result.value
-  }
-
-  /** 拉取会话列表（交互窗的「历史」侧栏用）。 */
-  async function loadSessions(): Promise<void> {
-    const result = await window.aurora.chat.sessions()
-    if (!result.ok) {
-      window.console?.warn('会话列表读取失败', result.message)
-      return
-    }
-    // active 由渲染层判定：主进程不知道哪个窗口正在看哪个会话
-    sessions.value = result.value.map((item) => ({
-      ...item,
-      active: item.id === sessionId.value,
-    }))
-    // 用量累计以落盘的 meta.usage 为种子恢复（挂载 / 切会话都走这里，一处收口）：
-    // meta 是「每轮先累计、后广播」的持久值，覆盖渲染层累计不会少计
-    seedUsageFromSummary(sessions.value.find((item) => item.id === sessionId.value))
-  }
-
-  /**
-   * 未知会话事件触发的列表补拉（center-* 远程会话可见性机制）。
-   *
-   * 流式期间同一会话的事件逐 token 到达，重入时直接跳过（in-flight 守卫）：
-   * 一次 IPC 往返后列表里有了该会话，后续事件自然不再触发。
-   */
-  let refreshingUnknownSession = false
-  async function refreshSessionsForUnknown(): Promise<void> {
-    if (refreshingUnknownSession) return
-    refreshingUnknownSession = true
-    try {
-      await loadSessions()
-    } finally {
-      refreshingUnknownSession = false
-    }
-  }
+  // ───────────────────────── 会话列表 / 水合 ─────────────────────────
 
   // ───────────────────────── 任务（Job，docs/06 §4.1） ─────────────────────────
 
-  /**
-   * 把一条 `JobSummary`（`job` 事件 / 列表接口共用的小对象）**就地**合并进 `jobs`。
-   *
-   * 合并而不是替换：summary 里根本没有 `text` / `stepsDone` / `todos` / `cursor` / `origin`，
-   * 整条换掉会让面板上的进度账本与待办在每次状态推送时被清空。
-   *
-   * 列表里还没有这条（窗口刚打开、事件先于列表水合到达）时**插到最前**再回一次 `chat:jobs`：
-   * 先让「任务已暂停」这一类状态（summary 里都有）立刻可见，随后由服务端的完整对象替换。
-   * 占位行只活一个 IPC 往返 —— 服务端始终是这份数据的唯一事实来源。
-   */
-  function applyJobSummary(summary: JobSummary): void {
-    const index = jobs.value.findIndex((job) => job.id === summary.id)
-    if (index < 0) {
-      jobs.value = [placeholderFor(summary), ...jobs.value]
-      void refreshJobs()
-      return
-    }
-    const current = jobs.value[index]
-    if (current === undefined) return
-    jobs.value.splice(index, 1, {
-      ...current,
-      status: summary.status,
-      round: summary.round,
-      maxRounds: summary.maxRounds,
-      budget: { usedTokens: summary.usedTokens },
-      updatedAt: summary.updatedAt,
-      // 这两个字段是「覆盖」而不是「有才写」：续跑后再暂停之前的原因/错误必须能被清掉
-      pendingReason: summary.pendingReason,
-      error: summary.error,
-    })
-  }
-
-  /**
-   * 用 `JobSummary` 拼一条**临时**卡（列表水合之前用）。
-   *
-   * 只有状态类字段是真的（状态 / 轮次 / token / 暂停原因 —— 也正是面板一行要显示的那些）；
-   * `text` / `stepsDone` / `todos` 事件里没有，留空由紧随的 `refreshJobs()` 补齐，
-   * `origin` 取本窗口名（发起这条 job 的窗口），`createdAt` 借用 `updatedAt`。
-   * 它**不是**持久数据：服务端列表一回来就会被同名 id 的完整对象替换。
-   */
-  function placeholderFor(summary: JobSummary): AgentJob {
-    return {
-      id: summary.id,
-      sessionId: summary.sessionId,
-      status: summary.status,
-      origin: windowName === 'edge-bar' ? 'edge-bar' : 'chat',
-      text: '',
-      round: summary.round,
-      maxRounds: summary.maxRounds,
-      stepsDone: [],
-      todos: [],
-      cursor: { nextRound: summary.round },
-      budget: { usedTokens: summary.usedTokens },
-      ...(summary.pendingReason === undefined ? {} : { pendingReason: summary.pendingReason }),
-      createdAt: summary.updatedAt,
-      updatedAt: summary.updatedAt,
-      ...(summary.error === undefined ? {} : { error: summary.error }),
-    }
-  }
-
-  /**
-   * 拉取当前会话的任务列表（`chat:jobs`）。
-   *
-   * 失败**保留旧列表**（只 warn 一句）：面板宁可显示上一次的快照，也不要因为一次 IPC 抖动
-   * 整块变空 —— 空列表与「真的没有任务」在界面上是同一个样子。
-   * 切换会话期间到达的结果直接丢弃（与 `hydrate` 同一口径：别把 A 会话的任务显示在 B 会话里）。
-   */
+  /** 拉取当前会话的任务列表；失败保留旧列表（一次 IPC 抖动不该把面板清空） */
   async function refreshJobs(): Promise<void> {
     const target = sessionId.value
+    const rt = ensureRuntime(target)
     const result = await window.aurora.chat.jobs({ sessionId: target })
     if (!result.ok) {
       window.console?.warn('任务列表读取失败', result.message)
       return
     }
     if (sessionId.value !== target) return
-    jobs.value = result.value
+    rt.jobs = result.value
   }
 
   /**
    * 续跑一条暂停的任务（`chat:resumeJob`）：主进程从 `cursor.nextRound` 接着跑，
-   * 成功后重拉列表 —— 状态一律以主进程为准，渲染层不做乐观改写
-   * （否则「点了继续但其实没跑起来」会看不出来）。
-   *
-   * 失败把主进程给的原因写进既有错误通道（`error`，与 `setArchived` 同一口径），不抛。
+   * 成功后重拉列表 —— 状态一律以主进程为准，渲染层不做乐观改写。
    */
   async function resumeJob(jobId: string): Promise<void> {
     let result: Awaited<ReturnType<typeof window.aurora.chat.resumeJob>>
     try {
       result = await window.aurora.chat.resumeJob({ sessionId: sessionId.value, jobId })
     } catch (cause) {
-      // invoke 本身也可能抛（序列化失败等），与 send() / setArchived() 同款兜底
       error.value = String(cause)
       return
     }
@@ -1044,21 +516,14 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   /**
    * 归档 / 取消归档一个会话，随后重拉列表（分组由渲染层按 `archived` 判定）。
    *
-   * 主进程侧是幂等且 await 落盘完成的（`SessionStore.setArchived`），所以这里紧接的
-   * `loadSessions()` 一定能读到新状态——不需要本地乐观改写，也就不会出现「界面已挪走、
-   * 磁盘还没写」的两份事实。
-   *
-   * 刻意**不碰** `sessionId` / `messages`：归档只是给会话文件挂一个标记（docs/07 §2.3），
-   * 当前正打开的那个会话被归档时要留在原地继续可读，不切走、不清空。
-   *
-   * 失败只把错误写进 `error`（与其它会话操作同一口径），不抛。
+   * 主进程侧幂等且 await 落盘完成，因此紧接的 `loadSessions()` 一定读到新状态。
+   * 刻意**不碰**当前会话的运行态：归档只是标记，正在看的会话留在原地继续可读。
    */
   async function setArchived(targetId: string, archived: boolean): Promise<boolean> {
     let result: Awaited<ReturnType<typeof window.aurora.chat.archiveSession>>
     try {
       result = await window.aurora.chat.archiveSession({ sessionId: targetId, archived })
     } catch (cause) {
-      // invoke 本身也可能抛（序列化失败等），与 send() 同款兜底
       error.value = String(cause)
       return false
     }
@@ -1070,22 +535,12 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     return true
   }
 
-  /**
-   * 绑定 / 解绑一个会话的项目（docs/06 §5.1 会话级项目），随后重拉列表。
-   *
-   * 主进程侧是幂等且 await 落盘完成的（`SessionStore.setProject`，与 `setArchived`
-   * 同一条惯例），所以这里紧接的 `loadSessions()` 一定能读到新绑定 ——
-   * 不做本地乐观改写，避免「下拉框已变、磁盘还没写」的两份事实。
-   * `projectId` 空串 = 清除绑定（会话回落全局当前项目）。
-   *
-   * 失败只把错误写进 `error`（与其它会话操作同一口径），不抛。
-   */
+  /** 绑定 / 解绑一个会话的项目（docs/06 §5.1），随后重拉列表；`projectId` 空串 = 清除。 */
   async function setSessionProject(targetId: string, projectId: string): Promise<boolean> {
     let result: Awaited<ReturnType<typeof window.aurora.chat.setSessionProject>>
     try {
       result = await window.aurora.chat.setSessionProject({ sessionId: targetId, projectId })
     } catch (cause) {
-      // invoke 本身也可能抛（序列化失败等），与 send() / setArchived() 同款兜底
       error.value = String(cause)
       return false
     }
@@ -1098,65 +553,226 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   }
 
   /**
-   * 切走时**正在流式**的会话（会话 id 集合）。
+   * 拉取会话列表（挂载 / 切会话 / 归档 / 删除后对齐）。
    *
-   * 流式正文只有整轮结束才落盘（agentLoop 的 `appendAssistant` 在轮末）：切走再切回时，
-   * hydrate 快照里没有那轮的半成品正文 —— 之后到达的增量只能「接着写」，前半段就丢了。
-   * 这里记下「切走时在跑」的会话；该会话的 `done` / `error` 到达后强制重拉一次
-   * （`maybeResyncAfterSettle`），把完整落盘的那轮换进来。
+   * - `running` 来自主进程 `agent.isBusy`：**只作初值 / 兜底**。为 true 时给活动态种下
+   *   「在跑」，并让当前会话的 runtime 也进入流式态（窗口创建前就开跑 / 渲染层重载后
+   *   「停止」仍可用）；**不拿 false 反向覆盖**本地事件已建立的状态（IPC 快照可能早于事件）。
+   * - 当前会话的用量累计以落盘 `meta.usage` 为种子恢复（覆盖而非相加，meta 恒 ≥ 已计入部分）。
+   * - 并发拉取用**代次**收口：后发的请求覆盖先发的（只在「最新一次」上写状态），
+   *   避免切会话 / 防抖刷新 / 标题推送交叠时把旧列表覆盖回来。
    */
-  const resyncOnSettle = new Set<string>()
-
-  /** 收尾（done / error）后的定点重拉：只对「切走时在流式」的会话做一次 */
-  function maybeResyncAfterSettle(): void {
-    if (!resyncOnSettle.has(sessionId.value)) return
-    resyncOnSettle.delete(sessionId.value)
-    void hydrate({ force: true })
+  let sessionsFetchGeneration = 0
+  let sessionsAppliedGeneration = 0
+  async function loadSessions(): Promise<void> {
+    sessionsFetchGeneration += 1
+    const generation = sessionsFetchGeneration
+    const result = await window.aurora.chat.sessions()
+    if (!result.ok) {
+      window.console?.warn('会话列表读取失败', result.message)
+      return
+    }
+    // 更晚发起的拉取已经先返回并写过状态：本次结果作废
+    if (generation < sessionsAppliedGeneration) return
+    sessionsAppliedGeneration = generation
+    sessions.value = result.value.map((item) => ({
+      ...item,
+      active: item.id === sessionId.value,
+    }))
+    for (const item of result.value) {
+      if (item.running !== true) continue
+      seedActivityRunning(ensureActivity(item.id))
+      if (item.id !== sessionId.value) continue
+      const rt = ensureRuntime(item.id)
+      // 本地不知道它在跑（窗口创建前就开跑 / 渲染层重载）：早几片增量可能没收到，
+      // 收尾后用水合补齐（resyncOnSettle）
+      if (!rt.streaming) {
+        rt.streaming = true
+        rt.resyncOnSettle = true
+      }
+    }
+    seedUsageFromSummary(sessions.value.find((item) => item.id === sessionId.value))
   }
 
-  /** 切换到指定会话（重新水合）。切换会中断本地流式状态，但不 abort 服务端请求。 */
+  /**
+   * 未知会话事件触发的列表补拉（center-* 远程会话可见性机制）。
+   * 流式期间同一会话的事件逐 token 到达，`loadSessions` 的代次守卫保证不会把旧列表写回。
+   */
+  async function refreshSessionsForUnknown(): Promise<void> {
+    await loadSessions()
+  }
+
+  /** 以会话摘要里带出的 `meta.usage` 为种子恢复累计（切回 / 首次装载时调用） */
+  function seedUsageFromSummary(summary: ChatSessionSummary | undefined): void {
+    const stats = summary?.usage
+    if (stats === undefined) return
+    const rt = ensureRuntime()
+    rt.usage = {
+      ...rt.usage,
+      totals: {
+        promptTokens: stats.promptTokens,
+        completionTokens: stats.completionTokens,
+        totalTokens: stats.totalTokens,
+        cachedTokens: stats.cachedTokens,
+      },
+    }
+  }
+
+  /** 切换 / 清空时复位「最近一轮」用量（累计不丢：切回由 meta 种子恢复） */
+  function resetUsage(rt: ChatSessionRuntime): void {
+    rt.usage = {
+      latest: null,
+      totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
+    }
+  }
+
+  /** 每个会话同一时刻只跑一次 `chat:history`（切会话 + 收尾自愈可能撞车） */
+  const hydrating = new Map<string, Promise<void>>()
+
+  /**
+   * 水合指定会话的历史（默认当前会话）。
+   *
+   * - `options.force`：绕过 `hydrated` 守卫强制重拉（切会话 / 收尾自愈）；
+   * - `options.limit`：只拉最近 N 条（220px 提示条面板装不下长历史）。
+   * - 合并走 `mergeHydratedMessages`：服务端快照与本地运行态**按消息 id 合并**，
+   *   本地流式状态（pending / error / 附件 / 思考）优先保留。
+   */
+  async function hydrateRuntime(
+    target: string,
+    options?: { force?: boolean; limit?: number },
+  ): Promise<void> {
+    const rt = ensureRuntime(target)
+    if (options?.force !== true && rt.hydrated) return
+    rt.hydrated = true
+    // 整表替换之前先把在途增量落地，否则它们会在新数组里凭空插一条旧消息
+    deltaBuffer.flush()
+    const inflight = hydrating.get(target)
+    if (inflight !== undefined) {
+      await inflight
+      if (options?.force !== true) return
+    }
+    const run = (async () => {
+      const result = await window.aurora.chat.history({
+        sessionId: target,
+        ...(options?.limit === undefined ? {} : { limit: options.limit }),
+      })
+      if (!result.ok) {
+        window.console?.warn('会话历史读取失败', result.message)
+        return
+      }
+      const server = result.value.map(toChatMessage)
+      rt.messages = mergeHydratedMessages(server, rt.messages)
+      rebuildHistoricalSubagents(rt)
+    })()
+    hydrating.set(target, run)
+    try {
+      await run
+    } finally {
+      hydrating.delete(target)
+    }
+  }
+
+  async function hydrate(options?: { force?: boolean; limit?: number }): Promise<void> {
+    await hydrateRuntime(sessionId.value, options)
+  }
+
+  /**
+   * 只读拉取「快速会话」的最近几条（交互窗侧栏「快速」栏用）。
+   * 刻意**不碰**当前会话的运行态：快速会话是独立于当前会话的预览。
+   */
+  async function loadQuickPreview(): Promise<ChatMessageDto[]> {
+    const result = await window.aurora.chat.history({ sessionId: 'quick', limit: 5 })
+    if (!result.ok) {
+      window.console?.warn('快速会话预览读取失败', result.message)
+      return []
+    }
+    return result.value
+  }
+
+  /** 标记某会话已查看：清当前 runtime 的 unread + 活动态的未读 / 失败点 */
+  function markViewed(id: string): void {
+    const rt = runtimes.get(id)
+    if (rt !== undefined) rt.unread = false
+    const activity = activities.get(id)
+    if (activity !== undefined) markActivityViewed(activity)
+  }
+
+  /** LRU 淘汰已结束会话的运行态（当前 / 流式 / 有暂停提示的永不淘汰） */
+  function evictIdleRuntimes(): void {
+    const ids = evictRuntimeIds([...runtimes.entries()], sessionId.value)
+    for (const id of ids) runtimes.delete(id)
+  }
+
+  /**
+   * 处理 `chat:sessionDeleted`（docs/07 §2.3/P2-22）。
+   *
+   * 先重拉列表，再判断当前会话是否被删：**不是** → 只刷新左栏；**是** → 按「左栏最近
+   * 一条会话回落」，列表里再没有别的会话时新建。`quick` 不作为回落目标。删除同时清掉
+   * 该会话的运行态与活动态（否则 id 被复用时会继承旧状态）。
+   */
+  async function handleSessionDeleted(deletedId: string): Promise<void> {
+    try {
+      runtimes.delete(deletedId)
+      activities.delete(deletedId)
+      await loadSessions()
+      if (sessionId.value !== deletedId) return
+      const next = sessions.value.find((item) => item.id !== deletedId && item.id !== 'quick')
+      if (next === undefined) {
+        await newSession()
+        return
+      }
+      await switchSession(next.id)
+    } catch (cause) {
+      window.console?.warn('会话删除后的回落失败', deletedId, cause)
+    }
+  }
+
+  /** 执行一次远程激活：目标会话不在本地列表时先补拉一次；失败只 warn，界面留在原会话 */
+  async function activateRemoteSession(id: string): Promise<void> {
+    try {
+      if (!sessions.value.some((item) => item.id === id)) await refreshSessionsForUnknown()
+      await switchSession(id)
+    } catch (cause) {
+      window.console?.warn('远程会话激活失败', id, cause)
+    }
+  }
+
+  /**
+   * 切换到指定会话。**不再清空任何运行态**（2026-11-07）：消息、在途请求、已完成请求集合、
+   * 排队草稿、子代理都留在目标会话自己的运行态里；只做「标记已读 + 强制水合 + 拉列表 / 任务」。
+   */
   async function switchSession(id: string): Promise<void> {
-    if (id === sessionId.value) return
-    // 切走时正在流式：那轮的半成品正文切回后拿不全，记下来等收尾后定点重拉
-    if (streaming.value) resyncOnSettle.add(sessionId.value)
-    // 在途增量先落地：下面要整表换掉 messages，留着缓冲会在新会话里凭空插出一条旧消息
+    if (id === sessionId.value) {
+      markViewed(id)
+      return
+    }
     deltaBuffer.flush()
     sessionId.value = id
-    messages.value = []
-    // 排队草稿属于**上一个会话**：气泡随整表换掉消失了，条目也要跟上
-    queuedDrafts.clear()
-    error.value = null
-    unread.value = false
-    streaming.value = false
-    // 收尾信号是「本会话本轮」的：切走后旧值不能在新会话里再触发一次收拢
-    lastSettledRequestId.value = null
-    lastSettledAt.value = null
-    latestTurnGroupable.value = true
-    activeRequest = null
-    assistantId = null
-    finishedRequests.clear()
-    liveSubagents.value = []
-    historicalSubagents.clear()
-    historicalSubagentsVersion.value += 1
-    // 任务列表也是「本会话」的：旧会话的条目不能留在面板上（下面的 refreshJobs 重新拉）
-    jobs.value = []
-    pendingNotice.value = null
-    resetUsage()
-    resetReasoning()
-    // force：目标会话可能已在 hydrated 里（二次进入同一会话），不强制的话
-    // 守卫会吞掉这次水合，界面停在刚清空的空列表上
-    await hydrate({ force: true })
+    const rt = ensureRuntime(id)
+    markViewed(id)
+    // 切回来时如果活动态说它还在跑（事件可能早于本窗口的订阅），立刻恢复流式态：
+    // 输入区的「停止 / 打断并发送」不等下一次事件就该可用。本地此前不知道它在跑 →
+    // 早几片增量可能没收到，收尾后用水合补齐完整回复（resyncOnSettle）。
+    if (activities.get(id)?.running === true) {
+      if (!rt.streaming) {
+        rt.streaming = true
+        rt.resyncOnSettle = true
+      }
+    }
+    // 切回时旧错误提示不再重复弹：失败现场由消息气泡 / 左栏状态承担
+    rt.error = null
+    // 暂停提示是「上一次收尾」的一次性交代：切会话即清（与旧口径一致；任务面板仍显示 paused）
+    rt.pendingNotice = null
+    await hydrateRuntime(id, { force: true })
     await loadSessions()
     // 任务列表与消息一起水合：暂停的长任务必须在切进这个会话时就看得见
     await refreshJobs()
+    evictIdleRuntimes()
   }
 
   /**
    * 新建会话并切过去。新会话此时还没有标题，发完第一条消息后列表会刷新。
-   *
-   * `options` 透传给 `chat:newSession`（docs/06 §4 会话三分，2026-09-30）：
-   * `space: 'agent'`（缺省语义）= Agent对话、`'work'` = 工作目录对话、
-   * `projectId` 传入则绑定项目。参数是纯字面量对象，无 Proxy 克隆问题。
+   * `options` 透传给 `chat:newSession`（`space` / `projectId`，docs/06 §4 会话三分）。
    */
   async function newSession(options?: {
     space?: 'agent' | 'work'
@@ -1170,35 +786,26 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     await switchSession(result.value)
   }
 
-  /**
-   * 排队中的草稿（docs/06 §5.3）：气泡 id → 原文与附件路径。
-   *
-   * 为什么要单独记一份：气泡上只有**文件名**（展示用），而点「停止 / 打断」要把这句话
-   * 连同附件一起还给输入框或立刻发出去 —— 只靠 messages 里那条气泡，附件路径就丢了。
-   * 注入成功（回声对上门）或本次发送被拒时立即删除，不留过期条目。
-   */
-  const queuedDrafts = new Map<string, { text: string; attachments: string[] }>()
+  // ───────────────────────── 发送 / 中止 / 压缩 ─────────────────────────
 
   /**
    * 发送一条消息。
    *
-   * 返回 `'sent'`（立即开始）/ `'queued'`（会话正忙，已排进内核队列，docs/06 §5.3）/
-   * `'rejected'`（**没有发出去**：调用方要把文本收回输入框，别让用户以为话已送达）。
+   * 返回 `'sent'`（立即开始）/ `'queued'`（会话正忙，已排进内核队列）/ `'rejected'`
+   * （**没有发出去**：调用方要把文本收回输入框）。
    */
   async function send(
     text: string,
     attachments: string[] = [],
   ): Promise<'sent' | 'queued' | 'rejected'> {
+    const rt = ensureRuntime()
     const trimmed = text.trim()
-    // 允许「只发附件」：有附件时文本可以为空
     if (trimmed === '' && attachments.length === 0) return 'rejected'
-    // 流式期间再发一条 = 插话排队（docs/06 §5.3）：早先这里是直接 return，
-    // 表现为「敲了 Enter 没反应也没提示」
-    const queueing = streaming.value
-
+    // 流式期间再发一条 = 插话排队（docs/06 §5.3）
+    const queueing = rt.streaming
     const names = attachments.map(fileNameOf)
-    const draftId = `u-${Date.now()}-${messages.value.length}`
-    messages.value.push({
+    const draftId = `u-${Date.now()}-${rt.messages.length}`
+    rt.messages.push({
       id: draftId,
       role: 'user',
       content: trimmed,
@@ -1206,41 +813,36 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       ...(names.length === 0 ? {} : { attachments: names }),
     })
 
-    /**
-     * 这次发送没有出路：把那条气泡**摘掉**再落一条失败提示。
-     * 留着气泡，用户读到的是"我已经发出去了"，而模型永远不会看到那句话 —— 比报错更糟。
-     */
+    /** 这次发送没有出路：摘掉气泡再落一条失败提示（留着气泡比报错更糟） */
     const reject = (message: string): 'rejected' => {
-      const index = messages.value.findIndex((item) => item.id === draftId)
-      if (index >= 0) messages.value.splice(index, 1)
-      queuedDrafts.delete(draftId)
-      messages.value.push({
+      const index = rt.messages.findIndex((item) => item.id === draftId)
+      if (index >= 0) rt.messages.splice(index, 1)
+      rt.queuedDrafts.delete(draftId)
+      rt.messages.push({
         id: `e-${Date.now()}`,
         role: 'assistant',
         content: `发送失败：${message}`,
         error: true,
         createdAt: Date.now(),
       })
-      // 排队的这条被拒时**不能动 `streaming`**：那会抹掉正在跑的那次请求的界面状态
-      // （输入区从「流式中」跳回「可发送」，而模型还在说话）
+      // 排队的这条被拒时**不能动 streaming**（会抹掉正在跑的那次请求的界面状态）
       if (!queueing) {
-        streaming.value = false
-        error.value = message
+        rt.streaming = false
+        rt.error = message
       }
       return 'rejected'
     }
 
     if (!queueing) {
-      error.value = null
-      // 上一条「已暂停」提示在新请求发出后不再成立（它描述的是上一次收尾）
-      pendingNotice.value = null
-      streaming.value = true
-      unread.value = false
-      lastSettledAt.value = null
-      latestTurnGroupable.value = false
-      activeRequest = null
-      assistantId = null
-      resetReasoning()
+      rt.error = null
+      rt.pendingNotice = null
+      rt.streaming = true
+      rt.unread = false
+      rt.lastSettledAt = null
+      rt.latestTurnGroupable = false
+      rt.activeRequest = null
+      rt.assistantId = null
+      rt.reasoningTargetId = null
     }
 
     const request: SendMessageRequest = {
@@ -1248,54 +850,49 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       text: trimmed,
       origin: windowName,
       // `attachments` 来自 `ref<string[]>`，是 Vue 的 reactive Proxy —— 结构化克隆不能传 Proxy
-      // （见 shared/stores.ts 的同一处理），必须转成纯数组，否则整条发送链路以
-      // DataCloneError 静默失败、输入区还会永远停在「流式中」。
       ...(attachments.length === 0 ? {} : { attachments: deepClone(attachments) }),
     }
     let result: Awaited<ReturnType<typeof window.aurora.chat.send>>
     try {
       result = await window.aurora.chat.send(request)
     } catch (cause) {
-      // invoke 本身也可能抛（序列化失败等）：必须复位，否则输入区永久停在「流式中」
       return reject(String(cause))
     }
     if (!result.ok) return reject(result.message)
 
-    // 排队（docs/06 §5.3）：这次没有开新请求，流式状态仍归正在跑的那一次，一律不碰
+    // 排队：这次没有开新请求，流式状态仍归正在跑的那一次，一律不碰
     if (result.value.queued === true) {
-      const bubble = messages.value.find((item) => item.id === draftId)
+      const bubble = rt.messages.find((item) => item.id === draftId)
       if (bubble) bubble.queued = true
-      queuedDrafts.set(draftId, { text: trimmed, attachments: [...attachments] })
+      rt.queuedDrafts.set(draftId, { text: trimmed, attachments: [...attachments] })
       return 'queued'
     }
-    // 显式 `false` = 队列已满（内核同时广播 E_QUEUE_FULL，但那条事件按 activeRequest 过滤到不了这里）：
-    // 气泡上的失败提示是用户唯一能看见的交代
+    // 显式 `false` = 队列已满（内核同时广播 E_QUEUE_FULL，但那条事件按 activeRequest 过滤
+    // 到不了这里）：气泡上的失败提示是用户唯一能看见的交代
     if (result.value.queued === false) return reject('排队已满，请等当前任务告一段落或先停止')
 
-    activeRequest = result.value.requestId
+    rt.activeRequest = result.value.requestId
     return 'sent'
   }
 
   /**
-   * 手动压缩当前会话上下文（`/compact`，docs/06 §4）：调 `chat:compact`，
-   * 结果以一条系统提示落进消息区。
-   *
-   * 刻意**不走 `send()`**：压缩不产生流式回复，走发送链会把输入区永远停在「流式中」
-   * （没有 done 事件来收尾）。流式期间直接跳过（主进程侧还有 E_BUSY 兜底）。
+   * 手动压缩当前会话上下文（`/compact`）：结果以一条系统提示落进消息区。
+   * 刻意**不走 `send()`**：压缩不产生流式回复，走发送链会把输入区永远停在「流式中」。
    */
   async function compactContext(): Promise<void> {
-    if (streaming.value) return
+    const rt = ensureRuntime()
+    if (rt.streaming) return
     const target = sessionId.value
     let result: Awaited<ReturnType<typeof window.aurora.chat.compact>>
     try {
       result = await window.aurora.chat.compact(target)
     } catch (cause) {
-      error.value = String(cause)
+      rt.error = String(cause)
       return
     }
     if (sessionId.value !== target) return
     if (result.ok) {
-      messages.value.push({
+      rt.messages.push({
         id: `c-${Date.now()}`,
         role: 'system',
         content: `上下文已压缩：${result.value.coveredMessages} 条消息压成 ${result.value.summaryChars} 字摘要，之后的请求只携带压缩点之后的内容（历史消息仍可在本会话回看）。`,
@@ -1303,60 +900,93 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       })
       return
     }
-    error.value = result.message
+    rt.error = result.message
   }
 
   /**
    * 停止当前回复。
    *
-   * 同时**收回排队中的那几句**（docs/06 §5.3）：内核收到 abort 会清掉该会话的队列，
-   * 这些话既不会注入也不会补发，所以把文本还给输入框、把气泡从消息区摘掉 ——
-   * 用户点「停止」要的是"这些都别发了"，而不是"我说的话凭空消失了"。
+   * 优先用事件补上的 `activeRequest`（远端 / Center 请求也可停）；没有时退回最近见过的
+   * `lastRequestId`，仍失败则如实写错误 —— 不再出现「点了停止毫无反应」。
+   * 同时收回排队中的那几句（内核会清空该会话队列），把文本还给输入框。
    */
   async function abort(): Promise<QueuedDraft[]> {
-    if (activeRequest === null) return []
-    const requestId = activeRequest
-    await window.aurora.chat.abort(requestId)
-    streaming.value = false
-    lastSettledAt.value = null
-    latestTurnGroupable.value = false
-    settleReasoning()
-    settlePending()
+    const rt = ensureRuntime()
+    const requestId = rt.activeRequest ?? rt.lastRequestId
+    if (requestId === null) return []
+    let result: Awaited<ReturnType<typeof window.aurora.chat.abort>>
+    try {
+      result = await window.aurora.chat.abort(requestId)
+    } catch (cause) {
+      rt.error = String(cause)
+      return []
+    }
+    if (!result.ok) {
+      rt.error = result.message
+      return []
+    }
+    if (result.value !== true && rt.activeRequest !== null) {
+      // 主进程不认识这个 requestId（可能已收尾）：保留原状态，给用户一句交代
+      rt.error = '这条回复可能已经结束，请稍后再试'
+      return []
+    }
+    rt.streaming = false
+    rt.lastSettledAt = null
+    rt.latestTurnGroupable = false
+    rt.reasoningTargetId = null
+    for (const message of rt.messages) {
+      if (message.pending === true) message.pending = false
+    }
     const drafts: QueuedDraft[] = []
     // 倒着扫：splice 会让后面的下标前移，正着删会跳条目
-    for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-      const item = messages.value[index]
+    for (let index = rt.messages.length - 1; index >= 0; index -= 1) {
+      const item = rt.messages[index]
       if (item?.queued !== true) continue
-      const stored = queuedDrafts.get(item.id)
+      const stored = rt.queuedDrafts.get(item.id)
       drafts.unshift({ text: item.content, attachments: stored?.attachments ?? [] })
-      queuedDrafts.delete(item.id)
-      messages.value.splice(index, 1)
+      rt.queuedDrafts.delete(item.id)
+      rt.messages.splice(index, 1)
     }
-    // 本地主动中止：紧随其后的内核事件一律丢弃（否则「已停止」之后还会继续长内容）
-    finishRequest(requestId)
+    // 本地主动中止：紧随其后的内核事件一律丢弃
+    rt.activeRequest = null
+    rt.lastRequestId = null
+    rt.assistantId = null
+    rt.finishedRequests.add(requestId)
+    while (rt.finishedRequests.size > 64) {
+      const oldest = rt.finishedRequests.values().next().value
+      if (oldest === undefined) break
+      rt.finishedRequests.delete(oldest)
+    }
+    // 内核的 abort 会清空该会话的整个插话队列：队列里那些 requestId 不会再有 done，
+    // 活动态必须一起清，否则左栏会显示「一直在跑」
+    const activity = activities.get(sessionId.value)
+    if (activity !== undefined) {
+      activity.activeRequests.clear()
+      activity.running = false
+    }
     return drafts
   }
 
+  /** 清空当前消息区（不影响已保存的会话历史，也不碰其它会话的运行态） */
   function clear(): void {
-    // 同上：整表清空之前先把在途增量落地，否则清空后它会把消息又插回来
+    const rt = ensureRuntime()
+    // 整表清空之前先把在途增量落地，否则清空后它会把消息又插回来
     deltaBuffer.flush()
-    messages.value = []
-    // 排队草稿随本地视图一起作废（气泡已经没了，留着条目只是泄漏；内核那份仍在队列里）
-    queuedDrafts.clear()
-    unread.value = false
-    error.value = null
-    pendingNotice.value = null
-    liveSubagents.value = []
-    // 清空同理：收尾信号属于「本轮」，清空后不该留着让 MessageList 再收拢一次
-    lastSettledRequestId.value = null
-    lastSettledAt.value = null
-    latestTurnGroupable.value = true
-    resetUsage()
-    resetReasoning()
+    rt.messages = []
+    rt.queuedDrafts.clear()
+    rt.unread = false
+    rt.error = null
+    rt.pendingNotice = null
+    rt.liveSubagents = []
+    rt.lastSettledRequestId = null
+    rt.lastSettledAt = null
+    rt.latestTurnGroupable = true
+    resetUsage(rt)
+    rt.reasoningTargetId = null
   }
 
   function markRead(): void {
-    unread.value = false
+    markViewed(sessionId.value)
   }
 
   return {
@@ -1370,26 +1000,28 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     lastAssistant,
     /** 正在接收思考过程的助手消息 id（供 MessageList 自动展开思考块）；空闲时为 null */
     reasoningTargetId,
-    /**
-     * 最近一次「本轮收尾」的 requestId（done / error 置位，含非本窗口发起的轮次）：
-     * MessageList 的折叠收尾据此触发（`streaming` 边沿之外的第二个入口，docs/07 §2.3）。
-     */
+    /** 最近一次「本轮收尾」的 requestId（MessageList 的折叠收尾据此触发） */
     lastSettledRequestId,
     lastSettledAt,
     latestTurnGroupable,
-    /**
-     * 当前会话的轮终改动（requestId → 文件清单；2026-11-07）：MessageList 在每条请求的
-     * 最后一条助手消息下渲染「本次改动文件」卡片。只在内存、重启即失。
-     */
+    /** 当前会话的轮终改动（requestId → 文件清单；2026-11-07） */
     turnChangesForSession,
-    /** 本会话 token 用量（输入框底部「上下文详解」的数据源，docs/07 §2.3） */
+    /** 本会话 token 用量（输入框底部「上下文详解」的数据源） */
     usage,
     /** 本会话的子代理运行（「子代理」页面用，新的在前） */
     subagentRuns,
-    /** 本会话的任务列表（「任务」面板用，新的在前；docs/06 §4.1） */
+    /** 本会话的任务列表（「任务」面板用；docs/06 §4.1） */
     jobs,
     /** 长任务被暂停时的一句话提示（`done` 的 pendingReason；无原因时为 null） */
     pendingNotice,
+    /**
+     * 非当前会话的状态点（running / unread / error）：左栏会话行与头部后台汇总的数据源。
+     * 只存在内存，重启后由 `chat:sessions.running` 与事件流重建。
+     */
+    sessionStates,
+    backgroundRunningCount,
+    backgroundUnreadCount,
+    backgroundSessionTitles,
     hydrate,
     loadQuickPreview,
     loadSessions,
@@ -1399,80 +1031,27 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     resumeJob,
     /** 取消一条在跑 / 排队 / 暂停的任务 */
     cancelJob,
-    /** 归档 / 取消归档（左栏分组与主区提示条共用，docs/07 §2.3） */
+    /** 归档 / 取消归档（左栏分组与主区提示条共用） */
     setArchived,
-    /** 绑定 / 解绑会话项目（右栏「会话项目」下拉用，docs/06 §5.1 会话级项目） */
+    /** 绑定 / 解绑会话项目（右栏「会话项目」下拉用，docs/06 §5.1） */
     setSessionProject,
     switchSession,
     newSession,
     send,
     abort,
-    /** 手动压缩当前会话上下文（/compact，docs/06 §4） */
+    /** 手动压缩当前会话上下文（/compact） */
     compactContext,
     clear,
     markRead,
   }
 }
 
-/** 服务端快照里是否已有同 role 同文本的消息（本地 `u-` 临时 id 气泡的去重口径） */
-function sameAsServer(server: ChatMessage[], local: ChatMessage): boolean {
-  return server.some((item) => item.role === local.role && item.content === local.content)
+/** token 用量空值（`usage` computed 的稳定兜底，避免每帧新对象） */
+const EMPTY_USAGE = {
+  latest: null,
+  totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
 }
-
-/**
- * `user-message` 广播要回填哪一条本地气泡（返回下标；`-1` 表示没有可对账的本地气泡）。
- *
- * 判定口径（P2-19，`docs/06 §4` 的跨窗口实时同步）：
- * - 只看**无 `seq` 的本地临时气泡**（`send()` 本地 push 的那条，尚未被广播确认）：
- *   已带 `seq` 的气泡是**已确认过**的消息，`content` 相同也可能是**另一条**同文本消息
- *   —— 跨窗口 30 秒内重发「继续」是现实用法，命中上一轮的 `u-evt-` 气泡会把它的
- *   seq / createdAt 覆写成这一轮的（第二条被吞、第一条被错锚，2026-09-30 报告）。
- *   因此**带 seq 的一律跳过**，只与临时气泡对账。
- * - 时间窗：只在事件时间戳往前 `windowMs` 内回扫；一旦越出窗口（下标往前扫到的消息
- *   `createdAt` 更早）立即停止 —— 比窗口更早的气泡不可能是这次广播的原作者。
- * - 从数组末尾往前扫，取**最近**一条匹配（重发同文本时命中的是最后一次本地 push）。
- *
- * 抽成不依赖 electron / DOM 的纯函数，供 `useChat.test.ts` 直接覆盖（含「带 seq 跳过」
- * 与「同文本重发不吞」两条回归）。
- */
-export function matchUserMessageEcho(
-  messages: readonly ChatMessage[],
-  content: string,
-  eventCreatedAt: number,
-  windowMs = USER_MESSAGE_ECHO_WINDOW_MS,
-): number {
-  const cutoff = eventCreatedAt - windowMs
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (message === undefined || message.createdAt < cutoff) break
-    if (message.role !== 'user') continue
-    // 已带 seq 的气泡是「已确认」的消息，跳过 content 匹配（P2-19 的核心）
-    if (message.seq !== undefined) continue
-    if (message.content === content) return index
-  }
-  return -1
-}
-
-/**
- * `user-message` 广播的回扫时间窗（毫秒）。
- *
- * 30 秒是历史值，语义是「同一窗口内本地刚 push 的气泡」——广播到达与本地 push 间隔
- * 通常只有一次 IPC 往返，给足 30 秒只是容错（本地气泡本身无 seq，越晚匹配越容易误判，
- * 但带 seq 的气泡已由上面跳过，误判面只剩「广播丢失且同文本重发」这一窄角）。
- */
-export const USER_MESSAGE_ECHO_WINDOW_MS = 30_000
-
-function toChatMessage(dto: ChatMessageDto): ChatMessage {
-  return {
-    id: dto.id,
-    role: dto.role,
-    content: dto.content,
-    createdAt: Date.parse(dto.createdAt) || Date.now(),
-    ...(dto.requestId === undefined ? {} : { requestId: dto.requestId }),
-    ...(dto.toolCalls === undefined ? {} : { toolCalls: dto.toolCalls }),
-    ...(dto.reasoning === undefined || dto.reasoning === '' ? {} : { reasoning: dto.reasoning }),
-  }
-}
+const EMPTY_JOBS: AgentJob[] = []
 
 /** 从绝对路径取文件名（Windows 反斜杠与 POSIX 斜杠都处理） */
 function fileNameOf(path: string): string {
