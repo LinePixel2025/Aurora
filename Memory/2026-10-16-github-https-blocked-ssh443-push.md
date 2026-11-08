@@ -77,3 +77,9 @@ _修订说明（2026-10-16）：本条更正「GitHub 连通性间歇、重试�
 _修订说明（2026-10-25）：复测 `github.com` HTTPS 已恢复可达（`http=200`，IP 仍是
 20.205.243.166），`git push origin main` 走 HTTPS 直接成功、没用 SSH 兜底。结论只加一条操作前提：
 **推送前先探测，`200` 就正常 HTTPS 推，`000` 才切 SSH 443 一次性 URL**；两边都不要当默认假设。_
+
+_修订说明（2026-11-08）：v0.6.3 发布时 `curl https://github.com` 与 `api.github.com` 都返回
+`200`，但 `git push origin main` 仍报 `Failed to connect to github.com port 443`。说明 **curl 的
+`200` 不能当作 git 推送可达的判据**（探测 IP / SNI 与实际推送链路可能不同）。口径改为：
+**以 `git push` 的实际结果为准，一旦 443 失败立即切 SSH 443 一次性 URL，不要因 curl 200 反复重试
+HTTPS**；推完照旧 `git update-ref refs/remotes/origin/main <sha>`。_
