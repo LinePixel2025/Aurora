@@ -11,33 +11,27 @@
 
 ## 当前实现状态
 
-**当前发布 v0.6.1：DashScope 语音模型下架潮适配**（配置 Schema 仍为 **v39**，无迁移；插件 API
-仍为 **v1**）——TTS / STT 的 DashScope 原生端点构建容忍 `/compatible-mode/v1`、`/compatible-mode`、
-`/api/v1`、`/api` 四种粘尾巴（整段换成完整原生路径）；TTS 合成遇**模型级失效**
-（404 `Model not exist` / 400 `url error`）自动改用当前唯一开放 HTTP 端点的 `qwen3-tts-flash`
-重试一次，成功即把设置里的模型字段写回，失败报两段原因；404 与 url error 的错误提示更新为
-当前模型口径。dashscope 型 Center 官方 TTS 拼出的 `/api/v1` 形状 rest 现在能匹配 Center 路由
-（此前该形态必然 404）。设计见 [06 §13.6](./06-agent-core.md)；完整更新点与验收结果见
+**当前发布 v0.6.3：多会话并行 + 轮终改动卡片 + 浏览器 UA + 提醒统一拦截 + 小组件去毛玻璃**
+（配置 Schema **v41**，v40 → v41 自动迁移；插件 API 仍为 **v1**）——渲染层按会话保存运行态，
+切回仍在流式的会话能看到完整回复，左栏状态点与头部汇总展示后台进度，敏感确认卡支持多会话并存；
+每轮结束在最后一条回复后显示「已编辑 N 个文件」卡片（增删行数 / 二进制 / 过大 / 未知，点击在右栏
+预览），并新增可配置的「任务完成」提醒（默认仅后台、点击跳回会话）；内置浏览器用户与 Agent 标签
+都可独立选择 UA（兼容默认 / 桌面移动预设 / 自定义），Agent 忙时内容区四边显示鼠标穿透流光；
+智慧提醒统一拦截默认通知、`notify_banner`、插件 `ctx.banner` 与 `ask_user` 旁路播报，结束后统一
+汇总投递；桌面小组件统一为不透明卡片，不再启用原生 Acrylic / 窗口 shape / 玻璃令牌，旧
+`windowMaterial` 字段仅为兼容保留。设计见 [07 §4](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)、
+[14 §5.3](./14-plugin-system.md)；完整更新点与验收结果见
+[release-notes/v0.6.3.md](./release-notes/v0.6.3.md)。
+Aurora Center 服务器不随本版升级（仍为 **0.5.2**，版本线独立，本版无 Center 代码改动）。
+
+**上一发布 v0.6.2：智慧提醒 + 时间轮盘 + 流光三档 + Computer Use 修复**——免打扰期内的提醒
+先攒着、结束后由 Agent 汇总成一条投递（配置 Schema v40）；设置页与自动化编辑器所有「时刻」选择
+改为钟面弹层；流光提醒三档字号 / 密度真正分层；Computer Use 修复重复启动、截屏坐标错位与窗口
+读取。完整更新点见 [release-notes/v0.6.2.md](./release-notes/v0.6.2.md)。
+
+**上一发布 v0.6.1：DashScope 语音模型下架潮适配**——TTS / STT 端点容忍 `/compatible-mode`
+粘尾巴，TTS 遇模型级失效自动改用 `qwen3-tts-flash` 重试并写回设置。完整更新点见
 [release-notes/v0.6.1.md](./release-notes/v0.6.1.md)。
-Aurora Center 服务器不随本版升级（仍为 **0.5.2**，版本线独立）。
-
-**上一发布 v0.6.0：Computer Use v39.2 + 流光提醒大屏可读性 + 设置页视觉收敛**——顶部操作过程
-面板收敛为**两层状态胶囊**（520×88、只留当前步骤与「下一步」、光带 48px、不列历史），Computer Use
-结束时 `agent` / `user` / `idle` / `budget` / `error` 五种原因都**把主界面带回前台**；操作提示词改成
-「截图 → 定位 → 同轮批量 2–4 步 → 截图验收」并补定位优先级、键盘前确认前台、失败先重看。
-流光提醒的卡片宽度改为**按显示器 DIP 宽度比例**（0.24 / 0.36 / 0.46）并随卡片**流体放大字号**，
-高度改由渲染层实测后收缩；提示音重写为三声上行音 + 复用 `AudioContext`，修复「有时不响」，
-提醒设置页新增「试听」。设置页侧栏 5 组收敛为 3 组、统一页头与发丝线区组、品牌行加
-`Line Production` 徽标，并修复左栏窄宽下 Center 药丸文字溢出。设计见
-[06 §28](./06-agent-core.md)、[07 §2.2.3/§2.5](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)；
-完整更新点与验收结果见 [release-notes/v0.6.0.md](./release-notes/v0.6.0.md)。
-Aurora Center 服务器不随该版升级（仍为 **0.5.2**，版本线独立）。
-
-**上一发布 v0.5.9：Computer Use 桌面操控（配置 Schema v39）**——Agent 在用户显式授权后
-截屏并操控真实鼠标 / 键盘 / 窗口 / UI Automation（常驻 PowerShell 输入宿主、虚拟光标与顶部
-光谱流光、`/computer` 与 `computer_start` 双入口、三层门控）；同版含桌面小组件点击不抢前台 +
-固定按钮、开源迁移（MIT / 单仓库）与插件开发工具包 v0.5.9。Aurora Center 服务器仍为 **0.5.2**。
-完整更新点与验收结果见 [release-notes/v0.5.9.md](./release-notes/v0.5.9.md)。
 
 更早的逐版说明（**v0.5.7 及以前**）不再在本文维护，逐版见
 [`release-notes/`](./release-notes/) 与 [04-roadmap.md](./04-roadmap.md) 的「实现说明」；

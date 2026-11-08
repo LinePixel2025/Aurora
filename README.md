@@ -15,10 +15,10 @@
 
 **Aurora** 是一款常驻 Windows 系统托盘的**系统级 AI Agent**。它把「AI 对话」做成系统的一部分：屏幕右缘一条 8px 的提示条负责随取随用，三栏工作台负责把活真正干完——读文件、跑命令、操作 Office、开浏览器、执行自动化，所有动作都有确认、快照与回滚。
 
-> **当前发布：v0.6.1**（Windows x64，未签名）。修复 **DashScope 语音模型下架潮**：TTS / STT 的
-> DashScope 端点容忍 `/compatible-mode` 粘尾巴，TTS 遇模型级失效（旧 `qwen-tts` 已下架）自动改用
-> `qwen3-tts-flash` 重试并写回设置。配置 Schema 仍为 v39，无迁移。
-> 发布说明与安装包见 [Releases](https://github.com/LinePixel2025/Aurora/releases)。
+> **当前发布：v0.6.3**（Windows x64，未签名）。多会话并行展示隔离、轮终改动文件卡片与任务完成
+> 提醒（配置 Schema v41）、内置浏览器按标签切换 UA 与 Agent 操控流光、智慧提醒统一拦截所有提醒
+> 入口，并移除桌面小组件毛玻璃。发布说明与安装包见
+> [Releases](https://github.com/LinePixel2025/Aurora/releases)。
 
 ---
 
