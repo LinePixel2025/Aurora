@@ -399,6 +399,10 @@ export const IPC = {
     setWidgetWindowLevel: 'plugins:setWidgetWindowLevel',
     /** 桌面小组件固定（锁定位置 / 尺寸，2026-10-30）：写入布局并即时应用 */
     setWidgetLocked: 'plugins:setWidgetLocked',
+    /** 临时对话框（docs/14 §5.8）：按 requestId 取窗口参数 / 拉内容与动作 / 主动关闭 */
+    dialogInfo: 'plugins:dialogInfo',
+    dialogData: 'plugins:dialogData',
+    closeDialog: 'plugins:closeDialog',
     /** 主进程 → 小组件窗口：实际可用的原生材质（on/off 成对，v37） */
     widgetMaterial: 'plugins:widgetMaterial',
     /** 插件页面（webview）的 RPC 中继：主进程校验归属后转发给插件进程 */

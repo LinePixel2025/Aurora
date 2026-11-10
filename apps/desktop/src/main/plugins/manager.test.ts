@@ -43,6 +43,8 @@ interface FakeBehavior {
   panelResult?: (panelId: string, method: string, params: unknown) => unknown
   /** `widget.invoke` 的返回值 */
   widgetResult?: (widgetId: string, method: string, params: unknown) => unknown
+  /** `dialog.invoke` 的返回值 */
+  dialogResult?: (dialogId: string, method: string, params: unknown) => unknown
 }
 
 /** 假插件进程：自动回 init / activate / ping；可注入静默与工具返回值。 */
@@ -104,6 +106,19 @@ class FakePluginProcess implements PluginProcessHandle {
       result =
         this.behavior.widgetResult?.(
           params?.widgetId ?? '',
+          params?.method ?? '',
+          params?.params,
+        ) ?? {}
+    }
+    if (message.method === 'dialog.invoke') {
+      const params = message.params as {
+        dialogId?: string
+        method?: string
+        params?: unknown
+      }
+      result =
+        this.behavior.dialogResult?.(
+          params?.dialogId ?? '',
           params?.method ?? '',
           params?.params,
         ) ?? {}
@@ -199,6 +214,10 @@ interface Harness {
     event: string
     payload?: unknown
   }>
+  /** 插件 `ctx.ui.openDialog` 打开过的临时窗口 */
+  openDialogs: Array<{ pluginId: string; dialogId: string; params: unknown }>
+  /** 插件进程退出 / 停用后要求宿主关闭的临时窗口 */
+  closedDialogs: string[]
 }
 
 const harnesses: Harness[] = []
@@ -215,8 +234,13 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
   const contributes = (manifest['contributes'] ?? {}) as {
     panels?: Array<{ schema?: string; entry?: string }>
     widgets?: Array<{ schema?: string; entry?: string }>
+    dialogs?: Array<{ schema?: string; entry?: string }>
   }
-  for (const item of [...(contributes.panels ?? []), ...(contributes.widgets ?? [])]) {
+  for (const item of [
+    ...(contributes.panels ?? []),
+    ...(contributes.widgets ?? []),
+    ...(contributes.dialogs ?? []),
+  ]) {
     const file = item.schema ?? item.entry
     if (file === undefined) continue
     const absolute = join(pluginFilesRoot, file)
@@ -272,6 +296,8 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
   const panelEvents: Harness['panelEvents'] = []
   const banners: Harness['banners'] = []
   const usageQueries: Harness['usageQueries'] = []
+  const openDialogs: Harness['openDialogs'] = []
+  const closedDialogs: Harness['closedDialogs'] = []
   const manager = new PluginManager({
     userData,
     hostVersion: '0.6.0',
@@ -293,6 +319,13 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
         event: event.event,
         payload: event.payload,
       })
+    },
+    openDialog: async (input) => {
+      openDialogs.push(input)
+      return { submitted: true, values: { note: '已记录' }, data: { source: 'test' } }
+    },
+    closeDialogs: (pluginId) => {
+      closedDialogs.push(pluginId)
     },
     // 流光提醒（docs/07 §2.2.3）：记下宿主收到的请求，断言截断与缺省标题口径
     banner: (input) => {
@@ -316,6 +349,8 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
     panelEvents,
     banners,
     usageQueries,
+    openDialogs,
+    closedDialogs,
   }
   harnesses.push(harness)
   return harness
@@ -852,6 +887,101 @@ describe('PluginManager · 小组件与事件推送', () => {
     })
     expect(overflow).toMatchObject({ ok: true, result: { ok: true, dropped: true } })
     expect(h.panelEvents).toHaveLength(20)
+  })
+})
+
+describe('PluginManager · 临时对话框（docs/14 §5.8）', () => {
+  function dialogManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return helloManifest({
+      permissions: ['ui.dialogs'],
+      contributes: {
+        dialogs: [
+          { id: 'quick-note', title: '快速记录', schema: 'ui/dialog.json' },
+          { id: 'picker', title: '选择', entry: 'ui/picker.html' },
+        ],
+      },
+      ...overrides,
+    })
+  }
+
+  async function readyDialogHarness(): Promise<Harness & { handle: FakePluginProcess }> {
+    const h = await createHarness({ mode: 'dev', manifest: dialogManifest() })
+    await h.manager.start()
+    await waitFor(() => h.manager.get(PLUGIN_ID)?.status === 'ready')
+    return { ...h, handle: h.created[0]! }
+  }
+
+  it('dialogs() 按 ui.dialogs 权限过滤；摘要带 kind / entry；schema 文件可读', async () => {
+    const h = await readyDialogHarness()
+    expect(h.manager.dialogs().map((dialog) => [dialog.id, dialog.kind])).toEqual([
+      ['quick-note', 'schema'],
+      ['picker', 'page'],
+    ])
+    expect(h.manager.get(PLUGIN_ID)?.dialogs).toHaveLength(2)
+    expect(await h.manager.dialogSchemaFile(PLUGIN_ID, 'quick-note')).toBe(
+      '{"version":1,"nodes":[]}',
+    )
+    expect(await h.manager.dialogSchemaFile(PLUGIN_ID, 'picker')).toBeUndefined()
+
+    const noPermission = await createHarness({
+      mode: 'dev',
+      manifest: helloManifest({
+        permissions: [],
+        contributes: { dialogs: [{ id: 'd', title: 'D', schema: 'ui/dialog.json' }] },
+      }),
+    })
+    expect(noPermission.manager.dialogs()).toEqual([])
+  })
+
+  it('invokeDialog 转发 dialog.invoke 并透传 close / submitted / data', async () => {
+    const h = await readyDialogHarness()
+    h.behavior.dialogResult = (dialogId, method, params) => ({
+      toast: `${dialogId}:${method}`,
+      close: true,
+      submitted: true,
+      data: params,
+    })
+    const result = await h.manager.invokeDialog(PLUGIN_ID, 'quick-note', 'submit', {
+      values: { note: 'hi' },
+    })
+    expect(result).toMatchObject({
+      toast: 'quick-note:submit',
+      close: true,
+      submitted: true,
+      data: { values: { note: 'hi' } },
+    })
+  })
+
+  it('ui.openDialog：校验权限 / 对话框 id / 64 KB 参数，并转发给宿主窗口层', async () => {
+    const h = await readyDialogHarness()
+    const opened = await hostCall(h.handle, 'ui.openDialog', {
+      dialogId: 'quick-note',
+      params: { from: 'test' },
+    })
+    expect(opened).toMatchObject({
+      ok: true,
+      result: { submitted: true, values: { note: '已记录' } },
+    })
+    expect(h.openDialogs).toEqual([
+      { pluginId: PLUGIN_ID, dialogId: 'quick-note', params: { from: 'test' } },
+    ])
+
+    const unknown = await hostCall(h.handle, 'ui.openDialog', { dialogId: 'nope' })
+    expect(unknown).toMatchObject({ ok: false, error: { code: 'E_PLUGIN_INVALID_ARGS' } })
+
+    const big = await hostCall(h.handle, 'ui.openDialog', {
+      dialogId: 'quick-note',
+      params: { text: 'x'.repeat(70 * 1024) },
+    })
+    expect(big).toMatchObject({ ok: false, error: { code: 'E_PLUGIN_INVALID_ARGS' } })
+    expect(h.openDialogs).toHaveLength(1)
+  })
+
+  it('插件进程退出时要求宿主关闭它的临时窗口', async () => {
+    const h = await readyDialogHarness()
+    h.handle.crash(1)
+    await waitFor(() => h.closedDialogs.includes(PLUGIN_ID))
+    expect(h.closedDialogs).toContain(PLUGIN_ID)
   })
 })
 

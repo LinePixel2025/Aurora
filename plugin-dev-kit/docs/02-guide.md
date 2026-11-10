@@ -12,6 +12,7 @@ hello-aurora/
   skills/hello/SKILL.md  # 可选
   ui/panel.json          # 可选，声明式面板
   ui/page.html|js|css    # 可选，沙箱页面
+  ui/dialog.json|html    # 可选，临时对话框（声明式或页面型）
   themes/*.json          # 可选（也可内联在 manifest）
   assets/icon.png        # 可选，市场图标（仅 PNG）
   README.md
@@ -69,6 +70,7 @@ aurora-center plugins publish --server http://127.0.0.1:8787 --user admin --dir 
 | `contributes.automation` |  | 自动化动作 / 事件 |
 | `contributes.panels` |  | 声明式或页面型面板（二选一） |
 | `contributes.widgets` |  | 桌面 / 提示条小组件（`slot`；提示条只允许 `schema`） |
+| `contributes.dialogs` |  | 临时输入窗口（`schema` / `entry` 二选一；≤ 4 个） |
 | `contributes.themes` |  | 主题令牌 |
 | `config.fields` |  | 插件配置（text / number / boolean / select / textarea） |
 | `events` |  | 订阅的宿主事件（见 §5） |
@@ -111,6 +113,7 @@ aurora-center plugins publish --server http://127.0.0.1:8787 --user admin --dir 
 | `logging` | 写插件日志（warn/error 不受限） |
 | `ui.panels` | 右栏面板 + `ctx.ui.openPanel` / `toast` / `panelEvent`（面板） |
 | `ui.widgets` | 桌面 / 提示条小组件 + `invokeWidget` + `panelEvent`（小组件） |
+| `ui.dialogs` | 临时输入窗口 + `ctx.ui.openDialog` / `invokeDialog` |
 | `themes` | 主题令牌 |
 | `events` | 订阅宿主事件 |
 
@@ -131,6 +134,7 @@ module.exports = {
   async invokeAutomationAction(name, params, ctx) { return { summary: '...' } },
   async invokePanel(panelId, method, params, ctx) { return { schema?, toast?, data? } },
   async invokeWidget(widgetId, method, params, ctx) { return { schema?, toast? } },
+  async invokeDialog(dialogId, method, params, ctx) { return { close?, submitted?, schema?, toast?, data? } },
   onEvent(event, payload, ctx) {},
   onConfigChanged(config, ctx) {},
 }
@@ -168,6 +172,12 @@ interface PluginContext {
     openPanel(panelId: string): Promise<void>
     toast(message: string, kind?: 'info' | 'error'): Promise<void>
     panelEvent(input: { panelId?: string; widgetId?: string; event: string; payload?: unknown }): Promise<void>
+    /** 临时输入窗口（需 ui.dialogs 权限；结算后窗口销毁） */
+    openDialog(input: { dialogId: string; params?: unknown }): Promise<{
+      submitted: boolean
+      values: Record<string, unknown>
+      data?: unknown
+    }>
   }
   signal: AbortSignal   // 每次工具 / 自动化调用独立
 }
@@ -444,6 +454,59 @@ await ctx.ui.panelEvent({ widgetId: 'duty-week', event: 'count-changed', payload
 - 宿主会把事件转成一次 `invokePanel(..., 'event', ...)` / `invokeWidget(..., 'event', ...)`，
   返回的新 schema 直接替换当前画面；页面型目标收到 `window.auroraPlugin.onEvent`；
 - 同一事件只投给你自己的面板 / 小组件，不会串到别的插件。
+
+### 7.7 临时对话框（让用户键入文字，用完即关）
+
+桌面小组件不可激活，**卡内输入拿不到键盘焦点**。需要用户输入时用临时对话框：
+窗口由宿主创建，确定 / 取消 / 关闭 / 超时（10 分钟）/ 插件退出都会销毁，不常驻。
+
+```js
+// 清单（权限 ui.dialogs）
+// "dialogs": [{ "id": "quick-note", "title": "快速记录", "schema": "ui/dialog.json" }]
+
+const result = await ctx.ui.openDialog({
+  dialogId: 'quick-note',
+  params: { from: 'tool' },           // 可选，≤ 64 KB
+})
+if (result.submitted) {
+  const note = result.values.note      // 声明式控件的 bind 值
+  await ctx.storage.set('last-note', note)
+}
+```
+
+**声明式**（推荐）：`schema` 与面板同一套受控组件，宿主在底部画「取消 / 确定」。
+点「确定」时调用可选的 `invokeDialog`，`params` 形如 `{ params, values, init }`：
+
+```js
+async invokeDialog(dialogId, method, params, ctx) {
+  if (dialogId !== 'quick-note') return {}
+  if (method === 'submit') {
+    const note = typeof params.values?.note === 'string' ? params.values.note : ''
+    if (note.trim() === '') return { close: false, toast: '请先输入内容' }
+    return { close: true, submitted: true, data: { note } }
+  }
+  return {} // 'open' 时也可返回 { schema } 动态换内容
+}
+```
+
+- 未实现 `invokeDialog`：声明式对话框仍可用，「确定」直接返回控件值；
+- `close: false` 或抛错 → 窗口保持打开，显示 toast / 错误；
+- `close: true` → 关闭并结算，`data` 透传给 `openDialog` 的调用方。
+
+**页面型（自定义 HTML / CSS）**：`entry` 指向包内 HTML，沙箱口径与面板页面完全相同
+（`aurora-plugin://` + `window.auroraPlugin`，不能 `fetch` / 内联脚本 / 外部 CDN）：
+
+```js
+// 页面里
+const init = await window.auroraPlugin.request('init')          // → 插件 invokeDialog 的 data
+await window.auroraPlugin.request('save', { text: '...' })      // 插件返回 { close: true, data }
+```
+
+页面 URL 带 `?dialog=<id>`；插件在 `invokeDialog` 里返回 `{ close: true, submitted?, data? }`
+即关闭窗口。宿主不绘制底部按钮，页面自己画；标题栏与关闭键仍由宿主提供。
+
+> 工具里 await `openDialog` 时，把该工具的清单 `timeoutMs` 调大（默认 60 秒会在用户
+> 还在输入时判定工具超时；窗口不会自动关，但工具调用已失败）。
 
 ## 8. 主题
 

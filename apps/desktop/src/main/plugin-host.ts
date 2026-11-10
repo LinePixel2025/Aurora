@@ -11,6 +11,7 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import {
   PLUGIN_CLIENT_CALLS,
+  PLUGIN_DIALOG_MAX_LIFETIME_MS,
   PLUGIN_HOST_CALLS,
   PLUGIN_STORAGE_VALUE_MAX_BYTES,
   PLUGIN_TOOL_CONTENT_MAX,
@@ -134,6 +135,15 @@ function makeContext(signal: AbortSignal): PluginContext {
         clientCall(PLUGIN_CLIENT_CALLS.toast, { message, kind }, 10_000, signal),
       panelEvent: (input: Parameters<NonNullable<PluginContext['ui']['panelEvent']>>[0]) =>
         clientCall(PLUGIN_CLIENT_CALLS.panelEvent, input, 10_000, signal),
+      // 临时对话框（docs/14 §5.8）：等待用户处理完；宿主 10 分钟兜底关闭，
+      // 这里留 15 秒余量，让「自动关闭」以正常结果（submitted: false）返回而不是报超时。
+      openDialog: (input: Parameters<PluginContext['ui']['openDialog']>[0]) =>
+        clientCall(
+          PLUGIN_CLIENT_CALLS.openDialog,
+          input,
+          PLUGIN_DIALOG_MAX_LIFETIME_MS + 15_000,
+          signal,
+        ),
     },
     get config() {
       return currentConfig
@@ -309,6 +319,21 @@ async function dispatch(
       return await handler.call(
         pluginModule,
         typeof raw['widgetId'] === 'string' ? raw['widgetId'] : '',
+        typeof raw['method'] === 'string' ? raw['method'] : '',
+        raw['params'],
+        makeContext(signal),
+      )
+    }
+
+    if (method === PLUGIN_HOST_CALLS.dialog) {
+      const raw = asRecord(params)
+      // 未实现 invokeDialog 时返回空结果：声明式对话框仍可由宿主按钮完成
+      // （确定 / 取消由窗口负责），页面型对话框的页面请求会得到空对象。
+      const handler = pluginModule?.invokeDialog
+      if (handler === undefined) return {}
+      return await handler.call(
+        pluginModule,
+        typeof raw['dialogId'] === 'string' ? raw['dialogId'] : '',
         typeof raw['method'] === 'string' ? raw['method'] : '',
         raw['params'],
         makeContext(signal),

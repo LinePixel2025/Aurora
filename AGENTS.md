@@ -120,6 +120,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   按 `target.name` 精确过滤，漏了它们只会得到 109 条，看起来「少了两张」）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
   （3 checks 全绿）；这是 capture 环境问题，不是子代理改动的回归。
+  **2026-11-10 新增插件临时对话框**：`plugin-dialog`（声明式，真实键入 + 确定）与
+  `plugin-dialog-page`（自定义 HTML / CSS，页面内提交）2 个场景，`target.name` 都是 `dialog`；
+  定向验收用 `AURORA_CAPTURE_WINDOWS=dialog AURORA_CAPTURE_ONLY=plugin-dialog`（2 条全绿）。
+  它们**不在**上面四窗默认名单里，纳入全量单轮时要把 `dialog` 加进该列表（112 → 114 条）。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
   （只按 `pass === false` 会把纯截图场景误判成失败）。`AURORA_CAPTURE_ONLY` 是**子串**匹配
   （`'chat.png'` 连带命中 `theme-chat.png`），且**每轮必须写独立目录**（同目录会覆盖上一轮 `report.json`）。
@@ -254,6 +258,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   代价是卡内文本输入拿不到键盘焦点——别为了输入能力把窗口改回可激活。
   标题栏「固定」= `setMovable(false)` + `setResizable(false)`（实测单靠 CSS 拖拽区挡不住系统移动），
   状态写布局 `locked`，**默认未固定**；改这里时同步 `smoke` 的 `focusable` / `resizable` 断言。
+- **插件临时对话框只在 `main/plugins/dialogs.ts` 创建**：与小组件相反，必须 `focusable: true`
+  （唯一目的就是让用户键入文字）；确定 / 取消 / × / Esc / 10 分钟超时 / 插件退出都**销毁**窗口，
+  不写几何、不常驻；每插件同时 1 扇、全部插件 ≤ 4 扇；清单 `schema` 与 `entry` 二选一
+  （声明式宿主画「取消 / 确定」，页面型走 `aurora-plugin://` 沙箱并由页面自己提交）。
+  `ctx.ui.openDialog` 只在窗口结算后返回 `{ submitted, values, data? }`，别把它改成常驻窗或
+  复用小组件的 `focusable:false`。
 - **提示条小组件只接受声明式 schema**：`slot = "edge-bar"` 清单层就拒绝 `entry` / `defaultSize`
   与 `windowLevel` / `windowMaterial` 的非默认值；不要为了它改提示条窗口的 shape / 尺寸逻辑，也不要嵌 webview。
 - **插件推送（`ui.panelEvent`）必须在主进程校验**：panelId / widgetId 二选一、目标在本插件清单、

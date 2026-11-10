@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "type": "text",
+      "text": "输入的内容会保存到插件存储；取消或关闭不会保存。",
+      "tone": "muted"
+    },
+    {
+      "type": "textarea",
+      "text": "随记内容",
+      "bind": "note",
+      "placeholder": "输入点什么…",
+      "value": ""
+    }
+  ]
+}

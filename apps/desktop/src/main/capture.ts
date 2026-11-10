@@ -20,7 +20,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { nativeTheme, webContents, type BrowserWindow } from 'electron'
+import { nativeTheme, webContents, type BrowserWindow, type WebContents } from 'electron'
 import {
   createFileSnapshotPort,
   type AskUserAnswer,
@@ -135,6 +135,7 @@ export type CaptureWindowName =
   | WindowName
   | 'awareness-glow'
   | 'widget'
+  | 'dialog'
   | 'banner-card'
   | 'banner-glow'
   | 'computer-use-overlay'
@@ -147,6 +148,8 @@ export interface CaptureTarget {
    * 给了这一项就不再走 `WindowManager.ensure/show`。
    */
   widget?: { pluginId: string; widgetId: string }
+  /** 插件临时对话框（docs/14 §5.8）：由 `CaptureOptions.openDialog` 唤起后现取窗口。 */
+  dialog?: { pluginId: string; dialogId: string; command?: string }
   /** 输出文件名（不含目录），默认 `<name>.png` */
   file?: string
   /** 需要深链时附带（如设置页 `{ page: 'llm' }`） */
@@ -199,6 +202,10 @@ export interface CaptureOptions {
   widgetWindow?: (pluginId: string, widgetId: string) => BrowserWindow | undefined
   /** 等小组件窗口首次加载结束 */
   widgetLoaded?: (pluginId: string, widgetId: string) => Promise<void>
+  /** 插件临时对话框：唤起 / 取窗口 / 等加载 */
+  openDialog?: (pluginId: string, dialogId: string, command?: string) => Promise<void> | void
+  dialogWindow?: (pluginId: string) => BrowserWindow | undefined
+  dialogLoaded?: (pluginId: string) => Promise<void>
   logger?: Logger
   /** 每张截图前的等待（默认 700ms，等过渡动画结束） */
   delayMs?: number
@@ -317,7 +324,9 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
             ? 'hud'
             : undefined
       const widgetTarget = target.widget
-      // 走 WindowManager 的目标名（widget / banner / 内部浮层单独走下面的分支，不会到这里）
+      const dialogTarget = target.dialog
+      const pluginWindowTarget = widgetTarget !== undefined || dialogTarget !== undefined
+      // 走 WindowManager 的目标名（widget / dialog / banner / 内部浮层单独走下面的分支，不会到这里）
       const windowName = requestedName as WindowName
       let win: BrowserWindow
       if (widgetTarget !== undefined) {
@@ -325,6 +334,23 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         if (resolved === undefined) throw new Error('桌面小组件窗口不存在')
         win = resolved
         await options.widgetLoaded?.(widgetTarget.pluginId, widgetTarget.widgetId)
+      } else if (dialogTarget !== undefined) {
+        await options.openDialog?.(
+          dialogTarget.pluginId,
+          dialogTarget.dialogId,
+          dialogTarget.command,
+        )
+        const deadline = Date.now() + 8000
+        let resolved = options.dialogWindow?.(dialogTarget.pluginId)
+        while ((resolved === undefined || resolved.isDestroyed()) && Date.now() < deadline) {
+          await wait(100)
+          resolved = options.dialogWindow?.(dialogTarget.pluginId)
+        }
+        if (resolved === undefined || resolved.isDestroyed()) {
+          throw new Error('插件临时对话框窗口不存在')
+        }
+        win = resolved
+        await options.dialogLoaded?.(dialogTarget.pluginId)
       } else if (bannerKind !== undefined) {
         win = manager.ensureBannerForCapture(bannerKind)
         await manager.whenBannerLoaded(bannerKind)
@@ -338,7 +364,7 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         win = manager.ensure(windowName)
         await manager.whenLoaded(windowName)
       }
-      if (widgetTarget !== undefined) {
+      if (pluginWindowTarget) {
         await target.prepare?.()
       } else if (target.query !== undefined) {
         if (bannerKind !== undefined) await manager.reloadBannerForCapture(bannerKind, target.query)
@@ -347,7 +373,7 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         } else if (internalGlow) await manager.reloadAwarenessGlow(target.query)
         else await manager.reload(windowName, target.query)
       }
-      if (widgetTarget === undefined) {
+      if (!pluginWindowTarget) {
         await target.prepare?.()
         if (bannerKind !== undefined) manager.showBannerForCapture(bannerKind)
         else if (computerUseKind !== undefined) manager.showComputerUseForCapture(computerUseKind)
@@ -392,6 +418,9 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
           target.mainAct !== undefined,
         ok: true,
       })
+      // 临时对话框的 check 会在截图后点「提交 / 确定」：给 IPC 往返与窗口销毁留出时间，
+      // 否则最后一条场景会随 app 退出被按取消结算（页面型 guest 请求尤其明显）。
+      if (target.dialog !== undefined) await wait(400)
     } catch (error) {
       logger?.warn('窗口截图失败', { window: target.name, error: String(error) })
       checks.push({
@@ -3595,6 +3624,59 @@ export const PLUGIN_CONFIG_CHECK = `(async () => {
       permissions !== null &&
       level !== null,
     detail: text.slice(0, 240),
+  }
+})()`
+
+/** 插件临时对话框（docs/14 §5.8）：标题 / 输入框 / 底部按钮；截图后自动关闭。 */
+export const PLUGIN_DIALOG_CHECK = `(() => {
+  const title = document.querySelector('[data-field="dialog.title"]')
+  const textarea = document.querySelector('.dialog-body textarea')
+  const submit = document.querySelector('[data-field="dialog.submit"]')
+  const cancel = document.querySelector('[data-field="dialog.cancel"]')
+  const requestId = new URLSearchParams(window.location.search).get('requestId') ?? ''
+  const submitButton = document.querySelector('[data-field="dialog.submit"]')
+  // 截图之后再点「确定」：声明式提交会走 invokeDialog，插件命令收到 values 并落数据。
+  if (requestId !== '' && submitButton !== null) {
+    setTimeout(() => submitButton.click(), 80)
+  }
+  return {
+    pass:
+      title !== null &&
+      title.textContent.trim() === '快速记录' &&
+      textarea !== null &&
+      textarea.value === '临时输入的内容' &&
+      submit !== null &&
+      cancel !== null,
+    title: title === null ? '' : title.textContent.trim(),
+    value: textarea === null ? '' : textarea.value,
+  }
+})()`
+
+/** 页面型临时对话框：宿主只留标题栏，内容与按钮由插件页面绘制。 */
+export const PLUGIN_DIALOG_PAGE_CHECK = `(() => {
+  const title = document.querySelector('[data-field="dialog.title"]')
+  const page = document.querySelector('.plugin-page')
+  const footer = document.querySelector('[data-field="dialog.submit"]')
+  const requestId = new URLSearchParams(window.location.search).get('requestId') ?? ''
+  const view = document.querySelector('webview')
+  // 截图后再让页面点「提交」：插件 invokeDialog 返回 close 后窗口销毁。
+  // 同步发起（capture 会在本轮结束后等 400ms，让 IPC 往返落地）。
+  if (requestId !== '' && view !== null) {
+    try {
+      void view.executeJavaScript("document.getElementById('save').click()")
+    } catch {
+      // guest 尚未就绪：本场景按未提交处理
+    }
+  }
+  return {
+    pass:
+      title !== null &&
+      title.textContent.trim() === '页面输入' &&
+      page !== null &&
+      footer === null,
+    title: title === null ? '' : title.textContent.trim(),
+    hasPage: page !== null,
+    hasHostFooter: footer !== null,
   }
 })()`
 
@@ -15320,6 +15402,78 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     query: { page: 'plugins' },
     act: SETTINGS_PLUGINS_MARKET_ACT,
     check: SETTINGS_PLUGINS_MARKET_CHECK,
+  })
+  // 插件临时对话框（docs/14 §5.8）：真实 openDialog 唤起 → 可键入文字 → 截图 → 关闭。
+  // 这是 `focusable:false` 的桌面小组件拿不到键盘焦点的替代路径，所以必须真的敲字验证。
+  plan.push({
+    name: 'dialog',
+    file: 'plugin-dialog.png',
+    dialog: { pluginId: 'com.example.hello', dialogId: 'quick-note', command: 'hello-note' },
+    mainAct: async (win) => {
+      win.focus()
+      await wait(80)
+      await win.webContents.executeJavaScript(
+        `(() => {
+          const el = document.querySelector('.dialog-body textarea')
+          if (el !== null) el.focus()
+          return el !== null
+        })()`,
+        true,
+      )
+      win.webContents.insertText('临时输入的内容')
+      await wait(150)
+      const value = await win.webContents.executeJavaScript(
+        `(() => {
+          const el = document.querySelector('.dialog-body textarea')
+          return el === null ? '' : el.value
+        })()`,
+        true,
+      )
+      return { pass: value === '临时输入的内容', typed: String(value) }
+    },
+    check: PLUGIN_DIALOG_CHECK,
+    settleMs: 350,
+  })
+  // 页面型临时对话框（自定义 HTML / CSS）：在 webview guest 里真实键入文字。
+  plan.push({
+    name: 'dialog',
+    file: 'plugin-dialog-page.png',
+    dialog: { pluginId: 'com.example.hello', dialogId: 'page-note', command: 'hello-page-note' },
+    mainAct: async (win) => {
+      win.focus()
+      const deadline = Date.now() + 6000
+      let guest: WebContents | undefined
+      while (Date.now() < deadline) {
+        guest = webContents
+          .getAllWebContents()
+          .find((contents) => contents.getURL().includes('dialog-page.html'))
+        if (guest !== undefined) break
+        await wait(100)
+      }
+      if (guest === undefined) return { pass: false, reason: '页面型对话框 guest 未加载' }
+      await wait(200)
+      guest.focus()
+      await guest.executeJavaScript(
+        `(() => {
+          const el = document.getElementById('text')
+          if (el !== null) el.focus()
+          return el !== null
+        })()`,
+        true,
+      )
+      guest.insertText('页面里输入的内容')
+      await wait(150)
+      const value = await guest.executeJavaScript(
+        `(() => {
+          const el = document.getElementById('text')
+          return el === null ? '' : el.value
+        })()`,
+        true,
+      )
+      return { pass: value === '页面里输入的内容', typed: String(value) }
+    },
+    check: PLUGIN_DIALOG_PAGE_CHECK,
+    settleMs: 350,
   })
   // Center 官方 TTS / STT / 生图在 Provider 页的只读卡片（目录不可用时也要常显）。
   plan.push({

@@ -48,6 +48,7 @@
 | 插件配置窗口         | WindowManager | 1                       | 单例；插件配置 / 桌面小组件 / 权限 / 管理动作（`plugin-config`），关闭 = 隐藏                                                                          |
 | 流光提醒（banner-glow / banner-card） | WindowManager.showBanner | 各 1     | 两扇内部窗口：整屏穿透光带 + 可点卡片；统一走 `BannerService`，不进 `WINDOW_NAMES`、不写几何持久化                                                |
 | 桌面小组件（widget） | `main/plugins/widgets.ts` | ≤ 8        | 插件贡献的无边框透明窗口；默认置顶、`focusable:false`、不占任务栏；布局写 `plugin-widget-layout.json`（不进 settings）                                  |
+| 临时对话框（dialog） | `main/plugins/dialogs.ts` | ≤ 4        | 插件经 `ctx.ui.openDialog` 唤起的可输入窗口；居中、可激活、确定/取消/超时/插件退出即销毁；不写几何、不常驻                                              |
 | 自感知流光浮层       | WindowManager | 1                       | 内部透明置顶浮层；仅在文件分析进行中、提示条可见且 `appearance.awarenessGlow` 未关闭时**覆盖目标显示器整块矩形**（v33 起四边流光，渲染层只在四条边画光带）。鼠标穿透、不可聚焦、不进 `WINDOW_NAMES` / 任务栏 / 窗口状态 |
 | Computer Use 浮层（computer-use） | WindowManager | 每显示器 1 + 过程面板 1 | 首次操作时每块显示器一扇透明置顶窗（虚拟光标 + 顶部光谱流光）与顶部操作过程面板；鼠标穿透、不可聚焦、**不做内容保护**（远程桌面看不到），操作期间持续显示、实时更新；不进 `WINDOW_NAMES`、不写几何（v39，06 §28） |
 

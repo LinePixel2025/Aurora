@@ -7,7 +7,7 @@
  *   node tools/check-plugin.mjs <插件目录> [--json]
  *
  * 检查范围与宿主清单 zod schema **手动同口径**（本工具不依赖 Aurora 工作区）：
- * 清单字段 / 权限与贡献对应 / 路径 containment / 面板与小组件约束 /
+ * 清单字段 / 权限与贡献对应 / 路径 containment / 面板 / 小组件 / 临时对话框约束 /
  * 主题令牌白名单 / 配置字段 / 自动化 / 宿主事件 / 引用文件存在 / 声明式 schema。
  *
  * 退出码：0 通过；1 校验失败；2 用法错误。
@@ -37,6 +37,7 @@ const PERMISSIONS = new Set([
   'logging',
   'ui.panels',
   'ui.widgets',
+  'ui.dialogs',
   'themes',
   'events',
 ])
@@ -175,6 +176,7 @@ const LIMITS = {
   maxCommands: 32,
   maxPanels: 8,
   maxWidgets: 4,
+  maxDialogs: 4,
   maxThemes: 8,
   maxAutomationActions: 16,
   maxAutomationEvents: 16,
@@ -219,6 +221,7 @@ const CONTRIBUTES_KEYS = [
   'automation',
   'panels',
   'widgets',
+  'dialogs',
   'themes',
 ]
 const AUTOMATION_KEYS = ['actions', 'events']
@@ -237,6 +240,7 @@ const WIDGET_KEYS = [
   'entry',
   'defaultSize',
 ]
+const DIALOG_KEYS = ['id', 'title', 'icon', 'schema', 'entry', 'defaultSize']
 const THEME_KEYS = ['id', 'name', 'tokens']
 const CONFIG_FIELD_KEYS = [
   'key',
@@ -880,6 +884,65 @@ async function checkWidgets(widgets, root, permissions) {
   requirePermission(permissions, 'ui.widgets', widgets.length > 0, '声明小组件')
 }
 
+async function checkDialogs(dialogs, root, permissions) {
+  if (dialogs.length > LIMITS.maxDialogs) {
+    error(`临时对话框不能超过 ${LIMITS.maxDialogs} 个`)
+  }
+  const ids = new Set()
+  for (const [index, dialog] of dialogs.entries()) {
+    const at = `contributes.dialogs[${index}]`
+    if (!isPlainObject(dialog)) {
+      error(`${at} 必须是对象`)
+      continue
+    }
+    warnUnknownKeys(dialog, DIALOG_KEYS, at)
+    if (typeof dialog.id !== 'string' || !PANEL_ID_PATTERN.test(dialog.id)) {
+      error(`${at}.id 必须是 a-z / 0-9 / 连字符，≤ 32 字符`)
+    } else if (ids.has(dialog.id)) {
+      error(`对话框 id 重复：${dialog.id}`)
+    } else {
+      ids.add(dialog.id)
+    }
+    if (
+      typeof dialog.title !== 'string' ||
+      dialog.title.trim() === '' ||
+      dialog.title.length > 40
+    ) {
+      error(`${at}.title 必填且 ≤ 40 字符`)
+    }
+    if (dialog.icon !== undefined && !PANEL_ICONS.has(dialog.icon)) {
+      error(`${at}.icon 不在白名单：${String(dialog.icon)}`)
+    }
+    const hasSchema = dialog.schema !== undefined
+    const hasEntry = dialog.entry !== undefined
+    if (hasSchema === hasEntry) {
+      error(`对话框 ${dialog.id ?? index} 必须且只能声明 schema 或 entry 之一`)
+      continue
+    }
+    if (dialog.defaultSize !== undefined) {
+      const size = dialog.defaultSize
+      if (
+        !isPlainObject(size) ||
+        !Number.isInteger(size.width) ||
+        !Number.isInteger(size.height) ||
+        size.width < 320 ||
+        size.width > 900 ||
+        size.height < 160 ||
+        size.height > 800
+      ) {
+        error(`对话框 ${dialog.id ?? index} 的 defaultSize 必须在 320–900 × 160–800 之间`)
+      }
+    }
+    if (hasSchema) {
+      await validateSchemaFile(root, dialog.schema, `对话框 ${dialog.id ?? index} schema`)
+    }
+    if (hasEntry) {
+      await requireFile(root, dialog.entry, `对话框 ${dialog.id ?? index} entry`)
+    }
+  }
+  requirePermission(permissions, 'ui.dialogs', dialogs.length > 0, '声明临时对话框')
+}
+
 function checkThemes(themes, permissions) {
   if (themes.length > LIMITS.maxThemes) error(`主题不能超过 ${LIMITS.maxThemes} 个`)
   const ids = new Set()
@@ -1183,6 +1246,7 @@ async function main() {
   const commands = Array.isArray(contributes.commands) ? contributes.commands : []
   const panels = Array.isArray(contributes.panels) ? contributes.panels : []
   const widgets = Array.isArray(contributes.widgets) ? contributes.widgets : []
+  const dialogs = Array.isArray(contributes.dialogs) ? contributes.dialogs : []
   const themes = Array.isArray(contributes.themes) ? contributes.themes : []
   const automation = isPlainObject(contributes.automation) ? contributes.automation : {}
 
@@ -1192,6 +1256,7 @@ async function main() {
     commands,
     panels,
     widgets,
+    dialogs,
     themes,
   })) {
     const declared = contributes[key]
@@ -1249,6 +1314,7 @@ async function main() {
   // ── 面板 / 小组件 / 主题 / 配置 ──
   await checkPanels(panels, root, permissions)
   await checkWidgets(widgets, root, permissions)
+  await checkDialogs(dialogs, root, permissions)
   checkThemes(themes, permissions)
   checkConfig(manifest.config)
 
@@ -1275,6 +1341,9 @@ async function main() {
     widgets: widgets
       .filter((widget) => isPlainObject(widget) && typeof widget.id === 'string')
       .map((widget) => ({ id: widget.id, slot: widget.slot })),
+    dialogs: dialogs
+      .filter((dialog) => isPlainObject(dialog) && typeof dialog.id === 'string')
+      .map((dialog) => dialog.id),
     automationActions: (Array.isArray(automation.actions) ? automation.actions : [])
       .filter((action) => isPlainObject(action) && typeof action.name === 'string')
       .map((action) => action.name),
@@ -1336,6 +1405,9 @@ async function main() {
             .map((widget) => `${widget.id}（${widget.slot === 'desktop' ? '桌面' : '提示条'}）`)
             .join('、'),
       )
+    }
+    if (summary.dialogs.length > 0) {
+      console.log(`  临时对话框（${summary.dialogs.length}）：${summary.dialogs.join('、')}`)
     }
     if (summary.automationActions.length > 0 || summary.automationEvents.length > 0) {
       console.log(

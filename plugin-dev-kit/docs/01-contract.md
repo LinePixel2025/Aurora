@@ -38,6 +38,7 @@ API 白名单、工具确认、安装 / 更新路径安全与页面渲染隔离�
 - OS 级沙箱 / AppContainer / 受限令牌；
 - 代码签名与发布者认证（市场只做 SHA-256 完整性校验）；
 - 壁纸层 / 桌面图标层嵌入、插件创建任意自有窗口、任意全屏覆盖层、点击穿透画布；
+  （宿主提供的**临时对话框**是唯一例外：窗口由宿主创建、结算即销毁，见 §5.8）
 - 提示条里加载页面型 webview（提示条小组件**只允许声明式 schema**）；
 - 插件访问 Aurora 凭据 / API Key / MCP env；插件配置不允许密文字段；
 - 插件自动更新（只做「发现更新 + 用户点击安装」）；
@@ -91,10 +92,10 @@ type PluginRpcMessage =
 ### 2.3 调用名
 
 **宿主 → 插件**：`plugin.init`、`plugin.activate`、`plugin.deactivate`、`plugin.ping`、`tool.invoke`、
-`command.invoke`、`automation.action`、`panel.invoke`、`widget.invoke`、`event.deliver`、`config.changed`、`system.event`。
+`command.invoke`、`automation.action`、`panel.invoke`、`widget.invoke`、`dialog.invoke`、`event.deliver`、`config.changed`、`system.event`。
 
 **插件 → 宿主（按权限白名单）**：`storage.get/set/delete/list`、`net.fetch`、`notify`、`banner`、`log`、
-`emitEvent`、`ui.openPanel`、`ui.toast`、`ui.panelEvent`、`config.get/set`、`usage.summary`。
+`emitEvent`、`ui.openPanel`、`ui.toast`、`ui.panelEvent`、`ui.openDialog`、`config.get/set`、`usage.summary`。
 
 ### 2.4 工具返回
 
@@ -130,7 +131,8 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
   "main": "main.js",
   "activation": "startup",
   "permissions": ["tools", "skills", "commands", "automation", "automation.events",
-                  "storage", "config", "usage", "ui.panels", "themes", "net", "notifications", "events"],
+                  "storage", "config", "usage", "ui.panels", "ui.widgets", "ui.dialogs",
+                  "themes", "net", "notifications", "events"],
   "contributes": {
     "tools": [{
       "name": "add_todo",
@@ -157,6 +159,11 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
       { "id": "todo-strip", "title": "事务", "icon": "ListChecks", "slot": "edge-bar",
         "schema": "ui/strip.json" }
     ],
+    "dialogs": [
+      { "id": "quick-note", "title": "快速记录", "icon": "FileText",
+        "schema": "ui/dialog.json", "defaultSize": { "width": 420, "height": 300 } },
+      { "id": "picker", "title": "选择", "icon": "Globe", "entry": "ui/picker.html" }
+    ],
     "themes": [{ "id": "sand", "name": "沙丘",
                  "tokens": { "--bg-base": "#141210", "--text-primary": "#f5f0e8" } }]
   },
@@ -176,6 +183,8 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 - 小组件 ≤ 4；`slot ∈ { "desktop", "edge-bar" }`；`schema` 与 `entry` 二选一；
   **`slot = "edge-bar"` 只允许 `schema`**（不允许在提示条里塞 webview），也不接受 `defaultSize`；
   桌面小组件 `defaultSize` 宽 120–1200、高 80–900；同时存在的桌面小组件窗口总数 ≤ 8（防失控常量）。
+- 临时对话框 ≤ 4；`schema` 与 `entry` 二选一；`defaultSize` 宽 320–900、高 160–800；
+  同时打开的对话框窗口总数 ≤ 4，且每个插件同一时刻只允许 1 扇。
 - 桌面小组件窗口：`windowLevel ∈ { "floating", "normal", "desktop" }`（默认 `"floating"`）；
   `windowMaterial ∈ { "none", "acrylic" }`（默认 `"none"`）保留为清单兼容字段，宿主忽略材质声明，
   桌面小组件统一使用不透明卡片。提示条小组件声明非默认值时**清单校验直接拒绝**；不新增权限 / 宿主 API。
@@ -214,6 +223,7 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 | `logging` | 写插件日志（无权限也允许 warn/error，避免无法排障） |
 | `ui.panels` | 右栏面板 + `ui.openPanel` / `ui.toast` / `ui.panelEvent`（面板目标） |
 | `ui.widgets` | 注册 `contributes.widgets`、`invokeWidget`、`ui.panelEvent`（小组件目标） |
+| `ui.dialogs` | 注册 `contributes.dialogs` + `ctx.ui.openDialog` / `invokeDialog`（临时对话框） |
 | `themes` | 主题令牌 |
 | `events` | 订阅清单 `events` 中声明的宿主事件 |
 
@@ -400,6 +410,72 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 保存配置仍走 `plugins:setConfig`，插件侧收到 `config.changed`；重启成功后由
   `plugins:changed` 触发全部已打开界面重载，窗口内给出成功提示。
 
+### 5.8 临时对话框（输入 / 选择，用完即销毁）
+
+桌面小组件窗口**不可激活**（`focusable: false`），卡内文本输入拿不到键盘焦点（§5.3 的取舍）。
+需要用户键入文字或做一次选择时，插件用**宿主临时对话框**：
+
+```ts
+const result = await ctx.ui.openDialog({
+  dialogId: 'quick-note',              // 必须是清单 contributes.dialogs 里声明过的
+  params: { from: 'tool' },            // 可选，≤ 64 KB
+})
+// result = { submitted: boolean, values: Record<string, unknown>, data?: unknown }
+```
+
+清单声明（`schema` 与 `entry` 二选一）：
+
+```json
+"permissions": ["ui.dialogs"],
+"contributes": {
+  "dialogs": [
+    { "id": "quick-note", "title": "快速记录", "icon": "FileText",
+      "schema": "ui/dialog.json", "defaultSize": { "width": 420, "height": 300 } },
+    { "id": "picker", "title": "选择", "entry": "ui/picker.html" }
+  ]
+}
+```
+
+窗口行为（长期口径）：
+
+- **不常驻**：确定 / 取消 / 标题栏 × / Esc / 最长 10 分钟 / 插件进程退出都会**销毁**窗口；
+  不写几何布局文件，也不出现在任务栏之外的任何入口。
+- 可激活、可键入文字；居中出现，尺寸夹取到当前显示器工作区；每个插件同一时刻只允许
+  1 扇，全部插件合计 ≤ 4 扇（防失控常量）。
+- 同一插件已有打开的对话框时，再次 `openDialog` 回 `E_PLUGIN_INVALID_ARGS`。
+
+**声明式（推荐）**：`schema` 复用面板的受控组件（`input` / `textarea` / `select` / `toggle` …），
+宿主在底部绘制「取消 / 确定」。用户点「确定」时，宿主把控件值（`bind` → 值）作为
+`values` 提交并关闭窗口；宿主也会调用可选的 `invokeDialog`：
+
+```ts
+invokeDialog(dialogId, method, params, ctx)
+// params = { params: <本次动作参数>, values: <控件值>, init: <openDialog 的 params> }
+// 返回 { close?: boolean, submitted?: boolean, schema?, toast?, data? }
+```
+
+- 未实现 `invokeDialog`：声明式对话框照常工作（「确定」直接关闭并返回 `values`）；
+- `method = 'submit'` 返回 `{ close: false, toast: '请先输入内容' }` → 窗口保持打开；
+  抛错同样保持打开并显示错误；也可返回 `{ close: false, error: '...' }` 直接给渲染层一条错误；
+- 返回 `{ close: true, data }` → 关闭并结算，`openDialog` 的 `data` 即该 `data`；
+- `open` 方法在首次加载时调用，可返回新的 `schema`（动态内容）。
+
+**页面型（自定义 HTML / CSS）**：`entry` 指向包内 HTML，走与 §5.2 完全相同的
+`aurora-plugin://` 沙箱（专用 preload、独立 partition、CSP、禁弹窗 / 下载）。
+页面 URL 带 `?dialog=<dialogId>`，`window.auroraPlugin.request(method, params)` 经
+`plugins:pageRpc` → `invokeDialog`；返回 `{ close: true, submitted?, data? }` 时宿主关闭窗口并结算。
+页面可自行绘制按钮与样式；宿主不绘制底部按钮，只保留标题栏与关闭键。
+
+结算口径：`submitted = true` 只来自「确定 / 插件明确返回 submitted: true」；取消、×、Esc、
+超时、插件退出一律 `submitted: false`。窗口销毁后 `openDialog` 的 Promise 才结算，
+插件不需要（也无法）自己关闭窗口。
+
+> 在 `invokeTool` 里等待用户输入时，记得把该工具的清单 `timeoutMs` 调到足够长
+> （默认 60 秒会把「用户还在输入」算成工具超时）；工具超时**不会**替你关闭窗口，
+> 用户仍可正常提交，但本次工具调用已经失败。
+
+临时对话框只在本机由用户操作，**不上报 Center**，也没有远程批准 / 页面镜像（§5.7 只覆盖侧栏面板）。
+
 ---
 
 ## 6. 安全模型
@@ -424,7 +500,7 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
   只读档与信任开关约束；
 - 工具名天然带 `plugin.<id>.` 前缀，不会与内置 / MCP 工具撞名。
 - **出站名称**：发给 LLM 的线路名会把点号归一为下划线（`plugin.<id>.<name>` → `plugin_<id>_<name>`，
-  出站时会归一为下划线）；插件清单与插件进程仍只认原始工具名，不需要感知这一层。
+  见「出站名称」一节）；插件清单与插件进程仍只认原始工具名，不需要感知这一层。
 
 ### 6.3 事件推送的边界
 
@@ -530,7 +606,8 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
   管理器（权限、超时、取消、崩溃退避、面板事件路由与限速）/ 自动化事件与动作 / 市场客户端与 Center 市场路由 /
   **用量账本（按日分桶、缓存命中率、90 天保留、损坏归化）、provider 层 usage 回报与 `usage.summary` 权限透传**；
 - 端到端：`AURORA_SMOKE=1 pnpm dev` 覆盖安装 → 工具 / Skill / 命令 → 插件事件自动化 →
-  面板 schema → **小组件窗口 / 面板事件推送** → 主题令牌 → 停用 / 启用 / 卸载；
+  面板 schema → **小组件窗口 / 面板事件推送** → 主题令牌 → 停用 / 启用 / 卸载（临时对话框
+  另由 `dialog-window` 几何单测与定向截图 `plugin-dialog` / `plugin-dialog-page` 覆盖）；
 - 截图：`chat-plugin-panel.png` / `chat-plugin-page.png` / `settings-plugins-installed.png` /
   `settings-plugins-detail.png` / `plugin-config.png` / `settings-plugins-marketplace.png` /
   `widget-desktop-plugin.png` / `edge-bar-plugin-widget.png` / `chat-plugin-panel-push.png` +
@@ -548,7 +625,9 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
   （失败回落 `normal`），不做壁纸层嵌入 / 桌面图标层 / 点击穿透；
 - 桌面小组件窗口**不可激活**（点击不抢前台），因此卡内文本输入拿不到键盘焦点；
   「固定」只锁拖动 / 缩放，不改变层级；
-- `windowMaterial: "acrylic"` 只在 Windows 11 22H2+ 且外观毛玻璃开启时生效，否则保持不透明卡片；
+- 桌面小组件始终不透明；旧清单的 `windowMaterial: "acrylic"` 只为兼容保留，宿主不再启用毛玻璃；
+- 临时对话框每个插件同一时刻只允许 1 扇、最长 10 分钟；窗口不可缩放 / 最大化，
+  关闭后不保留任何位置或内容（插件需要保留就写自己的存储）；
 - 提示条小组件只支持声明式 schema（并拒绝 `windowLevel` / `windowMaterial` 非默认值）；
 - 插件工具不参与 `agent.tools.enabled` 门控（与扩展工具六件套同口径），只受插件总开关 /
   单插件开关 / 只读档 / 信任约束。

@@ -70,6 +70,30 @@ module.exports = {
           ` / 生图 ${stats.images.generated} 次 / 语音 ${stats.voice.tts + stats.voice.stt} 次`,
       }
     }
+    if (name === 'hello-note') {
+      // 临时对话框（docs/15 §7.7）：声明式窗口，用户键入文字后由宿主「确定」结算。
+      const result = await ctx.ui.openDialog({
+        dialogId: 'quick-note',
+        params: { from: 'hello-note' },
+      })
+      if (!result.submitted) return { summary: '已取消临时窗口' }
+      const note = typeof result.values.note === 'string' ? result.values.note : ''
+      await ctx.storage.set('last-note', note)
+      return {
+        summary: note === '' ? '临时窗口已确定（内容为空）' : `已记录随记：${note.slice(0, 40)}`,
+      }
+    }
+    if (name === 'hello-page-note') {
+      // 页面型临时对话框：自定义 HTML / CSS，页面自己发起 init / save / cancel。
+      const result = await ctx.ui.openDialog({
+        dialogId: 'page-note',
+        params: { greeting: ctx.config.greeting ?? '你好' },
+      })
+      if (!result.submitted) return { summary: '已取消页面窗口' }
+      const data = result.data
+      const text = data && typeof data.text === 'string' ? data.text : ''
+      return { summary: text === '' ? '页面窗口已提交' : `页面窗口收到：${text.slice(0, 40)}` }
+    }
     throw new Error(`未知命令：${name}`)
   },
 
@@ -140,6 +164,44 @@ module.exports = {
       return { schema: widgetSchema(widgetId, next), toast: `计数更新为 ${next}` }
     }
     return { schema: widgetSchema(widgetId, await currentCount(ctx)) }
+  },
+
+  /**
+   * 临时对话框（docs/14 §5.8）：`params` 形如 `{ params, values, init }`。
+   * 返回 `{ close: true }` 时宿主关闭窗口并把结果交给 `ctx.ui.openDialog()` 的调用方。
+   *
+   * @param {string} dialogId
+   * @param {string} method
+   * @param {unknown} params
+   * @param {import('./types/aurora-plugin').PluginContext} ctx
+   */
+  async invokeDialog(dialogId, method, params, _ctx) {
+    const wrapper = params && typeof params === 'object' ? params : {}
+    if (dialogId === 'quick-note') {
+      if (method === 'submit') {
+        const values = wrapper.values && typeof wrapper.values === 'object' ? wrapper.values : {}
+        const note = typeof values.note === 'string' ? values.note : ''
+        if (note.trim() === '') return { close: false, toast: '请先输入内容' }
+        return { close: true, submitted: true }
+      }
+      return {}
+    }
+    if (dialogId === 'page-note') {
+      if (method === 'init') {
+        const init = wrapper.init && typeof wrapper.init === 'object' ? wrapper.init : {}
+        return { data: { greeting: typeof init.greeting === 'string' ? init.greeting : '你好' } }
+      }
+      if (method === 'save') {
+        const pageParams =
+          wrapper.params && typeof wrapper.params === 'object' ? wrapper.params : {}
+        const text = typeof pageParams.text === 'string' ? pageParams.text : ''
+        if (text.trim() === '') return { close: false, data: { error: '内容不能为空' } }
+        return { close: true, submitted: true, data: { text } }
+      }
+      if (method === 'cancel') return { close: true, submitted: false }
+      return {}
+    }
+    return {}
   },
 
   /**

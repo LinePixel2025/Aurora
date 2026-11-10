@@ -24,6 +24,7 @@ export const PLUGIN_RPC_TIMEOUTS = {
   command: 10_000,
   panel: 10_000,
   widget: 10_000,
+  dialog: 10_000,
   configChanged: 5_000,
   event: 10_000,
   automation: 120_000,
@@ -31,6 +32,16 @@ export const PLUGIN_RPC_TIMEOUTS = {
   toolMax: 600_000,
   ping: 5_000,
 } as const
+
+/**
+ * 临时对话框（docs/14 §5.8）：
+ * - 同时最多 4 扇窗（防失控常量）；每个插件同一时刻只允许 1 扇；
+ * - 单次 `openDialog` 的入参 ≤ 64 KB；
+ * - 最长存活 10 分钟：到点由宿主关闭并按「取消」结算，绝不常驻。
+ */
+export const PLUGIN_DIALOG_MAX_WINDOWS = 4
+export const PLUGIN_DIALOG_MAX_LIFETIME_MS = 10 * 60 * 1000
+export const PLUGIN_DIALOG_PARAMS_MAX_BYTES = 64 * 1024
 
 /** 心跳间隔与连续失败上限（失败即重启）。 */
 export const PLUGIN_HEARTBEAT = {
@@ -96,6 +107,7 @@ export const PLUGIN_HOST_CALLS = {
   automationAction: 'automation.action',
   panel: 'panel.invoke',
   widget: 'widget.invoke',
+  dialog: 'dialog.invoke',
   event: 'event.deliver',
   configChanged: 'config.changed',
   /** 宿主主动推送的窗口 / 面板事件（插件页面 RPC 也复用它） */
@@ -117,6 +129,8 @@ export const PLUGIN_CLIENT_CALLS = {
   openPanel: 'ui.openPanel',
   toast: 'ui.toast',
   panelEvent: 'ui.panelEvent',
+  /** 打开临时对话框（`ui.dialogs` 权限，docs/14 §5.8）；参数与返回值见 `PluginDialogOpenResult` */
+  openDialog: 'ui.openDialog',
   getConfig: 'config.get',
   setConfig: 'config.set',
   /** 本机用量统计（`usage` 权限，docs/14 §4.1）：只读聚合 */
@@ -168,6 +182,43 @@ export interface PluginPanelResult {
 
 /** 小组件调用与面板同形（`invokeWidget` 的返回值）。 */
 export type PluginWidgetResult = PluginPanelResult
+
+/**
+ * `invokeDialog(dialogId, method, params, ctx)` 的返回值（docs/14 §5.8）。
+ *
+ * - `schema`：替换声明式对话框的内容（可选）；
+ * - `toast`：一句话反馈；
+ * - `data`：交给 `ctx.ui.openDialog()` 调用方（页面型常用）；
+ * - `close`：`true` 关闭窗口；`false` 保持打开（表单校验失败）；
+ * - `submitted`：关闭时是否算「提交」（缺省 `true`；取消路径固定为 `false`）。
+ */
+export interface PluginDialogResult extends PluginPanelResult {
+  close?: boolean
+  submitted?: boolean
+  /** `close: false` 时给用户看的一句话错误（渲染层保留窗口） */
+  message?: string
+  error?: string
+}
+
+/** `ctx.ui.openDialog()` 入参：对话框必须是清单里声明过的。 */
+export interface PluginDialogOpenInput {
+  dialogId: string
+  /** 初始参数（≤ 64 KB）；会随每次 `invokeDialog` 以 `init` 字段提供给插件 */
+  params?: unknown
+}
+
+/**
+ * `ctx.ui.openDialog()` 的结算结果：窗口销毁后返回。
+ *
+ * - 声明式：`values` 是控件值（`bind` → 值），`data` 可被 `invokeDialog` 返回；
+ * - 页面型：`values` 为空对象，页面传入的值由插件在 `invokeDialog` 里自行取用。
+ */
+export interface PluginDialogOpenResult {
+  /** true = 通过「确定 / 提交」关闭；false = 取消 / × / Esc / 超时 / 插件退出 */
+  submitted: boolean
+  values: Record<string, unknown>
+  data?: unknown
+}
 
 /** 插件 → 宿主 → 渲染层的事件推送输入（`ctx.ui.panelEvent`）。 */
 export interface PluginPanelEventInput {
@@ -248,6 +299,13 @@ export interface PluginContext {
     toast(message: string, kind?: 'info' | 'error'): Promise<void>
     /** 向自己的面板 / 小组件推送事件（无需用户点刷新） */
     panelEvent(input: PluginPanelEventInput): Promise<void>
+    /**
+     * 唤起临时对话框（docs/14 §5.8）：需要 `ui.dialogs` 权限，且对话框已在清单声明。
+     *
+     * 窗口**常驻到用户处理完**（确定 / 取消 / 关闭 / 最长 10 分钟），结算后立即销毁；
+     * 同一插件同一时刻只能打开一个。
+     */
+    openDialog(input: PluginDialogOpenInput): Promise<PluginDialogOpenResult>
   }
   signal: AbortSignal
 }
@@ -286,6 +344,13 @@ export interface PluginModule {
     params: unknown,
     ctx: PluginContext,
   ): PluginWidgetResult | Promise<PluginWidgetResult>
+  /** 临时对话框的内容 / 动作（声明式与页面型共用）；未实现时声明式对话框仍可用宿主按钮 */
+  invokeDialog?(
+    dialogId: string,
+    method: string,
+    params: unknown,
+    ctx: PluginContext,
+  ): PluginDialogResult | Promise<PluginDialogResult>
   onEvent?(event: string, payload: unknown, ctx: PluginContext): void | Promise<void>
   onConfigChanged?(config: Record<string, unknown>, ctx: PluginContext): void | Promise<void>
 }

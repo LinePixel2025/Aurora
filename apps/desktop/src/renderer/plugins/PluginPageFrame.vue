@@ -15,8 +15,12 @@ const props = defineProps<{
   panelId?: string
   /** 桌面小组件里的页面：与 panelId 二选一，决定 RPC 走 invokeWidget */
   widgetId?: string
+  /** 临时对话框里的页面：决定 RPC 走 invokeDialog */
+  dialogId?: string
   entry: string
   title?: string
+  /** 是否绘制宿主页头（临时对话框自己画标题栏，传 false） */
+  showBar?: boolean
 }>()
 
 interface WebviewLike extends HTMLElement {
@@ -42,10 +46,14 @@ let disposed = false
 
 const pageUrl = computed(() => {
   const path = props.entry.replace(/^\/+/, '')
-  const suffix =
-    props.widgetId === undefined
-      ? `?panel=${encodeURIComponent(props.panelId ?? '')}`
-      : `?widget=${encodeURIComponent(props.widgetId)}`
+  let suffix: string
+  if (props.dialogId !== undefined) {
+    suffix = `?dialog=${encodeURIComponent(props.dialogId)}`
+  } else if (props.widgetId === undefined) {
+    suffix = `?panel=${encodeURIComponent(props.panelId ?? '')}`
+  } else {
+    suffix = `?widget=${encodeURIComponent(props.widgetId)}`
+  }
   return `aurora-plugin://${props.pluginId}/${path}${suffix}`
 })
 
@@ -91,9 +99,11 @@ async function onIpcMessage(event: IpcMessageEvent): Promise<void> {
   try {
     const result = await window.aurora.plugins.pageRpc({
       pluginId: props.pluginId,
-      ...(props.widgetId === undefined
-        ? { panelId: props.panelId ?? '' }
-        : { widgetId: props.widgetId }),
+      ...(props.dialogId !== undefined
+        ? { dialogId: props.dialogId }
+        : props.widgetId === undefined
+          ? { panelId: props.panelId ?? '' }
+          : { widgetId: props.widgetId }),
       guestId: currentGuest,
       method,
       params: request.params,
@@ -188,6 +198,7 @@ let reloadTimer: ReturnType<typeof setTimeout> | undefined
 
 function matchesPush(event: { pluginId: string; panelId?: string; widgetId?: string }): boolean {
   if (event.pluginId !== props.pluginId) return false
+  if (props.dialogId !== undefined) return false
   return props.widgetId === undefined
     ? event.panelId === props.panelId
     : event.widgetId === props.widgetId
@@ -195,14 +206,16 @@ function matchesPush(event: { pluginId: string; panelId?: string; widgetId?: str
 
 onMounted(() => {
   mountWebview()
-  // 面板页与小组件页各订阅自己的推送通道；成对释放，不能全局泄漏。
+  // 面板页与小组件页各订阅自己的推送通道；对话框页没有推送目标，成对释放，不能全局泄漏。
   const handler = (event: PluginPushEvent): void => {
     if (matchesPush(event)) forwardEvent(event)
   }
   offPush =
-    props.widgetId === undefined
-      ? window.aurora.plugins.onPanelEvent(handler)
-      : window.aurora.plugins.onWidgetEvent(handler)
+    props.dialogId !== undefined
+      ? null
+      : props.widgetId === undefined
+        ? window.aurora.plugins.onPanelEvent(handler)
+        : window.aurora.plugins.onWidgetEvent(handler)
   // 插件重启 / 配置变更 / 重新就绪：页面必须重载，否则一直显示旧内容。
   offChanged = window.aurora.plugins.onChanged(() => {
     if (disposed || reloadTimer !== undefined) return
@@ -233,8 +246,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="plugin-page" :data-plugin-id="pluginId" :data-panel-id="panelId">
-    <header class="page-bar">
+  <div
+    class="plugin-page"
+    :data-plugin-id="pluginId"
+    :data-panel-id="panelId"
+    :data-dialog-id="dialogId"
+  >
+    <header v-if="showBar !== false" class="page-bar">
       <span class="page-title">{{ title ?? '插件页面' }}</span>
       <button type="button" class="reload-btn" @click="reload">刷新</button>
     </header>

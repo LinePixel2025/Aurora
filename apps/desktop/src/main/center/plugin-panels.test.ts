@@ -33,6 +33,7 @@ function summary(patch: Partial<PluginSummary> & Pick<PluginSummary, 'id'>): Plu
     commands: [],
     panels: [],
     widgets: [],
+    dialogs: [],
     themes: [],
     automationActions: [],
     automationEvents: [],

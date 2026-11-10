@@ -1,7 +1,7 @@
 # Hello Aurora
 
-Aurora 插件系统的示例：一个 `echo` 工具、一个 Skill、四条斜杠命令、两个配置项、
-本机用量统计（`ctx.usage`），以及一条「自动化动作 + 事件」链路。
+Aurora 插件系统的示例：一个 `echo` 工具、一个 Skill、六条斜杠命令、两个配置项、
+本机用量统计（`ctx.usage`）、声明式 / 页面型临时窗口，以及一条「自动化动作 + 事件」链路。
 
 ## 安装
 
@@ -12,10 +12,12 @@ Aurora 插件系统的示例：一个 `echo` 工具、一个 Skill、四条斜�
 
 ```
 manifest.json                 清单：贡献与权限、配置字段、订阅的宿主事件
-main.js                       处理器：工具 / 命令 / 自动化动作 / 面板 / 事件 / 配置变化
+main.js                       处理器：工具 / 命令 / 自动化动作 / 面板 / 对话框 / 事件 / 配置变化
 skills/hello/SKILL.md         插件贡献的 Skill
 ui/panel.json                 声明式面板（受控组件）
 ui/page.html|js|css           沙箱页面（auroraPlugin.request）
+ui/dialog.json                声明式临时窗口（可键入文字，宿主绘制取消 / 确定）
+ui/dialog-page.html|js|css    页面型临时窗口（自定义 HTML / CSS）
 types/aurora-plugin.d.ts      契约类型（编辑器补全用）
 ```
 
@@ -25,6 +27,8 @@ types/aurora-plugin.d.ts      契约类型（编辑器补全用）
 - 命令 `/hello [补充]`：prompt 命令，把打招呼提示词追加给 Agent；
 - 命令 `/hello-count`：action 命令，计数 +1 并触发 `count-changed` 插件事件；
 - 命令 `/hello-usage`：action 命令，读取本机最近 7 天的 Token / 缓存命中 / 生图 / 语音次数；
+- 命令 `/hello-note`：打开声明式临时窗口，输入随记后保存到插件存储；
+- 命令 `/hello-page-note`：打开自定义 HTML / CSS 的临时窗口，页面内提交后关闭；
 - 自动化动作 `add-count`：计数 +1、触发 `count-changed`；打开「计数时发系统通知」后同时弹通知；
 - 宿主事件：订阅了 `settings.changed`，只在插件日志里记录（不打扰用户）。
 

@@ -2766,10 +2766,15 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
   窗口内容复用 `PluginSchemaRenderer`（声明式）或 `PluginPageFrame`（页面型）。
 - **提示条小组件**：展开面板底部「小组件」区（`edge-bar.plugin-widgets`），只渲染声明式条目，
   单条最高 220px 内部滚动；无 widget 时整块不渲染，不改变提示条窗口 shape。
+- **临时对话框**（`dialog` 入口，docs/14 §5.8）：插件 `ctx.ui.openDialog` 唤起的小窗，
+  **可激活、可键入文字**（桌面小组件 `focusable:false` 的替代路径）。无边框、居中、
+  不可缩放 / 最大化；标题栏（可拖动）+ 关闭键由宿主绘制。声明式模式在底部绘制「取消 / 确定」，
+  页面型模式只留标题栏（页面自绘内容与按钮）。确定 / 取消 / × / Esc / 10 分钟超时 / 插件退出
+  都会销毁窗口，不写几何、不常驻；每个插件同一时刻 1 扇、全局 ≤ 4 扇。
 - 截图锚点：`chat-plugin-panel` / `chat-plugin-page` / `settings-plugins-installed` /
   `settings-plugins-detail`（设置页列表 + 配置入口）/ `plugin-config` /
   `settings-plugins-marketplace` / `widget-desktop-plugin` / `edge-bar-plugin-widget` /
-  `chat-plugin-panel-push`（另含设置页深链 `settings-plugins.png`）。
+  `chat-plugin-panel-push` / `plugin-dialog` / `plugin-dialog-page`（另含设置页深链 `settings-plugins.png`）。
 
 ## 7. Computer Use 浮层与操作过程（v39，06 §28）
 

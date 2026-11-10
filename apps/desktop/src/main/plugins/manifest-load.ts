@@ -133,6 +133,17 @@ export async function readPluginManifest(
     }
   }
 
+  for (const dialog of manifest.contributes.dialogs) {
+    const file = dialog.schema ?? dialog.entry
+    if (file === undefined) continue
+    const absolute = resolvePluginPath(root, file)
+    if (absolute === null) {
+      errors.push(`对话框「${dialog.id}」文件越出插件根：${file}`)
+    } else if (!(await exists(absolute))) {
+      errors.push(`对话框「${dialog.id}」文件不存在：${file}`)
+    }
+  }
+
   if (manifest.icon !== undefined) {
     const icon = resolvePluginPath(root, manifest.icon)
     if (icon === null) errors.push(`icon 路径越出插件根：${manifest.icon}`)

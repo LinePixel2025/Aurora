@@ -2350,6 +2350,19 @@ export interface PluginWidgetInfo {
   defaultSize?: { width: number; height: number }
 }
 
+/** 临时对话框快照（docs/14 §5.8）：由插件在运行期经 `ctx.ui.openDialog` 唤起。 */
+export interface PluginDialogInfo {
+  pluginId: string
+  pluginName: string
+  id: string
+  title: string
+  icon?: string
+  kind: 'schema' | 'page'
+  /** 页面型对话框的入口（插件包内相对路径） */
+  entry?: string
+  defaultSize?: { width: number; height: number }
+}
+
 /** 桌面小组件的持久化布局（`<userData>/plugin-widget-layout.json`，不进 settings）。 */
 export interface PluginWidgetLayoutEntry {
   visible: boolean
@@ -2431,6 +2444,7 @@ export interface PluginSummary {
   commands: PluginCommandInfo[]
   panels: PluginPanelInfo[]
   widgets: PluginWidgetInfo[]
+  dialogs: PluginDialogInfo[]
   themes: PluginThemeInfo[]
   automationActions: PluginAutomationActionInfo[]
   automationEvents: PluginAutomationEventInfo[]
@@ -2468,6 +2482,7 @@ export interface PluginInstallPreview {
   commands: PluginCommandInfo[]
   panels: PluginPanelInfo[]
   widgets: PluginWidgetInfo[]
+  dialogs: PluginDialogInfo[]
   themes: PluginThemeInfo[]
   automationActions: PluginAutomationActionInfo[]
   automationEvents: PluginAutomationEventInfo[]
@@ -2539,6 +2554,48 @@ export interface PluginWidgetDataResult {
   data?: unknown
 }
 
+/** 渲染层按 requestId 取对话框窗口参数（标题 / 形态 / 入口 / 初始参数）。 */
+export interface PluginDialogInfoResult {
+  requestId: string
+  pluginId: string
+  pluginName: string
+  dialogId: string
+  title: string
+  kind: 'schema' | 'page'
+  entry?: string
+  /** `ctx.ui.openDialog()` 传入的初始参数（每次 `invokeDialog` 也以 `init` 提供） */
+  params?: unknown
+}
+
+export interface PluginDialogDataRequest {
+  requestId: string
+  /** 拉取 / 动作方法名（`open` / `submit` / 插件自定义） */
+  method?: string
+  params?: unknown
+  /** 声明式控件的当前值（`bind` → 值） */
+  values?: Record<string, unknown>
+}
+
+export interface PluginDialogDataResult {
+  schema?: PluginPanelSchema
+  toast?: string
+  data?: unknown
+  /** true = 渲染层随即关闭窗口；false = 保持打开（校验失败） */
+  close?: boolean
+  /** 关闭时是否算提交（缺省 true） */
+  submitted?: boolean
+  message?: string
+  error?: string
+}
+
+/** 渲染层关闭对话框（确定 / 取消 / × / Esc）：主进程销毁窗口并结算 openDialog。 */
+export interface PluginCloseDialogRequest {
+  requestId: string
+  submitted?: boolean
+  values?: Record<string, unknown>
+  data?: unknown
+}
+
 export interface PluginSetWidgetVisibleRequest {
   pluginId: string
   widgetId: string
@@ -2572,6 +2629,8 @@ export interface PluginPageRpcRequest {
   panelId?: string
   /** 页面属于桌面小组件时必填（与 panelId 二选一） */
   widgetId?: string
+  /** 页面属于临时对话框时必填（与 panelId / widgetId 三选一） */
+  dialogId?: string
   /**
    * 承载页面的 webview guest 的 `webContentsId`（渲染层从 `<webview>` 读）。
    * 主进程只接受已由 `did-attach-webview` 登记、且归属该插件的 guest。
@@ -3147,6 +3206,12 @@ export interface AuroraApi {
     setWidgetWindowLevel(request: PluginSetWidgetWindowLevelRequest): Promise<Result<boolean>>
     /** 固定 / 取消固定某个桌面小组件（锁定位置与尺寸，写入布局文件并立即生效） */
     setWidgetLocked(request: PluginSetWidgetLockedRequest): Promise<Result<boolean>>
+    /** 临时对话框：取窗口参数（标题 / 形态 / 入口 / 初始参数） */
+    dialogInfo(request: { requestId: string }): Promise<Result<PluginDialogInfoResult>>
+    /** 临时对话框：声明式内容 / 动作（页面型走 pageRpc） */
+    dialogData(request: PluginDialogDataRequest): Promise<Result<PluginDialogDataResult>>
+    /** 临时对话框：关闭并结算（确定 / 取消 / × / Esc） */
+    closeDialog(request: PluginCloseDialogRequest): Promise<Result<boolean>>
     /** 宿主内部：小组件窗口实际可用的原生材质变化（on/off 成对，v37） */
     onWidgetMaterial(listener: (event: PluginWidgetMaterialEvent) => void): () => void
     /** 插件页面（webview）的 RPC 中继 */

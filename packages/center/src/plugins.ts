@@ -195,6 +195,10 @@ export function inspectPluginArchive(body: Buffer): PluginArchiveInspection {
     const file = panel.schema ?? panel.entry
     if (file !== undefined) requireFile(file, `面板「${panel.id}」文件`)
   }
+  for (const dialog of manifest.contributes.dialogs) {
+    const file = dialog.schema ?? dialog.entry
+    if (file !== undefined) requireFile(file, `对话框「${dialog.id}」文件`)
+  }
   if (manifest.icon !== undefined) requireFile(manifest.icon, '图标')
 
   return {

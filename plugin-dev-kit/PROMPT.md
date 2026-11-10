@@ -20,13 +20,13 @@
 1. 先用脚手架生成目录：
    node <插件工具包路径>/tools/create-plugin.mjs <插件目录> --id <com.example.xxx> --name "<显示名>"
    （或手工复制 template/），再先写 manifest.json、最后实现处理器；
-2. 所有贡献（工具 / 命令 / 面板 / 小组件 / 配置）必须写在 manifest.json，运行期不得动态注册；
+2. 所有贡献（工具 / 命令 / 面板 / 小组件 / 临时对话框 / 配置）必须写在 manifest.json，运行期不得动态注册；
 3. 只声明真正需要的 permissions；界面只用白名单声明式组件；
 4. 工具返回 { content, isError?, summary? }，content 只能是文本；
 5. 如需即时刷新，使用 ctx.ui.panelEvent（panelId / widgetId 二选一，目标是清单里声明过的）；
 6. 每改完运行 node <插件工具包路径>/tools/check-plugin.mjs <插件目录>，修到退出码 0；
 7. 最后运行 node <插件工具包路径>/tools/pack-plugin.mjs <插件目录> 产出安装包；
-8. 输出：插件 id、权限、工具、面板 / 小组件、推送目标、校验与打包结果。
+8. 输出：插件 id、权限、工具、面板 / 小组件 / 临时对话框、推送目标、校验与打包结果。
 ```
 
 ## 2. 给已有插件加桌面 / 提示条小组件
@@ -47,8 +47,26 @@
 6. 运行 node <插件工具包路径>/tools/check-plugin.mjs <插件目录>。
 ```
 
-## 3. 让 Agent 操作后面板 / 小组件即时刷新
+## 2.1 给插件加临时输入窗口
 
+```text
+在 <插件目录> 里加一个临时输入窗口（桌面小组件不可激活，卡内输入拿不到键盘焦点）。
+
+要求：
+1. manifest.json 的 permissions 增加 "ui.dialogs"；
+2. contributes.dialogs 增加 { id, title, icon?, schema: "ui/dialog.json" }（≤ 4 个）；
+   需要自定义 HTML / CSS 时改用 entry: "ui/dialog.html"（与 schema 二选一）；
+3. 运行期用 const result = await ctx.ui.openDialog({ dialogId, params }) 唤起；
+   result = { submitted, values, data? }；窗口在确定 / 取消 / 关闭 / 超时后自动销毁；
+4. 声明式：main.js 可选实现 invokeDialog(dialogId, method, params, ctx)；
+   params = { params, values, init }；校验失败返回 { close: false, toast: '...' }；
+5. 页面型：页面用 window.auroraPlugin.request('save', ...)；
+   插件在 invokeDialog 里返回 { close: true, submitted?, data? } 才会关闭；
+6. 同一插件同一时刻只能开一个窗口；不要用它做常驻界面；
+7. 运行 node <插件工具包路径>/tools/check-plugin.mjs <插件目录>。
+```
+
+## 3. 让 Agent 操作后面板 / 小组件即时刷新
 ```text
 给 <插件目录> 增加事件推送。
 
@@ -98,6 +116,7 @@
 - id / 版本 / apiVersion=1；权限与贡献一一对应；路径都在包内；
 - 工具名 ≤ 25、最终名 plugin.<id>.<name> ≤ 64；参数是 type:"object"；
 - 面板 schema 与 entry 二选一；小组件 ≤ 4，提示条只有 schema；
+- 临时对话框 ≤ 4，schema / entry 二选一；页面型在 invokeDialog 返回 close 才关闭；
 - 主题令牌只覆盖白名单里的表面 / 文字 / 边框 / 圆角 / 状态色；
 - 宿主事件只能从 settings.changed / message.* / tool.after / session.* / theme.changed 里选；
 
@@ -105,6 +124,7 @@
 - invokeTool 只返回文本，长任务监听 ctx.signal；
 - 存储键合法，单值 ≤ 256 KB、总量 ≤ 5 MB；
 - panelEvent 目标在本插件清单内，payload ≤ 64 KB，不跨插件；
+- openDialog 只打开清单声明过的 dialogId，取消 / 关闭路径不落数据；
 - 页面无内联脚本 / 外部资源 / fetch，只依赖 auroraPlugin；
 
 安全：

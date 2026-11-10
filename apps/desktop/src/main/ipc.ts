@@ -26,6 +26,7 @@ import { PastedImageError, writePastedImage } from './pasted-image.js'
 import type { PluginManager } from './plugins/manager.js'
 import { readPluginPanelData } from './plugins/panel-data.js'
 import type { WidgetManager } from './plugins/widgets.js'
+import type { PluginDialogManager } from './plugins/dialogs.js'
 import type { PluginMarketplaceClient } from './plugins/marketplace.js'
 import { pluginPageGuestOf } from './page-protocol.js'
 import { isPathOutsideError, type WorkspaceGuardOptions } from './tools/file-port.js'
@@ -103,6 +104,10 @@ import {
   // 插件系统（docs/14）
   type PluginCommandInfo,
   type PluginConfigValues,
+  type PluginCloseDialogRequest,
+  type PluginDialogDataRequest,
+  type PluginDialogDataResult,
+  type PluginDialogInfoResult,
   type PluginInstallPreview,
   type PluginMarketplaceInstallRequest,
   type PluginMarketplaceListResult,
@@ -265,6 +270,8 @@ export interface DesktopDeps {
   plugins?: PluginManager
   /** 桌面小组件窗口（docs/14 §5.3）；插件系统未装配时为空 */
   widgets?: WidgetManager
+  /** 临时对话框窗口（docs/14 §5.8）；插件系统未装配时为空 */
+  dialogs?: PluginDialogManager
   /** 插件市场客户端（P4）；未装配时市场通道回 E_INVALID_STATE */
   pluginMarketplace?: PluginMarketplaceClient
   /** 会话历史（chat:history 水合，docs/06 §4） */
@@ -1427,6 +1434,85 @@ export function registerIpc(deps: DesktopDeps): () => void {
     }
     return deps.widgets.setLocked(pluginId, widgetId, request.locked === true).then(ok, pluginError)
   })
+  // 临时对话框（docs/14 §5.8）：窗口参数 / 声明式内容 / 主动关闭。
+  handle<PluginDialogInfoResult>(IPC.plugins.dialogInfo, (request: { requestId?: string }) => {
+    if (deps.dialogs === undefined) return pluginsMissing<PluginDialogInfoResult>()
+    const requestId = typeof request?.requestId === 'string' ? request.requestId : ''
+    const info = requestId === '' ? undefined : deps.dialogs.info(requestId)
+    return info === undefined ? err('E_INVALID_STATE', '对话框不存在或已关闭') : ok(info)
+  })
+  handle<PluginDialogDataResult>(
+    IPC.plugins.dialogData,
+    async (request: PluginDialogDataRequest) => {
+      if (plugins === undefined || deps.dialogs === undefined) {
+        return pluginsMissing<PluginDialogDataResult>()
+      }
+      const requestId = typeof request?.requestId === 'string' ? request.requestId : ''
+      const info = requestId === '' ? undefined : deps.dialogs.info(requestId)
+      if (info === undefined) return err('E_INVALID_STATE', '对话框不存在或已关闭')
+      if (info.kind === 'page') {
+        return err('E_INVALID_ARGUMENT', '页面型对话框请通过对话框页面发起请求')
+      }
+      const method =
+        typeof request.method === 'string' && request.method !== '' ? request.method : 'refresh'
+      if (method.length > 64) return err('E_INVALID_ARGUMENT', '方法名过长')
+      const paramsBytes = JSON.stringify(request.params ?? null).length
+      if (paramsBytes > 256 * 1024) {
+        return err('E_INVALID_ARGUMENT', '对话框参数超过 256 KB')
+      }
+      try {
+        let schema: PluginPanelSchema | undefined
+        // `open`：先读清单声明的 schema 文件，再让插件用返回值覆盖（可选）。
+        if (method === 'open') {
+          const file = await plugins.dialogSchemaFile(info.pluginId, info.dialogId)
+          if (file !== undefined) schema = JSON.parse(file) as PluginPanelSchema
+        }
+        try {
+          const result = await plugins.invokeDialog(info.pluginId, info.dialogId, method, {
+            params: request.params,
+            values: request.values ?? {},
+            init: info.params,
+          })
+          if (result.schema !== undefined) schema = result.schema as PluginPanelSchema
+          return ok({
+            ...(schema === undefined ? {} : { schema }),
+            ...(result.toast === undefined ? {} : { toast: result.toast }),
+            ...(result.data === undefined ? {} : { data: result.data }),
+            ...(result.close === undefined ? {} : { close: result.close }),
+            ...(result.submitted === undefined ? {} : { submitted: result.submitted }),
+            ...(result.message === undefined ? {} : { message: result.message }),
+            ...(result.error === undefined ? {} : { error: result.error }),
+          })
+        } catch (error) {
+          // 已有静态 schema 时保留窗口，并把错误原样交给渲染层（与面板的静默保底不同：
+          // 对话框此时正等着用户，不能把失败吞掉）。
+          if (schema === undefined) throw error
+          return ok({
+            schema,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      } catch (error) {
+        return pluginError(error)
+      }
+    },
+  )
+  handle<boolean>(IPC.plugins.closeDialog, (request: PluginCloseDialogRequest) => {
+    if (deps.dialogs === undefined) return pluginsMissing<boolean>()
+    const requestId = typeof request?.requestId === 'string' ? request.requestId : ''
+    if (requestId === '') return err('E_INVALID_ARGUMENT', '缺少对话框 id')
+    const values =
+      typeof request.values === 'object' && request.values !== null ? request.values : {}
+    if (Buffer.byteLength(JSON.stringify(values), 'utf8') > 64 * 1024) {
+      return err('E_INVALID_ARGUMENT', '对话框提交内容超过 64 KB')
+    }
+    const closed = deps.dialogs.close(requestId, {
+      submitted: request.submitted === true,
+      values,
+      ...(request.data === undefined ? {} : { data: request.data }),
+    })
+    return closed ? ok(true) : err('E_INVALID_STATE', '对话框不存在或已关闭')
+  })
   handle<unknown>(IPC.plugins.pageRpc, async (request: PluginPageRpcRequest) => {
     if (plugins === undefined) return pluginsMissing<unknown>()
     const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
@@ -1466,6 +1552,43 @@ export function registerIpc(deps: DesktopDeps): () => void {
     }
     if (guest.widgetId !== undefined) {
       return err('E_INVALID_STATE', '小组件页面必须声明 widgetId')
+    }
+    // 临时对话框页面（docs/14 §5.8）：guest 登记的是 dialogId，且对话框仍处于打开状态。
+    const dialogId = typeof request.dialogId === 'string' ? request.dialogId : ''
+    if (dialogId !== '') {
+      if (guest.dialogId !== dialogId) {
+        return err('E_INVALID_STATE', '对话框页面归属不匹配')
+      }
+      const dialog = summary.dialogs.find((item) => item.id === dialogId && item.kind === 'page')
+      if (dialog === undefined) return err('E_INVALID_ARGUMENT', '插件没有该页面型对话框')
+      const info = deps.dialogs?.infoByTarget(pluginId, dialogId)
+      if (deps.dialogs === undefined || info === undefined) {
+        return err('E_INVALID_STATE', '对话框已关闭')
+      }
+      try {
+        const result = await plugins.invokeDialog(pluginId, dialogId, method, {
+          params: request.params ?? {},
+          values: {},
+          init: info.params,
+        })
+        // 页面请求 `close: true`：先回执，再销毁窗口并结算 `ctx.ui.openDialog`。
+        if (result.close === true) {
+          const targetRequestId = info.requestId
+          setImmediate(() => {
+            deps.dialogs?.close(targetRequestId, {
+              submitted: result.submitted !== false,
+              values: {},
+              ...(result.data === undefined ? {} : { data: result.data }),
+            })
+          })
+        }
+        return ok(result)
+      } catch (error) {
+        return pluginError(error)
+      }
+    }
+    if (guest.dialogId !== undefined) {
+      return err('E_INVALID_STATE', '对话框页面必须声明 dialogId')
     }
     const panelId =
       typeof request.panelId === 'string' && request.panelId !== ''

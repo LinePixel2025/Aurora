@@ -16,6 +16,7 @@ import {
   hasPermission,
   normalizePluginPanelIcon,
   PLUGIN_CLIENT_CALLS,
+  PLUGIN_DIALOG_PARAMS_MAX_BYTES,
   PLUGIN_HEARTBEAT,
   PLUGIN_HOST_CALLS,
   PLUGIN_MAX_RUNNING,
@@ -31,6 +32,9 @@ import {
   type Logger,
   type PluginCommandInfo,
   type PluginConfigField,
+  type PluginDialogInfo,
+  type PluginDialogOpenResult,
+  type PluginDialogResult,
   type PluginManifest,
   type PluginPackageRef,
   type PluginPanelInfo,
@@ -85,6 +89,17 @@ export interface PluginManagerOptions {
   onToast?: (pluginId: string, message: string, kind: 'info' | 'error') => void
   /** 插件主动推送面板 / 小组件事件（主进程 → 渲染层） */
   onPanelEvent?: (event: PluginPushEvent) => void
+  /**
+   * 打开临时对话框（docs/14 §5.8）。由装配层注入 `PluginDialogManager.open`；
+   * 返回的 Promise 在窗口销毁后结算（取消 / 提交 / 超时都走这里）。
+   */
+  openDialog?: (input: {
+    pluginId: string
+    dialogId: string
+    params: unknown
+  }) => Promise<PluginDialogOpenResult>
+  /** 插件进程退出 / 停用：关闭它的对话框（按取消结算） */
+  closeDialogs?: (pluginId: string) => void
   /** 系统通知（notifications 权限） */
   notify?: (input: { title: string; body: string }) => boolean
   /**
@@ -515,6 +530,28 @@ export class PluginManager {
     return result
   }
 
+  /** 待打开的临时对话框（按启用 + `ui.dialogs` 权限过滤）。 */
+  dialogs(): PluginDialogInfo[] {
+    const result: PluginDialogInfo[] = []
+    for (const entry of this.entries.values()) {
+      if (!this.isEnabled(entry)) continue
+      if (!hasPermission(entry.manifest.permissions, 'ui.dialogs')) continue
+      for (const dialog of entry.manifest.contributes.dialogs) {
+        result.push({
+          pluginId: entry.manifest.id,
+          pluginName: entry.manifest.name,
+          id: dialog.id,
+          title: dialog.title,
+          ...(dialog.icon === undefined ? {} : { icon: normalizePluginPanelIcon(dialog.icon) }),
+          kind: dialog.schema === undefined ? 'page' : 'schema',
+          ...(dialog.entry === undefined ? {} : { entry: dialog.entry }),
+          ...(dialog.defaultSize === undefined ? {} : { defaultSize: { ...dialog.defaultSize } }),
+        })
+      }
+    }
+    return result
+  }
+
   themes(): PluginThemeInfo[] {
     const result: PluginThemeInfo[] = []
     for (const entry of this.entries.values()) {
@@ -609,6 +646,21 @@ export class PluginManager {
     const stat = await fs.stat(file)
     if (stat.size > 256 * 1024) {
       throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', '小组件 schema 超过 256 KB')
+    }
+    return await fs.readFile(file, 'utf8')
+  }
+
+  /** 对话框文件（声明式 schema 的 JSON 文本）；页面型返回 undefined。 */
+  async dialogSchemaFile(pluginId: string, dialogId: string): Promise<string | undefined> {
+    const entry = this.entries.get(pluginId)
+    if (entry === undefined || !this.isEnabled(entry)) return undefined
+    if (!hasPermission(entry.manifest.permissions, 'ui.dialogs')) return undefined
+    const dialog = entry.manifest.contributes.dialogs.find((item) => item.id === dialogId)
+    if (dialog?.schema === undefined) return undefined
+    const file = join(entry.root, dialog.schema)
+    const stat = await fs.stat(file)
+    if (stat.size > 256 * 1024) {
+      throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', '对话框 schema 超过 256 KB')
     }
     return await fs.readFile(file, 'utf8')
   }
@@ -951,6 +1003,46 @@ export class PluginManager {
     }
   }
 
+  async invokeDialog(
+    pluginId: string,
+    dialogId: string,
+    method = 'refresh',
+    params: unknown = {},
+    signal?: AbortSignal,
+  ): Promise<PluginDialogResult> {
+    const entry = this.requireEnabled(pluginId, 'ui.dialogs')
+    const dialog = entry.manifest.contributes.dialogs.find((item) => item.id === dialogId)
+    if (dialog === undefined) {
+      throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', `插件未声明对话框：${dialogId}`)
+    }
+    await this.ensureStarted(entry)
+    const result = (await entry.process!.peer.request(
+      PLUGIN_HOST_CALLS.dialog,
+      { dialogId, method, params },
+      {
+        timeoutMs: PLUGIN_RPC_TIMEOUTS.dialog,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    )) as {
+      schema?: unknown
+      toast?: unknown
+      data?: unknown
+      close?: unknown
+      submitted?: unknown
+      message?: unknown
+      error?: unknown
+    }
+    return {
+      ...(result?.schema === undefined ? {} : { schema: result.schema }),
+      ...(typeof result?.toast === 'string' ? { toast: result.toast } : {}),
+      ...(result?.data === undefined ? {} : { data: result.data }),
+      ...(typeof result?.close === 'boolean' ? { close: result.close } : {}),
+      ...(typeof result?.submitted === 'boolean' ? { submitted: result.submitted } : {}),
+      ...(typeof result?.message === 'string' ? { message: result.message } : {}),
+      ...(typeof result?.error === 'string' ? { error: result.error } : {}),
+    }
+  }
+
   /** 宿主事件投递（只投给声明了该事件、且正在运行的插件）。 */
   async deliverEvent(event: string, payload: unknown): Promise<void> {
     for (const entry of this.entries.values()) {
@@ -1107,6 +1199,7 @@ export class PluginManager {
         entry.status = 'error'
         entry.process = undefined
         handle.kill()
+        this.options.closeDialogs?.(entry.manifest.id)
         throw error
       } finally {
         entry.startPromise = undefined
@@ -1127,6 +1220,7 @@ export class PluginManager {
     }
     this.clearHeartbeat(entry)
     entry.process = undefined
+    this.options.closeDialogs?.(entry.manifest.id)
     if (entry.restartTimer !== undefined) {
       clearTimeout(entry.restartTimer)
       entry.restartTimer = undefined
@@ -1201,6 +1295,7 @@ export class PluginManager {
       }
       handle.kill()
     }
+    this.options.closeDialogs?.(entry.manifest.id)
     entry.status = options.status
   }
 
@@ -1385,6 +1480,33 @@ export class PluginManager {
       }
       this.options.onOpenPanel?.(entry.manifest.id, panelId)
       return { ok: true }
+    }
+    // 临时对话框（docs/14 §5.8）：窗口生命周期在装配层注入的 openDialog 里，
+    // 这里只做权限 / 清单 / 参数上限校验，并原样把结算结果回给插件。
+    if (method === PLUGIN_CLIENT_CALLS.openDialog) {
+      this.requirePermission(entry, 'ui.dialogs')
+      const dialogId = typeof raw['dialogId'] === 'string' ? raw['dialogId'].trim() : ''
+      if (dialogId === '') {
+        throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', '缺少 dialogId')
+      }
+      const dialog = entry.manifest.contributes.dialogs.find((item) => item.id === dialogId)
+      if (dialog === undefined) {
+        throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', `插件未声明对话框：${dialogId}`)
+      }
+      if (
+        Buffer.byteLength(JSON.stringify(raw['params'] ?? null), 'utf8') >
+        PLUGIN_DIALOG_PARAMS_MAX_BYTES
+      ) {
+        throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', '对话框参数超过 64 KB')
+      }
+      if (this.options.openDialog === undefined) {
+        throw new PluginRpcFailure('E_PLUGIN_NOT_READY', '临时窗口宿主未装配')
+      }
+      return await this.options.openDialog({
+        pluginId: entry.manifest.id,
+        dialogId,
+        params: raw['params'],
+      })
     }
     if (method === PLUGIN_CLIENT_CALLS.toast) {
       this.requirePermission(entry, 'ui.panels')
@@ -1764,6 +1886,16 @@ export class PluginManager {
       ...(widget.entry === undefined ? {} : { entry: widget.entry }),
       ...(widget.defaultSize === undefined ? {} : { defaultSize: { ...widget.defaultSize } }),
     }))
+    const dialogs: PluginDialogInfo[] = manifest.contributes.dialogs.map((dialog) => ({
+      pluginId: manifest.id,
+      pluginName: manifest.name,
+      id: dialog.id,
+      title: dialog.title,
+      ...(dialog.icon === undefined ? {} : { icon: normalizePluginPanelIcon(dialog.icon) }),
+      kind: dialog.schema === undefined ? 'page' : 'schema',
+      ...(dialog.entry === undefined ? {} : { entry: dialog.entry }),
+      ...(dialog.defaultSize === undefined ? {} : { defaultSize: { ...dialog.defaultSize } }),
+    }))
     const automationActions: PluginAutomationActionInfo[] =
       manifest.contributes.automation.actions.map((action) => ({
         pluginId: manifest.id,
@@ -1812,6 +1944,7 @@ export class PluginManager {
       commands,
       panels,
       widgets,
+      dialogs,
       themes,
       automationActions,
       automationEvents,

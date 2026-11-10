@@ -210,6 +210,7 @@ function pluginStats(plugin: PluginSummary): string {
   if (plugin.commands.length > 0) parts.push(`${plugin.commands.length} 命令`)
   if (plugin.panels.length > 0) parts.push(`${plugin.panels.length} 面板`)
   if (plugin.widgets.length > 0) parts.push(`${plugin.widgets.length} 小组件`)
+  if (plugin.dialogs.length > 0) parts.push(`${plugin.dialogs.length} 临时窗口`)
   if (plugin.permissions.length > 0) parts.push(`${plugin.permissions.length} 项权限`)
   return parts.join(' · ')
 }

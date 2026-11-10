@@ -34,6 +34,7 @@ export const PLUGIN_MANIFEST_LIMITS = {
   maxCommands: 32,
   maxPanels: 8,
   maxWidgets: 4,
+  maxDialogs: 4,
   maxThemes: 8,
   maxAutomationActions: 16,
   maxAutomationEvents: 16,
@@ -192,6 +193,54 @@ const PluginThemeSchema = z.object({
   tokens: z.record(z.string().max(120)),
 })
 
+/** 临时对话框的窗口尺寸范围（焦点窗口，可键入文字；关闭即销毁）。 */
+export const PLUGIN_DIALOG_SIZE_LIMITS = {
+  minWidth: 320,
+  minHeight: 160,
+  maxWidth: 900,
+  maxHeight: 800,
+} as const
+
+/** 未声明 `defaultSize` 时的初始尺寸。 */
+export const PLUGIN_DIALOG_DEFAULT_SIZE = { width: 440, height: 320 } as const
+
+const PluginDialogSizeSchema = z.object({
+  width: z
+    .number()
+    .int()
+    .min(PLUGIN_DIALOG_SIZE_LIMITS.minWidth)
+    .max(PLUGIN_DIALOG_SIZE_LIMITS.maxWidth),
+  height: z
+    .number()
+    .int()
+    .min(PLUGIN_DIALOG_SIZE_LIMITS.minHeight)
+    .max(PLUGIN_DIALOG_SIZE_LIMITS.maxHeight),
+})
+
+/**
+ * 插件临时对话框（docs/14 §5.8）：插件在运行期经 `ctx.ui.openDialog()` 唤起，
+ * 用完（确定 / 取消 / 关闭 / 超时 / 插件退出）即销毁，不常驻。
+ *
+ * `schema` 与 `entry` 二选一：声明式内容用宿主渲染器（宿主绘制确定 / 取消），
+ * `entry` 是 `aurora-plugin://` 沙箱页面（自定义 HTML / CSS，页面自己调 `submit`）。
+ */
+const PluginDialogSchema = z
+  .object({
+    id: z.string().regex(PLUGIN_PANEL_ID_PATTERN, '对话框 id 非法'),
+    title: z.string().min(1).max(40),
+    icon: z.enum(PLUGIN_PANEL_ICONS).optional(),
+    /** 声明式 schema 文件（与 entry 二选一） */
+    schema: relativePath.optional(),
+    /** 沙箱页面入口 HTML（与 schema 二选一） */
+    entry: relativePath.optional(),
+    /** 初始窗口尺寸；居中显示并夹取到当前显示器工作区 */
+    defaultSize: PluginDialogSizeSchema.optional(),
+  })
+  .refine(
+    (dialog) => (dialog.schema === undefined) !== (dialog.entry === undefined),
+    '对话框必须且只能声明 schema 或 entry 之一',
+  )
+
 const PluginConfigFieldSchema = z
   .object({
     key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/, '配置 key 非法'),
@@ -231,6 +280,7 @@ const PluginContributesSchema = z.object({
     .default({ actions: [], events: [] }),
   panels: z.array(PluginPanelSchema).max(PLUGIN_MANIFEST_LIMITS.maxPanels).default([]),
   widgets: z.array(PluginWidgetSchema).max(PLUGIN_MANIFEST_LIMITS.maxWidgets).default([]),
+  dialogs: z.array(PluginDialogSchema).max(PLUGIN_MANIFEST_LIMITS.maxDialogs).default([]),
   themes: z.array(PluginThemeSchema).max(PLUGIN_MANIFEST_LIMITS.maxThemes).default([]),
 })
 
@@ -258,6 +308,7 @@ export const PluginManifestSchema = z
       automation: { actions: [], events: [] },
       panels: [],
       widgets: [],
+      dialogs: [],
       themes: [],
     }),
     config: z
@@ -310,6 +361,7 @@ export const PluginManifestSchema = z
     ])
     require('ui.panels', manifest.contributes.panels.length > 0, ['contributes', 'panels'])
     require('ui.widgets', manifest.contributes.widgets.length > 0, ['contributes', 'widgets'])
+    require('ui.dialogs', manifest.contributes.dialogs.length > 0, ['contributes', 'dialogs'])
     require('themes', manifest.contributes.themes.length > 0, ['contributes', 'themes'])
     if (manifest.events.length > 0 && !permissions.has('events')) {
       ctx.addIssue({
@@ -368,6 +420,11 @@ export const PluginManifestSchema = z
       manifest.contributes.widgets.map((widget) => widget.id),
       ['contributes', 'widgets'],
       '小组件 id',
+    )
+    unique(
+      manifest.contributes.dialogs.map((dialog) => dialog.id),
+      ['contributes', 'dialogs'],
+      '对话框 id',
     )
     unique(
       manifest.contributes.themes.map((theme) => theme.id),
@@ -476,6 +533,7 @@ export type PluginToolContribution = PluginManifest['contributes']['tools'][numb
 export type PluginCommandContribution = PluginManifest['contributes']['commands'][number]
 export type PluginPanelContribution = PluginManifest['contributes']['panels'][number]
 export type PluginWidgetContribution = PluginManifest['contributes']['widgets'][number]
+export type PluginDialogContribution = PluginManifest['contributes']['dialogs'][number]
 export type PluginThemeContribution = PluginManifest['contributes']['themes'][number]
 export type PluginConfigField = PluginManifest['config']['fields'][number]
 export type PluginAutomationActionContribution =

@@ -12,6 +12,7 @@
 - [ ] 自动化动作 / 事件各 ≤ 16，名称与标题合法，动作字段 key 不重复
 - [ ] 面板 ≤ 8，`schema` / `entry` 二选一，引用文件存在
 - [ ] 小组件 ≤ 4，`slot` 正确；提示条只有 `schema`、没有 `defaultSize`
+- [ ] 临时对话框 ≤ 4，`schema` / `entry` 二选一，引用文件存在；`defaultSize` 在 320–900 × 160–800 之间
 - [ ] 桌面小组件若声明窗口层级 / 材质：`windowLevel` 取 `floating`（默认）/ `normal` / `desktop`，
       `windowMaterial` 取 `none`（默认）/ `acrylic`（兼容旧清单，宿主忽略；卡片始终不透明）；提示条不得声明非默认值
 - [ ] `hideCloseButton` 必须是布尔值；提示条不得声明 `true`
@@ -38,6 +39,8 @@
 - [ ] 网络只经 `ctx.net.fetch`；私网访问同时声明 `net.private`
 - [ ] 推送目标都在清单内；事件名合法；payload ≤ 64 KB；频率 ≤ 20/s
 - [ ] `invokePanel` / `invokeWidget` 处理 `method === 'event'` 并返回新 schema
+- [ ] 临时对话框：`ctx.ui.openDialog` 只有声明过的 `dialogId`；页面型在 `invokeDialog` 里返回 `{ close: true }`
+      才会关闭；`submitted: false` 的取消路径不保存数据
 - [ ] 页面只有 `window.auroraPlugin`，无内联脚本 / 外部 CDN / `fetch`
 
 ## 安全与文案
@@ -54,4 +57,5 @@
 - [ ] `node <工具包>/tools/pack-plugin.mjs <插件目录>` 成功产出 zip（包根是 `manifest.json`）
 - [ ] 真机安装：设置 → 插件 → 开发 / 安装插件包，状态为「运行中」
 - [ ] 面板、桌面小组件、提示条小组件、推送刷新各试一次；桌面 widget 的层级 / 固定 / 缩放正常，且外观毛玻璃开关切换后仍是不透明卡片
+- [ ] 临时对话框：声明式能键入文字并「确定」拿到 values；页面型能提交并关闭；取消 / × 后窗口消失，插件不保存数据
 - [ ] 停用 / 卸载后对应小组件窗口与面板正确关闭

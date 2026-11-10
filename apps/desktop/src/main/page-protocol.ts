@@ -138,6 +138,18 @@ export function registerPluginPageProtocol(manager: PluginManager, logger: Logge
   protocol.handle(PLUGIN_PAGE_SCHEME, pageHandler)
 }
 
+/** 已加固过的插件页面 session（授权、下载与弹窗只关一次）。 */
+const hardenedSessions = new WeakSet<Session>()
+
+/** 关掉插件页面的权限请求、下载与弹窗（小组件 / 临时对话框共用）。 */
+export function hardenPluginPageSession(session: Session): void {
+  if (hardenedSessions.has(session)) return
+  hardenedSessions.add(session)
+  session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
+  session.setPermissionCheckHandler(() => false)
+  session.on('will-download', (event) => event.preventDefault())
+}
+
 // ───────────────────────── guest 挂载前的页面地址（按 partition 排队） ─────────────────────────
 
 /**
@@ -188,13 +200,15 @@ export interface PluginGuest {
   hostId: number
   /** 桌面小组件页面时记录小组件 id（面板页面为空） */
   widgetId?: string
+  /** 临时对话框页面时记录对话框 id（面板 / 小组件页面为空） */
+  dialogId?: string
 }
 
 const guests = new Map<number, PluginGuest>()
 
-function widgetIdOfUrl(rawUrl: string): string | undefined {
+function queryParamOfUrl(rawUrl: string, name: 'widget' | 'dialog'): string | undefined {
   try {
-    const value = new URL(rawUrl).searchParams.get('widget')
+    const value = new URL(rawUrl).searchParams.get(name)
     return typeof value === 'string' && value !== '' ? value : undefined
   } catch {
     return undefined
@@ -211,11 +225,13 @@ export function registerPluginPageGuest(guest: WebContents, host: WebContents, s
   const target = pluginPageTargetOf(source)
   if (target === null) return
   const id = guest.id
-  const widgetId = widgetIdOfUrl(source)
+  const widgetId = queryParamOfUrl(source, 'widget')
+  const dialogId = queryParamOfUrl(source, 'dialog')
   guests.set(id, {
     pluginId: target.pluginId,
     hostId: host.id,
     ...(widgetId === undefined ? {} : { widgetId }),
+    ...(dialogId === undefined ? {} : { dialogId }),
   })
   guest.once('destroyed', () => guests.delete(id))
 }

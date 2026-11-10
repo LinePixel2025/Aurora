@@ -186,6 +186,10 @@ async function main() {
     const file = widget.schema ?? widget.entry
     if (file !== undefined) requireFile(file, `小组件「${widget.id}」文件`)
   }
+  for (const dialog of manifest.contributes.dialogs) {
+    const file = dialog.schema ?? dialog.entry
+    if (file !== undefined) requireFile(file, `对话框「${dialog.id}」文件`)
+  }
   if (manifest.icon !== undefined) requireFile(manifest.icon, '市场图标')
 
   for (const tool of manifest.contributes.tools) {
@@ -202,6 +206,9 @@ async function main() {
         widget.schema === undefined ? '页面' : '声明式'
       }）`,
     )
+  }
+  for (const dialog of manifest.contributes.dialogs) {
+    console.log(`  · 临时对话框 ${dialog.id}（${dialog.schema === undefined ? '页面' : '声明式'}）`)
   }
   for (const theme of manifest.contributes.themes) {
     console.log(`  · 主题 ${theme.id}（${Object.keys(theme.tokens).length} 个令牌）`)

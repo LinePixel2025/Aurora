@@ -381,6 +381,16 @@ export function buildPreview(
       ...(widget.entry === undefined ? {} : { entry: widget.entry }),
       ...(widget.defaultSize === undefined ? {} : { defaultSize: { ...widget.defaultSize } }),
     })),
+    dialogs: manifest.contributes.dialogs.map((dialog) => ({
+      pluginId: manifest.id,
+      pluginName: manifest.name,
+      id: dialog.id,
+      title: dialog.title,
+      ...(dialog.icon === undefined ? {} : { icon: dialog.icon }),
+      kind: dialog.schema === undefined ? 'page' : 'schema',
+      ...(dialog.entry === undefined ? {} : { entry: dialog.entry }),
+      ...(dialog.defaultSize === undefined ? {} : { defaultSize: { ...dialog.defaultSize } }),
+    })),
     themes: manifest.contributes.themes.map((theme) => ({
       pluginId: manifest.id,
       pluginName: manifest.name,

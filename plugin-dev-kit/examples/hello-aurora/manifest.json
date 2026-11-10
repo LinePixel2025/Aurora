@@ -22,6 +22,7 @@
     "events",
     "ui.panels",
     "ui.widgets",
+    "ui.dialogs",
     "themes"
   ],
   "contributes": {
@@ -65,6 +66,18 @@
         "title": "查看本机用量",
         "description": "读取最近 7 天 Token / 生图 / 语音次数并返回一句话",
         "mode": "action"
+      },
+      {
+        "name": "hello-note",
+        "title": "记录一条随记",
+        "description": "唤起声明式临时窗口，输入文字后保存到插件存储",
+        "mode": "action"
+      },
+      {
+        "name": "hello-page-note",
+        "title": "页面输入示例",
+        "description": "唤起自定义 HTML / CSS 的临时窗口并接收提交内容",
+        "mode": "action"
       }
     ],
     "automation": {
@@ -104,8 +117,8 @@
         "title": "本周值日",
         "icon": "CalendarClock",
         "slot": "desktop",
-        "schema": "ui/widget.json",
         "windowMaterial": "acrylic",
+        "schema": "ui/widget.json",
         "defaultSize": { "width": 300, "height": 200 }
       },
       {
@@ -114,6 +127,22 @@
         "icon": "ListChecks",
         "slot": "edge-bar",
         "schema": "ui/strip.json"
+      }
+    ],
+    "dialogs": [
+      {
+        "id": "quick-note",
+        "title": "快速记录",
+        "icon": "FileText",
+        "schema": "ui/dialog.json",
+        "defaultSize": { "width": 420, "height": 300 }
+      },
+      {
+        "id": "page-note",
+        "title": "页面输入",
+        "icon": "Globe",
+        "entry": "ui/dialog-page.html",
+        "defaultSize": { "width": 460, "height": 360 }
       }
     ],
     "themes": [

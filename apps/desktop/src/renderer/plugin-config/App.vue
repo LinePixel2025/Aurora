@@ -403,7 +403,8 @@ onBeforeUnmount(() => {
               summary.tools.length > 0 ||
               summary.commands.length > 0 ||
               summary.panels.length > 0 ||
-              summary.widgets.length > 0
+              summary.widgets.length > 0 ||
+              summary.dialogs.length > 0
             "
             class="plain-list"
           >
@@ -418,6 +419,9 @@ onBeforeUnmount(() => {
             </li>
             <li v-for="widget in summary.widgets" :key="`widget-${widget.id}`">
               小组件 · {{ widget.title }}（{{ widget.slot === 'desktop' ? '桌面' : '提示条' }}）
+            </li>
+            <li v-for="dialog in summary.dialogs" :key="`dialog-${dialog.id}`">
+              临时窗口 · {{ dialog.title }}（{{ dialog.kind === 'page' ? '页面' : '声明式' }}）
             </li>
             <li v-for="theme in summary.themes" :key="`theme-${theme.id}`">
               主题 · {{ theme.name }}

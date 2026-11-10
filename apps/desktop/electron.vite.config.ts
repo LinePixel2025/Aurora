@@ -21,6 +21,8 @@ const windowEntries = {
   'computer-use': r('src/renderer/computer-use/index.html'),
   // 桌面小组件浮动卡片（docs/14 §5.3）：窗口 URL 带 `?pluginId=&widgetId=`
   widget: r('src/renderer/widget/index.html'),
+  // 插件临时对话框（docs/14 §5.8）：窗口 URL 带 `?requestId=`
+  dialog: r('src/renderer/dialog/index.html'),
 }
 
 /**

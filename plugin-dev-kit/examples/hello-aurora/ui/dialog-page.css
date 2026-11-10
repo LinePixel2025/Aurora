@@ -1,0 +1,68 @@
+:root {
+  color-scheme: dark;
+  font-family: 'HarmonyOS Sans SC', 'Segoe UI', sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 18px 20px;
+  background: #17181c;
+  color: #eceef3;
+  font-size: 13px;
+}
+
+h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.hint {
+  margin: 0 0 12px;
+  color: #9aa0ad;
+}
+
+textarea {
+  width: 100%;
+  min-height: 110px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #3a3d46;
+  border-radius: 10px;
+  background: #202228;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+textarea:focus {
+  outline: none;
+  border-color: #6f8cff;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.error {
+  flex: 1;
+  color: #ff8a8a;
+}
+
+button {
+  padding: 6px 16px;
+  border: 1px solid #3a3d46;
+  border-radius: 8px;
+  background: #262932;
+  color: #eceef3;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.primary {
+  border-color: transparent;
+  background: #5b78ff;
+  color: #fff;
+}

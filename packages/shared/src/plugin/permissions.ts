@@ -21,6 +21,7 @@ export const PLUGIN_PERMISSIONS = [
   'logging',
   'ui.panels',
   'ui.widgets',
+  'ui.dialogs',
   'themes',
   'events',
 ] as const
@@ -43,6 +44,7 @@ export const PLUGIN_PERMISSION_LABELS: Record<PluginPermission, string> = {
   logging: '写入插件日志',
   'ui.panels': '在右栏添加面板',
   'ui.widgets': '在桌面或提示条放置小组件',
+  'ui.dialogs': '打开临时输入窗口（确定或关闭后销毁）',
   themes: '提供界面主题令牌',
   events: '订阅宿主事件（设置变更 / 消息 / 工具调用）',
 }
@@ -56,7 +58,7 @@ export const PLUGIN_PERMISSION_GROUPS: ReadonlyArray<{
   { title: '自动化', permissions: ['automation', 'automation.events'] },
   { title: '数据', permissions: ['storage', 'config', 'usage'] },
   { title: '网络与系统', permissions: ['net', 'net.private', 'notifications', 'logging'] },
-  { title: '界面', permissions: ['ui.panels', 'ui.widgets', 'themes', 'events'] },
+  { title: '界面', permissions: ['ui.panels', 'ui.widgets', 'ui.dialogs', 'themes', 'events'] },
 ]
 
 /** 贡献 → 必需权限（加载时逐项检查，缺权限的贡献整条拒绝并告警）。 */
@@ -68,6 +70,7 @@ export const PLUGIN_CONTRIBUTION_PERMISSIONS = {
   automationEvents: 'automation.events',
   panels: 'ui.panels',
   widgets: 'ui.widgets',
+  dialogs: 'ui.dialogs',
   themes: 'themes',
 } as const satisfies Record<string, PluginPermission>
 

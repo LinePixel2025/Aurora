@@ -377,6 +377,89 @@ describe('插件小组件清单', () => {
   })
 })
 
+describe('插件临时对话框清单（docs/14 §5.8）', () => {
+  function withDialogs(
+    dialogs: unknown[],
+    permissions = ['ui.dialogs'],
+  ): ReturnType<typeof baseManifest> {
+    return baseManifest({ permissions, contributes: { dialogs } })
+  }
+
+  it('接受声明式与页面型对话框，并补齐尺寸缺省', () => {
+    const result = parsePluginManifest(
+      withDialogs([
+        { id: 'quick-note', title: '快速记录', icon: 'FileText', schema: 'ui/note.json' },
+        {
+          id: 'picker',
+          title: '选择',
+          entry: 'ui/picker.html',
+          defaultSize: { width: 520, height: 420 },
+        },
+      ]),
+    )
+    expect(result.ok).toBe(true)
+    expect(result.manifest?.contributes.dialogs).toHaveLength(2)
+    expect(result.manifest?.contributes.dialogs[0]).not.toHaveProperty('defaultSize')
+    expect(result.manifest?.contributes.dialogs[1]?.defaultSize).toEqual({
+      width: 520,
+      height: 420,
+    })
+  })
+
+  it('声明 dialogs 但缺 ui.dialogs 权限时拒绝', () => {
+    const missing = parsePluginManifest(
+      baseManifest({
+        contributes: { dialogs: [{ id: 'd', title: 'D', schema: 'ui/d.json' }] },
+      }),
+    )
+    expect(missing.ok).toBe(false)
+    expect(missing.errors.join('\n')).toContain('缺少权限「ui.dialogs」')
+  })
+
+  it('schema 与 entry 必须且只能声明一个', () => {
+    const both = parsePluginManifest(
+      withDialogs([{ id: 'd', title: 'D', schema: 'ui/d.json', entry: 'ui/d.html' }]),
+    )
+    expect(both.ok).toBe(false)
+    expect(both.errors.join('\n')).toContain('必须且只能声明 schema 或 entry 之一')
+
+    const neither = parsePluginManifest(withDialogs([{ id: 'd', title: 'D' }]))
+    expect(neither.ok).toBe(false)
+  })
+
+  it('拒绝重复 id、超过 4 个与越界尺寸', () => {
+    const duplicated = parsePluginManifest(
+      withDialogs([
+        { id: 'd', title: 'A', schema: 'ui/a.json' },
+        { id: 'd', title: 'B', schema: 'ui/b.json' },
+      ]),
+    )
+    expect(duplicated.errors.join('\n')).toContain('对话框 id「d」重复')
+
+    const tooMany = parsePluginManifest(
+      withDialogs(
+        Array.from({ length: 5 }, (_, index) => ({
+          id: `d${index}`,
+          title: `D${index}`,
+          schema: 'ui/d.json',
+        })),
+      ),
+    )
+    expect(tooMany.ok).toBe(false)
+
+    for (const size of [
+      { width: 200, height: 300 },
+      { width: 500, height: 120 },
+      { width: 1200, height: 400 },
+    ]) {
+      const result = parsePluginManifest(
+        withDialogs([{ id: 'd', title: 'D', schema: 'ui/d.json', defaultSize: size }]),
+      )
+      expect(result.ok).toBe(false)
+    }
+  })
+})
+
 describe('清单类型导出', () => {
   it('PluginManifestSchema 可用于运行时校验', () => {
     expect(PluginManifestSchema.safeParse(baseManifest()).success).toBe(true)

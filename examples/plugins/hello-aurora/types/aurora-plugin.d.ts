@@ -55,6 +55,21 @@ export interface PluginUsageSummary {
   }>
 }
 
+export interface PluginDialogOpenInput {
+  dialogId: string
+  /** 初始参数（≤ 64 KB）；每次 invokeDialog 以 `init` 字段提供 */
+  params?: unknown
+}
+
+export interface PluginDialogOpenResult {
+  /** true = 确定 / 提交；false = 取消 / 关闭 / 超时 */
+  submitted: boolean
+  /** 声明式控件值（bind → value）；页面型为空对象 */
+  values: Record<string, unknown>
+  /** 插件 invokeDialog 返回的 data */
+  data?: unknown
+}
+
 export interface PluginUi {
   openPanel(panelId: string): Promise<void>
   toast(message: string, kind?: 'info' | 'error'): Promise<void>
@@ -64,6 +79,8 @@ export interface PluginUi {
     event: string
     payload?: unknown
   }): Promise<void>
+  /** 打开清单声明的临时输入窗口（需 `ui.dialogs` 权限；结算后窗口销毁） */
+  openDialog(input: PluginDialogOpenInput): Promise<PluginDialogOpenResult>
 }
 
 export interface PluginContext {
@@ -107,6 +124,15 @@ export interface PluginPanelResult {
 /** 小组件调用与面板同形。 */
 export type PluginWidgetResult = PluginPanelResult
 
+/** 临时对话框（声明式与页面型共用）：返回 close 即关闭并结算 openDialog。 */
+export interface PluginDialogResult extends PluginPanelResult {
+  close?: boolean
+  submitted?: boolean
+  /** close: false 时保留窗口并展示这条错误 */
+  message?: string
+  error?: string
+}
+
 export interface PluginModule {
   activate?(ctx: PluginContext): void | Promise<void>
   deactivate?(): void | Promise<void>
@@ -137,6 +163,12 @@ export interface PluginModule {
     params: unknown,
     ctx: PluginContext,
   ): PluginWidgetResult | Promise<PluginWidgetResult>
+  invokeDialog?(
+    dialogId: string,
+    method: string,
+    params: unknown,
+    ctx: PluginContext,
+  ): PluginDialogResult | Promise<PluginDialogResult>
   onEvent?(event: string, payload: unknown, ctx: PluginContext): void | Promise<void>
   onConfigChanged?(
     config: Readonly<Record<string, unknown>>,

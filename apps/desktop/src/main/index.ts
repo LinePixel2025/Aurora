@@ -275,6 +275,7 @@ import { UsageStatsStore } from './usage-stats.js'
 import { PluginMarketplaceClient } from './plugins/marketplace.js'
 import { createUtilityPluginProcessFactory } from './plugins/process.js'
 import { WidgetManager } from './plugins/widgets.js'
+import { PluginDialogManager } from './plugins/dialogs.js'
 import { registerPluginTools } from './plugins/contributions/tools.js'
 import { registerPluginPageProtocol, registerPluginPageScheme } from './page-protocol.js'
 import { BrowserAgentManager } from './browser-agent.js'
@@ -522,6 +523,8 @@ let usageStats: UsageStatsStore | undefined
 let pluginTools: { sync(): string[] } | undefined
 /** 桌面小组件窗口（docs/14 §5.3）；插件系统未装配时为空 */
 let widgetManager: WidgetManager | undefined
+/** 插件临时对话框窗口（docs/14 §5.8）；插件系统未装配时为空 */
+let dialogManager: PluginDialogManager | undefined
 /** 当前生效的出网 fetch（按代理设置重建） */
 let netFetch: typeof fetch | undefined
 /** ClassIsland 桥接 provider（配置里选 classisland 且已填端点时才有值） */
@@ -1260,6 +1263,15 @@ async function bootstrap(): Promise<void> {
     // 插件 `ctx.banner`（docs/07 §2.2.3）：与 Agent 工具走**同一个** BannerService，
     // 排队 / 去重 / 降级因此不会出现两套行为。返回 false = 没显示（不是异常）。
     banner: (input) => bannerService?.show(input, { source: 'plugin' }).ok ?? false,
+    // 临时对话框（docs/14 §5.8）：窗口由 `PluginDialogManager` 创建；插件进程退出时
+    // 这里把它留下的对话框按取消结算（绝不常驻）。
+    openDialog: (input) => {
+      if (dialogManager === undefined) {
+        return Promise.reject(new Error('临时窗口宿主未装配'))
+      }
+      return dialogManager.open(input.pluginId, input.dialogId, input.params)
+    },
+    closeDialogs: (pluginId) => dialogManager?.closePlugin(pluginId),
     // 插件 `ctx.usage.summary`（docs/14 §4.1）：只读汇总本机账本，不含任何内容 / 凭据。
     usageSummary: (query) => usageStats!.summary(query),
     resolveFetch: () => netFetch,
@@ -1295,6 +1307,20 @@ async function bootstrap(): Promise<void> {
     contributions: () => pluginManager?.widgetContributions() ?? [],
   })
   await widgetManager.init()
+  // 插件临时对话框（docs/14 §5.8）：按需创建、结算即销毁；`focusable: true` 让用户可以键入文字。
+  dialogManager = new PluginDialogManager({
+    logger: logger.child('plugin-dialog'),
+    isDev,
+    preloadPath: join(__dirname, '../preload/index.js'),
+    pluginPagePreloadPath: join(__dirname, '../preload/plugin-page.js'),
+    rendererUrl: process.env['ELECTRON_RENDERER_URL'] ?? '',
+    rendererDir,
+    // 只允许启用 + 声明 ui.dialogs 的对话框；停用 / 卸载后立即查不到
+    dialogOf: (pluginId, dialogId) =>
+      pluginManager?.dialogs().find((item) => item.pluginId === pluginId && item.id === dialogId),
+  })
+  // 窗口创建同样推迟到 `registerIpc()` 之后（见 `dialogManager.markReady()`）：
+  // 对话框渲染层挂载即调用 `plugins:dialogInfo`，提前建窗会拿到 "No handler registered"。
   // 窗口创建推迟到 `registerIpc()` 之后（见 `widgetManager.markReady()`）：
   // 渲染层挂载即调用 plugins:list / settings:get，提前建窗会拿到 "No handler registered"。
   // 插件页面协议（`aurora-plugin://`）：路径 realpath 前缀 + MIME 白名单 + CSP（docs/14 §2.4）
@@ -3310,6 +3336,7 @@ async function bootstrap(): Promise<void> {
     // 插件系统（docs/14）：plugins:* 的 IPC 切片；未装配时各通道如实回 E_INVALID_STATE
     plugins: pluginManager,
     widgets: widgetManager,
+    dialogs: dialogManager,
     pluginMarketplace,
     sessions,
     sessionTitles,
@@ -3568,6 +3595,7 @@ async function bootstrap(): Promise<void> {
   disposeIpc = registerIpc(deps)
   // IPC handler 已注册：现在才允许创建桌面小组件窗口（docs/14 §2.1，2026-10-24）。
   widgetManager?.markReady()
+  dialogManager?.markReady()
 
   // 8. 托盘
   tray = createTray(deps, resolveTrayIcon())
@@ -4196,6 +4224,46 @@ async function runCapture(dir: string): Promise<void> {
     widgetWindow: (pluginId, widgetId) => widgetManager?.windowOf(pluginId, widgetId),
     widgetLoaded: (pluginId, widgetId) =>
       widgetManager?.whenLoaded(pluginId, widgetId) ?? Promise.resolve(),
+    // 插件临时对话框：先经真实 openDialog 唤起（插件自己的 manifest 声明），再按插件取窗口。
+    // 带 `command` 时走真实插件命令（命令内部 await ctx.ui.openDialog），覆盖完整链路。
+    openDialog: async (pluginId, dialogId, command) => {
+      // 上一条对话框场景的「截图后提交」可能还在异步收尾：先给它 1.5s 自然关闭；
+      // 仍挂着才按取消结算（每个插件只允许一扇窗，不能把下一条挡住）。
+      const deadline = Date.now() + 1500
+      while (dialogManager?.activeRequestOf(pluginId) !== undefined && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      const existing = dialogManager?.activeRequestOf(pluginId)
+      if (existing !== undefined) {
+        dialogManager?.close(existing, { submitted: false, values: {} })
+      }
+      if (command !== undefined && pluginManager !== undefined) {
+        void pluginManager
+          .invokeCommand(pluginId, command, '')
+          .then((result) => {
+            logger?.info('截图：插件命令返回', { pluginId, command, result })
+          })
+          .catch((error: unknown) => {
+            logger?.warn('截图：插件命令唤起临时对话框失败', {
+              pluginId,
+              command,
+              error: String(error),
+            })
+          })
+        return
+      }
+      void dialogManager?.open(pluginId, dialogId, { from: 'capture' }).catch((error: unknown) => {
+        logger?.warn('截图：临时对话框唤起失败', { pluginId, dialogId, error: String(error) })
+      })
+    },
+    dialogWindow: (pluginId) => {
+      const requestId = dialogManager?.activeRequestOf(pluginId)
+      return requestId === undefined ? undefined : dialogManager?.windowOf(requestId)
+    },
+    dialogLoaded: async (pluginId) => {
+      const requestId = dialogManager?.activeRequestOf(pluginId)
+      if (requestId !== undefined) await dialogManager?.whenLoaded(requestId)
+    },
     logger: logger ?? undefined,
     // `delayMs` 不在这里传：它是「等两帧渲染后再补多久」的 settle 值，
     // 缺省由 capture.ts 定义（原先写死 700 是"固定等待"，已随 waitForPaint 一起改语义）。
@@ -7023,6 +7091,7 @@ async function shutdown(): Promise<void> {
   // 会话与任务清单必须在退出前收尾（docs/06 §4 / §18，同一套防抖 + flush 约定）
   skillsService?.stopWatching()
   // 插件子进程先停（拒绝在途 RPC、释放句柄），再继续落盘
+  dialogManager?.dispose()
   await widgetManager?.dispose().catch((error: unknown) => {
     logger?.warn('退出前关闭桌面小组件失败', { error: String(error) })
   })

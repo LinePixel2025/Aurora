@@ -12,11 +12,11 @@
 | [AGENTS.md](./AGENTS.md) | **给编码 Agent 的硬规则**（清单优先、权限、安全、验收） |
 | [PROMPT.md](./PROMPT.md) | 可直接粘贴的提示词：新建插件 / 加小组件 / 加事件推送 / 代码审查 |
 | [CHECKLIST.md](./CHECKLIST.md) | 提交前验收清单 |
-| [docs/01-contract.md](./docs/01-contract.md) | 插件契约全文（进程、RPC、权限、清单、面板、页面、市场、安全） |
+| [docs/01-contract.md](./docs/01-contract.md) | 插件契约全文（进程、RPC、权限、清单、面板、临时对话框、页面、市场、安全） |
 | [docs/02-guide.md](./docs/02-guide.md) | 插件开发指南全文（逐节怎么用 API） |
 | [template/](./template) | 最小可运行模板：工具 + 面板 + 桌面小组件 + 提示条小组件 + 契约类型 |
 | [examples/class-board/](./examples/class-board) | 完整示例：班级事务（Agent 工具 + 面板 + 桌面/提示条小组件 + 推送） |
-| [examples/hello-aurora/](./examples/hello-aurora) | 全功能示例：工具 / Skill / 命令 / 面板 / 页面 / 自动化 / 主题 / 小组件 |
+| [examples/hello-aurora/](./examples/hello-aurora) | 全功能示例：工具 / Skill / 命令 / 面板 / 页面 / 临时对话框 / 自动化 / 主题 / 小组件 |
 | [tools/create-plugin.mjs](./tools/create-plugin.mjs) | **脚手架**：从模板生成新插件并立刻校验 |
 | [tools/check-plugin.mjs](./tools/check-plugin.mjs) | **独立校验器**：与宿主清单 schema 同口径（零依赖，支持 `--json`） |
 | [tools/pack-plugin.mjs](./tools/pack-plugin.mjs) | **打包器**：生成可安装 / 可上传 Center 市场的 zip（零依赖） |
@@ -77,7 +77,7 @@ node tools/pack-plugin.mjs my-plugin
 - 工具 / 命令 / 自动化动作与事件 / 面板 / 小组件 / 主题 / 配置字段的上限、命名与必填项；
 - 主题令牌白名单与颜色 / 长度格式（与宿主同一份白名单）；
 - 宿主事件白名单、保留 id 段与保留命令名；
-- 所有引用路径的 containment 与文件存在（`main` / Skill / 面板 / 小组件 / 图片 / 市场图标）；
+- 所有引用路径的 containment 与文件存在（`main` / Skill / 面板 / 小组件 / 临时对话框 / 图片 / 市场图标）；
 - 声明式 schema 的节点白名单、数量 / 深度 / 文本上限、动作参数、表格 / 列表 / 选项形状。
 
 它不替代 Aurora 仓库里的权威校验；在 Aurora 源码环境中请再跑：
