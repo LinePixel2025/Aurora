@@ -19,7 +19,8 @@
 示例插件与文档同步更新（新增 `/hello-note` 与 `/hello-page-note`）。设计见
 [14 §5.8](./14-plugin-system.md)，完整更新点与验收结果见
 [release-notes/v0.6.4.md](./release-notes/v0.6.4.md)。
-Aurora Center 服务器不随本版升级（仍为 **0.5.2**，版本线独立，本版无 Center 代码改动）。
+Aurora Center 服务器随后单独更新到 **0.5.3**（版本线独立），同步了 `ui.dialogs` 清单校验；
+桌面安装包仍是本版唯一的客户端发布。
 
 **上一发布 v0.6.3：多会话并行 + 轮终改动卡片 + 浏览器 UA + 提醒统一拦截 + 小组件去毛玻璃**
 （配置 Schema **v41**，v40 → v41 自动迁移；插件 API 仍为 **v1**）——渲染层按会话保存运行态，
