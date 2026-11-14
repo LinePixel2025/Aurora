@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（请勿公开）
+    url: https://github.com/LinePixel2025/Aurora/security/advisories/new
+    about: 漏洞与凭据问题请走私密报告，见 SECURITY.md
+  - name: 使用文档
+    url: https://github.com/LinePixel2025/Aurora/blob/main/docs/README.md
+    about: 安装、窗口、模式、排障与隐私说明
+  - name: 参与贡献
+    url: https://github.com/LinePixel2025/Aurora/blob/main/CONTRIBUTING.md
+    about: 环境要求、代码约定、分支与提交规则

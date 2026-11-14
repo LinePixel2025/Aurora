@@ -2,6 +2,10 @@
 
 <!-- 一句话说明改了什么、为什么改；对应文档章节与 commit 列表 -->
 
+## 关联 Issue
+
+<!-- Closes #123 / 无 -->
+
 ## 高风险类别（至少勾一项）
 
 - [ ] 配置 Schema 迁移（`CONFIG_VERSION` / `config/schema.ts` / `migrations.ts`）
@@ -16,8 +20,12 @@
 - [ ] IPC：shared 与 preload 两侧通道均已同步，`pnpm typecheck` 双向断言通过
 - [ ] shared/browser：桌面与 Center Web 两端截图 / `verify:web` 都跑过（附结果）
 - [ ] 本地全量：`pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build` 全绿
-- [ ] 冒烟：`AURORA_SMOKE=1 pnpm dev` 断言全绿（当前基线 266/266；不适用的写明原因）
+- [ ] 冒烟：`AURORA_SMOKE=1 pnpm dev` 断言全绿（当前基线 283/283；不适用的写明原因）
 - [ ] 回滚：单个功能一个 commit，本 PR 整体 revert 不夹带无关改动
+
+## 截图 / 录屏
+
+<!-- UI 改动提供 AURORA_CAPTURE 产出的 PNG 路径或前后对比；纯后端改动写「N/A」 -->
 
 ## 验证记录
 

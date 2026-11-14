@@ -11,6 +11,10 @@
   <img src="https://img.shields.io/badge/Vue-3-42B883.svg" alt="Vue 3" />
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6.svg" alt="TypeScript strict" />
   <a href="https://github.com/LinePixel2025/Aurora/releases/latest"><img src="https://img.shields.io/github/v/release/LinePixel2025/Aurora?label=release" alt="Latest release" /></a>
+  <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome" /></a>
+  <a href="./CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant 2.1" /></a>
+  <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-policy-2F81F7.svg" alt="Security policy" /></a>
+  <a href="https://github.com/LinePixel2025/Aurora/security/code-scanning"><img src="https://img.shields.io/badge/CodeQL-weekly-6f42c1.svg" alt="CodeQL" /></a>
 </p>
 
 **Aurora** 是一款常驻 Windows 系统托盘的**系统级 AI Agent**。它把「AI 对话」做成系统的一部分：屏幕右缘一条 8px 的提示条负责随取随用，三栏工作台负责把活真正干完——读文件、跑命令、操作 Office、开浏览器、执行自动化，所有动作都有确认、快照与回滚。
@@ -377,10 +381,13 @@ Aurora 不做遥测。数据位置、出网场景与权限清单见 [docs/11-pri
 
 ## 参与贡献
 
-- **Issue**：Bug 请附版本、复现步骤与日志片段（日志在 `%APPDATA%/Aurora/logs/`，注意脱敏）；功能建议请说明使用场景。
-- **PR**：从 `main` 开短命分支，提交信息用 Conventional Commits（`feat:` / `fix:` / `docs:` …）；改动涉及配置 Schema、IPC 契约、两端共享渲染资产或发布流程时，先读 [AGENTS.md](./AGENTS.md) 与 [docs/09](./docs/09-packaging-release.md)。
+- **贡献指南**：[CONTRIBUTING.md](./CONTRIBUTING.md) 覆盖环境要求、本地开发、提交前检查、代码约定与分支 / 提交规则，动手前先读一遍。
+- **行为准则**：参与本项目即表示同意遵守 [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)（改编自 Contributor Covenant 2.1）。
+- **安全**：漏洞与凭据问题请走 [SECURITY.md](./SECURITY.md) 的私密报告入口，不要开公开 Issue。
+- **Issue**：Bug 请附版本、复现步骤与脱敏日志（`%APPDATA%/Aurora/logs/`）；功能建议请说明真实场景。模板见 [新建 Issue](https://github.com/LinePixel2025/Aurora/issues/new/choose)。
+- **PR**：从 `main` 开短命分支，提交信息用 Conventional Commits（`feat:` / `fix:` / `docs:` …）；变更涉及配置 Schema、IPC 契约、两端共享渲染资产或发布流程时，先读 [AGENTS.md](./AGENTS.md) 与 [docs/09](./docs/09-packaging-release.md)。
 - **文档先行**：改行为前先改 `docs/`；配置字段与 IPC 契约以文档为准。
-- **提交前**：至少跑 `pnpm typecheck && pnpm test && pnpm build`；前端改动再跑一次 `AURORA_CAPTURE` 截图核对。
+- **提交前**：跑 `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build`；前端改动再跑一次 `AURORA_CAPTURE` 截图核对。
 
 这个项目由单人长期开发，欢迎任何形式的反馈：Issue、PR、插件、文档修正，或者只是告诉我在什么场景下用得上。
 

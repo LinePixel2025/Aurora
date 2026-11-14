@@ -1,0 +1,36 @@
+name: 文档问题
+description: 报告文档错漏、过时口径或缺失的说明
+title: '[Docs] '
+labels: ['documentation']
+body:
+  - type: input
+    id: location
+    attributes:
+      label: 文档位置
+      description: 文件路径或章节（如 docs/08 §1、README「插件开发」）
+      placeholder: docs/10-user-guide.md §「文件自感知与记忆库」
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题
+      description: 哪里不对 / 过时 / 缺失？附上原文与现状对比更好
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议改法
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我已确认该文档确实与当前版本行为不一致（而不是旧版本说明）
+          required: true
