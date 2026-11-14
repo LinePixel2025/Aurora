@@ -200,7 +200,9 @@ export class ModelGateway {
 
       const isLlm = service.capability === 'llm'
       const isImage = service.capability === 'imagegen'
-      const isDashscopeTts = service.capability === 'tts' && service.type === 'dashscope'
+      const isDashscopeTts =
+        service.capability === 'tts' &&
+        (service.type === 'dashscope' || service.type === 'dashscope-audio')
       if (isLlm) {
         await this.proxyLlm(req, res, response, service, identity, body, abort.touch)
         return
@@ -384,7 +386,10 @@ function routeKind(
   if (capability === 'imagegen' && rest === '/images/generations') return 'image'
   if (
     capability === 'tts' &&
-    (rest === '/audio/speech' || rest === '/api/v1/services/aigc/multimodal-generation/generation')
+    (rest === '/audio/speech' ||
+      rest === '/api/v1/services/aigc/multimodal-generation/generation' ||
+      // Qwen-Audio-TTS 非实时端点（桌面 v43 / docs/06 §13.7）：响应同形，同样走签名票
+      rest === '/api/v1/services/audio/tts/SpeechSynthesizer')
   ) {
     return 'tts'
   }

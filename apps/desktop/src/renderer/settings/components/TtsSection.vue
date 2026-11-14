@@ -23,6 +23,9 @@ import {
   RESOURCE_NAME_PATTERN,
   RESOURCE_NAME_RULE,
   TTS_FORMATS,
+  TTS_INSTRUCTIONS_MAX_CHARS,
+  TTS_LANGUAGES,
+  TTS_LANGUAGE_LABELS,
   TTS_PRESETS,
   isCenterOfficialProviderId,
   type SettingsPatch,
@@ -53,11 +56,20 @@ interface ProviderDraft extends TtsProviderConfig {
 /** 页面三态：目录列表 / 添加（选预设）/ 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
 type PageMode = 'list' | 'add' | 'edit'
 
-/** 接口类型 → 下拉文案（docs/06 §13.1 / §13.6）；新建草稿默认仍是 `openai-compat` */
+/** 接口类型 → 下拉文案（docs/06 §13.1 / §13.6 / §13.7）；新建草稿默认仍是 `openai-compat` */
 const TYPE_LABELS: Record<TtsProviderType, string> = {
   'openai-compat': 'OpenAI 兼容（/audio/speech）',
   dashscope: 'DashScope 原生（百炼 / 千问AI平台）',
+  'dashscope-audio': 'Qwen-Audio-TTS（语气指令 / 复刻音色）',
 }
+
+/** 语气指令常用 chips（v43）：点击填入 textarea，可再编辑；效果取决于模型支持面 */
+const INSTRUCTION_PRESETS = [
+  { label: '温柔舒缓', text: '用温柔平缓的语气朗读，语速稍慢，像在轻声讲述。' },
+  { label: '活泼明快', text: '用活泼明快的语气朗读，语调上扬，充满活力。' },
+  { label: '沉稳正式', text: '用沉稳正式的语气朗读，吐字清晰，节奏平稳。' },
+  { label: '新闻播报', text: '用新闻播报的语气朗读，客观冷静，断句干脆。' },
+] as const
 
 /** 新建 provider 的页面默认值（`DEFAULT_TTS` 里没有 provider 级默认，所以在这里定义一次） */
 const DEFAULT_SPEED = 1
@@ -308,13 +320,16 @@ function addPreset(id: string): void {
   }
   localDrafts.value.push({
     id: key,
-    type: 'openai-compat',
+    // 接口类型跟预设走（v43 起预设自带 type，与 STT_PRESETS 同理）；空白配置回落 openai-compat
+    type: preset?.type ?? 'openai-compat',
     baseUrl: preset?.baseUrl ?? '',
     apiKeyEnc: '',
     model: preset?.model ?? '',
     voice: preset?.voice ?? '',
     speed: DEFAULT_SPEED,
     format: DEFAULT_FORMAT,
+    instructions: '',
+    language: preset?.language ?? 'auto',
     apiKey: '',
     apiKeySet: false,
   })
@@ -366,9 +381,12 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
           apiKeyEnc: '',
           model: draft.model.trim(),
           voice: draft.voice.trim(),
-          // 越界值夹回 Schema 的 0.25 ～ 4，免得一次手滑输入让整次保存被 Zod 打回
-          speed: clampSpeed(draft.speed),
+          // 越界值夹回协议范围，免得一次手滑输入让整次保存被 Zod 打回
+          speed: clampSpeed(draft.speed, draft.type),
           format: draft.format,
+          // 语气指令 / 合成语言（v43）：空指令 = 不发送，auto = 不发送
+          instructions: draft.instructions.trim().slice(0, TTS_INSTRUCTIONS_MAX_CHARS),
+          language: draft.language,
         },
       },
     },
@@ -397,23 +415,57 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
   return true
 }
 
-/** `speed` 夹到 0.25 ～ 4（Schema 的同名约束）；非有限数回落 1 */
-function clampSpeed(value: number): number {
+/**
+ * `speed` 夹到协议范围：openai-compat / dashscope 按 Schema 的 0.25 ～ 4，
+ * dashscope-audio 的 `input.rate` 协议限 0.5 ～ 2.0（docs/06 §13.7）；非有限数回落 1。
+ */
+function clampSpeed(value: number, type: TtsProviderType): number {
   const speed = Number(value)
   if (!Number.isFinite(speed)) return DEFAULT_SPEED
+  if (type === 'dashscope-audio') return Math.min(2, Math.max(0.5, speed))
   return Math.min(4, Math.max(0.25, speed))
 }
 
-/** 编辑卡按接口类型切换的 baseURL 提示（docs/06 §13.2 / §13.6） */
+/** 编辑卡按接口类型切换的 baseURL 提示（docs/06 §13.2 / §13.6 / §13.7） */
 function baseUrlHint(type: TtsProviderType): string {
-  return type === 'dashscope'
-    ? 'DashScope 原生根地址，例：https://maas.qianwenaiapi.com/api/v1；裸域名或 /api 结尾会自动补齐'
-    : 'OpenAI 兼容端点，例如 https://api.openai.com/v1'
+  return type === 'openai-compat'
+    ? 'OpenAI 兼容端点，例如 https://api.openai.com/v1'
+    : 'DashScope 系根地址，例：https://maas.qianwenaiapi.com/api/v1；裸域名或 /api 结尾会自动补齐'
 }
 
 /** 编辑卡按接口类型切换的 baseURL 占位符 */
 function baseUrlPlaceholder(type: TtsProviderType): string {
-  return type === 'dashscope' ? 'https://maas.qianwenaiapi.com/api/v1' : 'https://api.openai.com/v1'
+  return type === 'openai-compat'
+    ? 'https://api.openai.com/v1'
+    : 'https://maas.qianwenaiapi.com/api/v1'
+}
+
+/** 语速 hint 按类型切换（dashscope 无此参数；dashscope-audio 协议限 0.5–2） */
+function speedHint(type: TtsProviderType): string {
+  if (type === 'dashscope') return 'DashScope 原生协议没有语速参数，此项不会发送'
+  if (type === 'dashscope-audio') return '0.5 ～ 2.0（协议限制），默认 1；越小越慢'
+  return '0.25 ～ 4，默认 1；越小越慢'
+}
+
+/** 输出格式 hint 按类型切换 */
+function formatHint(type: TtsProviderType): string {
+  if (type === 'dashscope') return 'DashScope 仅下发 wav / mp3 / opus，其余按服务端默认'
+  if (type === 'dashscope-audio') return '仅 mp3 / wav / opus / pcm，其余按服务端默认'
+  return '请求体的 response_format；决定播放时的 MIME 类型'
+}
+
+/** 语言 hint 按类型切换（openai-compat 无语言参数） */
+function languageHint(type: TtsProviderType): string {
+  if (type === 'openai-compat') return '该协议无语言参数，此项不发送'
+  if (type === 'dashscope-audio') return '以 language_hints 下发，建议与文本语种一致'
+  return '指定语种显著提升质量，自动可能误判语种'
+}
+
+/** 点语气 chips：填进「语气指令」textarea（可再编辑） */
+function selectInstruction(draft: ProviderDraft, text: string): void {
+  draft.instructions = text
+  message.value = null
+  error.value = null
 }
 
 /** 「应用」：只提交这一张卡；成功后回到列表态 */
@@ -478,9 +530,11 @@ async function testProvider(draft: ProviderDraft): Promise<void> {
     apiKey: inlineApiKey,
     model: draft.model.trim(),
     voice: draft.voice.trim(),
-    speed: clampSpeed(draft.speed),
+    speed: clampSpeed(draft.speed, draft.type),
     format: draft.format,
     type: draft.type,
+    instructions: draft.instructions.trim(),
+    language: draft.language,
   })
   testing.value = null
   if (result.ok) results[draft.id] = result.value
@@ -501,7 +555,10 @@ async function previewDraft(draft: ProviderDraft): Promise<void> {
   message.value = null
   error.value = null
   if (!(await saveProvider(draft))) return
-  await tts.speak('你好，我是 Aurora。', 'preview', draft.id)
+  await tts.speak('你好，我是 Aurora。', 'preview', {
+    providerId: draft.id,
+    maxChars: settingsStore.settings?.tts.maxChars,
+  })
   if (tts.error.value !== null) error.value = tts.error.value
 }
 
@@ -818,7 +875,7 @@ function stopPreview(): void {
               <SettingField
                 :data-field="`tts.providers.${draft.id}.type`"
                 label="接口类型"
-                hint="决定按哪套协议发合成请求；DashScope 原生走百炼 / 千问AI平台端点"
+                hint="决定按哪套协议发合成请求；要用语气指令选 Qwen-Audio-TTS"
               >
                 <select v-model="draft.type" class="input">
                   <option v-for="(label, value) in TYPE_LABELS" :key="value" :value="value">
@@ -921,20 +978,56 @@ function stopPreview(): void {
               </div>
 
               <SettingField
+                :data-field="`tts.providers.${draft.id}.instructions`"
+                label="语气指令"
+                hint="自然语言描述语气情感，仅支持指令控制的模型生效"
+              >
+                <textarea
+                  v-model="draft.instructions"
+                  class="input"
+                  rows="2"
+                  spellcheck="false"
+                  :maxlength="TTS_INSTRUCTIONS_MAX_CHARS"
+                  placeholder="例：用温柔平缓的语气朗读，语速稍慢"
+                ></textarea>
+              </SettingField>
+
+              <!-- 语气 chips：常用风格一键填入，可再编辑（效果取决于模型支持面） -->
+              <div class="voices">
+                <button
+                  v-for="preset in INSTRUCTION_PRESETS"
+                  :key="preset.label"
+                  type="button"
+                  class="model-chip interactive"
+                  @click="selectInstruction(draft, preset.text)"
+                >
+                  {{ preset.label }}
+                </button>
+              </div>
+
+              <SettingField
+                :data-field="`tts.providers.${draft.id}.language`"
+                label="语言"
+                :hint="languageHint(draft.type)"
+              >
+                <select v-model="draft.language" class="input">
+                  <option v-for="code in TTS_LANGUAGES" :key="code" :value="code">
+                    {{ TTS_LANGUAGE_LABELS[code] }}
+                  </option>
+                </select>
+              </SettingField>
+
+              <SettingField
                 :data-field="`tts.providers.${draft.id}.speed`"
                 label="语速"
-                :hint="
-                  draft.type === 'dashscope'
-                    ? 'DashScope 原生协议没有语速参数，此项不会发送'
-                    : '0.25 ～ 4，默认 1；越小越慢'
-                "
+                :hint="speedHint(draft.type)"
               >
                 <input
                   v-model.number="draft.speed"
                   class="input"
                   type="number"
-                  min="0.25"
-                  max="4"
+                  :min="draft.type === 'dashscope-audio' ? 0.5 : 0.25"
+                  :max="draft.type === 'dashscope-audio' ? 2 : 4"
                   step="0.05"
                 />
               </SettingField>
@@ -942,11 +1035,7 @@ function stopPreview(): void {
               <SettingField
                 :data-field="`tts.providers.${draft.id}.format`"
                 label="输出格式"
-                :hint="
-                  draft.type === 'dashscope'
-                    ? 'DashScope 仅下发 wav / mp3 / opus，其余按服务端默认'
-                    : '请求体的 response_format；决定播放时的 MIME 类型'
-                "
+                :hint="formatHint(draft.type)"
               >
                 <select v-model="draft.format" class="input">
                   <option v-for="format in TTS_FORMATS" :key="format" :value="format">

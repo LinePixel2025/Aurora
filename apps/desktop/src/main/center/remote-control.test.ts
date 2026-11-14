@@ -29,6 +29,8 @@ describe('buildClientStatus · 语音能力位（docs/12 §6.4，v0.3.2）', () 
       voice: 'alloy',
       speed: 1,
       format: 'mp3',
+      instructions: '',
+      language: 'auto',
     }
     return settings
   }

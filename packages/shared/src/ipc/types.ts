@@ -367,6 +367,10 @@ export interface TtsTestRequest {
   format?: TtsFormat
   /** 页面草稿的接口类型；缺省回落已保存配置，再缺省按 openai-compat（docs/06 §13.6） */
   type?: TtsProviderType
+  /** 页面草稿的语气指令（v43）；缺省回落已保存配置，空串 = 不发送 */
+  instructions?: string
+  /** 页面草稿的合成语言短码（v43）；缺省回落已保存配置，auto = 不发送 */
+  language?: string
   /** 缺省用内置样例句「你好，我是 Aurora。」 */
   text?: string
 }

@@ -53,6 +53,8 @@ function ttsProvider(overrides: Partial<TtsProviderConfig> = {}): TtsProviderCon
     voice: 'alloy',
     speed: 1,
     format: 'mp3',
+    instructions: '',
+    language: 'auto',
     ...overrides,
   }
 }

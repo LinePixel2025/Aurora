@@ -35,23 +35,48 @@ export const PROVIDER_PRESETS = [DEEPSEEK_PRESET, OPENAI_PRESET, LOCAL_PRESET] a
 /**
  * TTS provider 预设（docs/08 §1、docs/06 §13）：设置页「添加 TTS 模型」的 chips。
  *
- * 与 `PROVIDER_PRESETS` 一样只提供 id / label / baseUrl / model / voice 五个字段，
- * 其余字段（语速 / 输出格式）由新建流程用 `DEFAULT_TTS` 之外的页面默认值补齐。
+ * 提供 id / label / type / baseUrl / model / voice / language 七个字段，
+ * 其余字段（语速 / 输出格式 / 语气指令）由新建流程用页面默认值补齐。
+ * `type` 必须写在预设里（与 `STT_PRESETS` 同理，不能由页面写死）：
+ * 后两条走 DashScope 系协议，baseUrl 是**服务根**（主进程拼完整原生路径）。
+ * 后两条的 `language: 'zh'` 是刻意的：中文场景指定语种显著优于 Auto（docs/06 §13.1）。
  */
 export const TTS_PRESETS = [
   {
     id: 'openai',
     label: 'OpenAI TTS',
+    type: 'openai-compat',
     baseUrl: 'https://api.openai.com/v1',
     model: 'tts-1',
     voice: 'alloy',
+    language: 'auto',
   },
   {
     id: 'siliconflow',
     label: 'SiliconFlow 语音',
+    type: 'openai-compat',
     baseUrl: 'https://api.siliconflow.cn/v1',
     model: 'FunAudioLLM/CosyVoice2-0.5B',
     voice: 'alex',
+    language: 'auto',
+  },
+  {
+    id: 'qwen3-tts',
+    label: 'Qwen3-TTS（百炼 / 千问AI平台）',
+    type: 'dashscope',
+    baseUrl: 'https://maas.qianwenaiapi.com/api/v1',
+    model: 'qwen3-tts-flash',
+    voice: 'Cherry',
+    language: 'zh',
+  },
+  {
+    id: 'qwen-audio-tts',
+    label: 'Qwen-Audio-TTS（语气指令 / 复刻音色）',
+    type: 'dashscope-audio',
+    baseUrl: 'https://maas.qianwenaiapi.com/api/v1',
+    model: 'qwen-audio-3.1-tts-flash',
+    voice: 'longanhuan_v3.1',
+    language: 'zh',
   },
 ] as const
 

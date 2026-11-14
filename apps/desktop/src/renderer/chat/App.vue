@@ -1452,7 +1452,7 @@ watch(
     const text = message.content.trim()
     if (text === '') return
     lastReadId = message.id
-    void tts.speak(text, message.id)
+    void tts.speak(text, message.id, { maxChars: settingsStore.settings?.tts.maxChars })
   },
 )
 
@@ -1490,7 +1490,7 @@ watch(
 
 /** 朗读按钮：合成并播放；同一条再点一次由 MessageList 转成 `stopSpeak`。 */
 function speakMessage(text: string, id: string): void {
-  void tts.speak(text, id)
+  void tts.speak(text, id, { maxChars: settingsStore.settings?.tts.maxChars })
 }
 
 // ───────────────────── 语音输入（STT，BetaV2；门控口径同 TTS） ─────────────────────

@@ -451,7 +451,7 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 | 命令（web → server → client） | 语义与边界 |
 |---|---|
 | `stt.transcribe` | 网页端录一段音频（webm/opus 或 mp4，`mime` 标明容器）以 base64 随命令上行，客户端调本机 STT service（`main/stt.ts`，协议与桌面端语音输入完全一致）转写，`result.data` 携带 `{ text }` |
-| `tts.synthesize` | 网页端把一段文本送客户端 TTS service（`main/tts.ts`）合成，`result.data` 携带 `{ audioBase64, mimeType }`，网页端 blob 播放 |
+| `tts.synthesize` | 网页端把一段文本送客户端 TTS service（`main/tts.ts`）合成，`result.data` 携带 `{ audioBase64, mimeType }`，网页端 blob 播放。自桌面 v43 起网页端**按块朗读**：清洗 + 截断 + 分块（06 §13.8）后每块发一条本命令、边播边预取，命令形状不变（hub / connector 零改动） |
 
 - 门控：两条命令都受客户端 `center.allowRemoteSession` 闸门约束（同其他中转命令）；
   客户端本机未配置 STT / TTS 时回 `E_VOICE_NOT_CONFIGURED`，网页端按能力位

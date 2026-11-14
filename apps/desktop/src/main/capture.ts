@@ -13942,7 +13942,9 @@ export const SETTINGS_TTS_ADD_ACT = `(async () => {
 })()`
 
 /**
- * "语音"页编辑卡探针 · 后半（step-05）：六字段的 `data-field` 必须全在。
+ * "语音"页编辑卡探针 · 后半（step-05）：八字段的 `data-field` 必须全在。
+ * v43 起新增 instructions / language 两个**常显**字段（与 speed 同款「常显 + 按类型 hint」策略，
+ * 空白配置是 openai-compat 也渲染，只是 hint 说明不发送）。
  *
  * 用**后缀**选择器（`[data-field$=".baseUrl"]`）而不是写死 provider id：
  * 点"+ 空白配置"之后 id 由页面决定（LlmPage 同款流程用的是 `custom`），
@@ -13953,7 +13955,7 @@ export const SETTINGS_TTS_ADD_ACT = `(async () => {
  */
 export const SETTINGS_TTS_CARD_CHECK = `(async () => {
   try {
-    const fields = ['baseUrl', 'apiKey', 'model', 'voice', 'speed', 'format']
+    const fields = ['baseUrl', 'apiKey', 'model', 'voice', 'instructions', 'language', 'speed', 'format']
     const found = {}
     for (const name of fields) {
       const hit = Array.from(document.querySelectorAll('[data-field$=".' + name + '"]')).filter(

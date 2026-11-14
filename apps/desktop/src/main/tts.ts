@@ -2,13 +2,19 @@
  * 语音合成（TTS 朗读，docs/06 §13）。
  *
  * 主进程用**解密后**的凭据调 TTS 服务合成音频，把音频以 base64 回传渲染层；
- * 渲染层永远看不到明文密钥。按 `provider.type` 分流两套请求协议：
+ * 渲染层永远看不到明文密钥。按 `provider.type` 分流三套请求协议：
  * - `openai-compat`：`POST <baseUrl>/audio/speech`（docs/06 §13.2），响应体即音频字节；
  * - `dashscope`：DashScope 原生非实时合成（docs/06 §13.6），先 POST 拿 `output.audio.url`，
- *   再 GET 下载音频字节。
+ *   再 GET 下载音频字节；
+ * - `dashscope-audio`：Qwen-Audio-TTS 非实时 HTTP（docs/06 §13.7），端点不同、
+ *   响应形状与 dashscope 相同，共用同一条「取 URL → 二次下载」尾段。
+ *
+ * v43 起：入口先 `cleanTtsText` 清洗（§13.4，幂等，渲染层分块前已洗过一次）；
+ * `synthesize` 成功结果进内存 LRU 缓存（§13.8），重读同一条即时出声。
  *
  * 本文件**不得 import electron**：它必须能被 vitest 直接加载（见 vitest.config.ts 的 include）。
  */
+import { cleanTtsText, TTS_LANGUAGES } from '@aurora/shared'
 import type {
   Logger,
   TtsFormat,
@@ -47,6 +53,10 @@ export interface TtsTestRequest {
   format?: TtsFormat
   /** 页面草稿的接口类型；缺省回落已保存配置，再缺省按 openai-compat（docs/06 §13.6） */
   type?: TtsProviderType
+  /** 页面草稿的语气指令（v43）；缺省回落已保存配置，空串 = 不发送 */
+  instructions?: string
+  /** 页面草稿的合成语言短码（v43）；缺省回落已保存配置，auto = 不发送 */
+  language?: string
   text?: string
 }
 
@@ -95,6 +105,10 @@ interface ResolvedProvider {
     voice: string
     speed: number
     format: TtsFormat
+    /** 语气指令（v43）：空串 = 不发送 */
+    instructions: string
+    /** 合成语言短码（v43）：auto = 不发送 */
+    language: string
   }
   apiKey: string
 }
@@ -104,11 +118,57 @@ type SynthesisOutcome =
   | { ok: true; buffer: Buffer; mimeType: string; httpStatus: number }
   | { ok: false; message: string; httpStatus?: number }
 
-/** 404 时按接口类型给的自查提示（两类型的 404 根因不同，docs/06 §13.2 / §13.6）。 */
+/** 404 时按接口类型给的自查提示（各类型的 404 根因不同，docs/06 §13.2 / §13.6 / §13.7）。 */
 const NOT_FOUND_HINTS: Record<TtsProviderType, string> = {
   'openai-compat': '请检查 baseURL 是否以 /v1 结尾、模型名是否正确；部分网关不支持 OpenAI 兼容端点',
   dashscope:
     '请检查 baseURL 主机名与网络可达性；模型已下架（响应含 Model not exist）时换用 qwen3-tts-flash',
+  'dashscope-audio':
+    '请检查 baseURL 主机名与网络可达性；模型已下架（响应含 Model not exist）时换用 qwen-audio-3.1-tts-flash',
+}
+
+/**
+ * 合成语言短码 → DashScope `language_type` 全称（docs/06 §13.1，v43）。
+ * `auto` 不在表内 = 整个字段不发送（服务端 Auto，v43 之前的行为）。
+ * `dashscope-audio` 不走这张表：它直接下发 `language_hints: [短码]`。
+ */
+const DASHSCOPE_LANGUAGE_TYPE: Record<string, string> = {
+  zh: 'Chinese',
+  en: 'English',
+  ja: 'Japanese',
+  ko: 'Korean',
+  fr: 'French',
+  de: 'German',
+  es: 'Spanish',
+  it: 'Italian',
+  pt: 'Portuguese',
+  ru: 'Russian',
+}
+
+/**
+ * 模型级失效自动回退的备用模型（docs/06 §13.6 / §13.7）：按协议类型各取一个
+ * 当前可用的模型。openai-compat 不在表内 = 不回退（各网关模型空间不同，静默换模型没有依据）。
+ *
+ * dashscope 取 `qwen3-tts-flash`（2026-11 实测）：网关与官方 DashScope 都只对
+ * `qwen3-tts-flash` 开放 multimodal-generation HTTP 端点——旧 `qwen-tts` /
+ * `qwen-tts-latest` / `qwen3-tts-plus` 已下架（`Model not exist`）。
+ * dashscope-audio 取 `qwen-audio-3.1-tts-flash`：Qwen-Audio-TTS 系列的低延迟档，
+ * 走 SpeechSynthesizer HTTP 端点（该系列自 2026 起提供非实时 HTTP，不再是 WebSocket 专用）。
+ */
+const FALLBACK_BY_TYPE: Partial<Record<TtsProviderType, string>> = {
+  dashscope: 'qwen3-tts-flash',
+  'dashscope-audio': 'qwen-audio-3.1-tts-flash',
+}
+
+/** 合成缓存上限（docs/06 §13.8）：条数与总字节双闸，超限按最近访问逐出。 */
+const CACHE_MAX_ENTRIES = 16
+const CACHE_MAX_BYTES = 32 * 1024 * 1024
+
+/** 缓存条目：合成结果 + 逐出用的体量与最近访问时间。 */
+interface CacheEntry {
+  result: TtsSynthesizeResult
+  bytes: number
+  lastAccess: number
 }
 
 export class TtsSynthesizer {
@@ -116,6 +176,12 @@ export class TtsSynthesizer {
   private readonly logger: Logger
   private readonly timeoutMs: number
   private readonly resolveFetch: (() => typeof fetch | undefined) | undefined
+  /**
+   * 合成结果 LRU 缓存（docs/06 §13.8，v43）：key 含全部解析后参数 + 清洗后文本，
+   * 改任何合成参数自然 miss，无需监听配置变化。只缓存成功、不落盘。
+   */
+  private readonly cache = new Map<string, CacheEntry>()
+  private cacheBytes = 0
 
   constructor(options: TtsSynthesizerOptions) {
     this.settings = options.settings
@@ -127,12 +193,15 @@ export class TtsSynthesizer {
   /**
    * 合成语音。失败一律**抛出**（IPC 层折成 `Result.error`），
    * 因为渲染层需要区分「没配置」与「合成失败」。
+   *
+   * v43：入口先清洗（幂等，渲染层分块前已洗过一次；Center 中转的全量文本在这里洗），
+   * 成功结果进 LRU 缓存 —— 重读同一条消息即时出声。
    */
   async synthesize(request: TtsSynthesizeRequest): Promise<TtsSynthesizeResult> {
     const resolved = this.resolve(request)
     const { provider } = resolved
 
-    const text = request.text.trim()
+    const text = cleanTtsText(request.text)
     if (text === '') throw new Error('没有可朗读的文本')
 
     const maxChars = this.settings.get().tts.maxChars
@@ -140,6 +209,20 @@ export class TtsSynthesizer {
     const input = truncated ? text.slice(0, maxChars) : text
 
     const startedAt = Date.now()
+    const cacheKey = synthesisCacheKey(resolved, input)
+    const cached = this.cache.get(cacheKey)
+    if (cached !== undefined) {
+      cached.lastAccess = Date.now()
+      this.logger.info('TTS 合成成功', {
+        provider: provider.id,
+        bytes: cached.bytes,
+        chars: input.length,
+        latencyMs: Date.now() - startedAt,
+        cacheHit: true,
+      })
+      return { ...cached.result, latencyMs: Date.now() - startedAt }
+    }
+
     const outcome = await this.runSynthesis(resolved, input, this.timeoutMs, '合成')
     if (!outcome.ok) throw new Error(outcome.message)
 
@@ -149,9 +232,10 @@ export class TtsSynthesizer {
       bytes: outcome.buffer.byteLength,
       chars: input.length,
       latencyMs,
+      cacheHit: false,
     })
 
-    return {
+    const result: TtsSynthesizeResult = {
       audioBase64: outcome.buffer.toString('base64'),
       mimeType: outcome.mimeType,
       bytes: outcome.buffer.byteLength,
@@ -159,6 +243,8 @@ export class TtsSynthesizer {
       chars: input.length,
       truncated,
     }
+    this.cacheStore(cacheKey, result)
+    return result
   }
 
   /**
@@ -169,7 +255,7 @@ export class TtsSynthesizer {
     const startedAt = Date.now()
     try {
       const resolved = this.resolve(request)
-      const text = (request.text ?? DEFAULT_TEST_TEXT).trim()
+      const text = cleanTtsText(request.text ?? DEFAULT_TEST_TEXT)
       if (text === '') return { ok: false, latencyMs: 0, message: '没有可朗读的文本' }
 
       const maxChars = this.settings.get().tts.maxChars
@@ -213,16 +299,16 @@ export class TtsSynthesizer {
     try {
       const resolved = this.resolveListInputs(request)
       const endpoint = modelsEndpoint(resolved.baseUrl, resolved.type)
-      const pages = resolved.type === 'dashscope' ? DASHSCOPE_MODEL_MAX_PAGES : 1
+      const pages = resolved.type === 'openai-compat' ? 1 : DASHSCOPE_MODEL_MAX_PAGES
       const seen = new Set<string>()
       const collected: string[] = []
       let expectedTotal = Number.POSITIVE_INFINITY
 
       for (let page = 1; page <= pages; page += 1) {
         const url =
-          resolved.type === 'dashscope'
-            ? `${endpoint}?page_no=${page}&page_size=${DASHSCOPE_MODEL_PAGE_SIZE}`
-            : endpoint
+          resolved.type === 'openai-compat'
+            ? endpoint
+            : `${endpoint}?page_no=${page}&page_size=${DASHSCOPE_MODEL_PAGE_SIZE}`
         const response = await this.getUrl(
           url,
           { Authorization: `Bearer ${resolved.apiKey}` },
@@ -321,6 +407,13 @@ export class TtsSynthesizer {
     const format = request.format ?? saved?.format ?? 'mp3'
     // 接口类型：草稿优先 → 已保存配置 → openai-compat（历史配置天然回落，无需迁移）
     const type: TtsProviderType = request.type ?? saved?.type ?? 'openai-compat'
+    // 语气指令 / 合成语言（v43）：同款「草稿优先 → 已保存 → 默认」；
+    // 未知语言短码按 auto 处理（不发送），不让手改配置的笔误变成请求参数
+    const instructions = (request.instructions ?? saved?.instructions ?? '').trim()
+    const rawLanguage = (request.language ?? saved?.language ?? 'auto').trim()
+    const language = (TTS_LANGUAGES as readonly string[]).includes(rawLanguage)
+      ? rawLanguage
+      : 'auto'
 
     const apiKey =
       request.apiKey !== undefined && request.apiKey !== ''
@@ -332,7 +425,17 @@ export class TtsSynthesizer {
     if (apiKey === '') throw new Error('缺少 API Key：请填写密钥')
 
     return {
-      provider: { id: providerId, type, baseUrl, model, voice, speed, format },
+      provider: {
+        id: providerId,
+        type,
+        baseUrl,
+        model,
+        voice,
+        speed,
+        format,
+        instructions,
+        language,
+      },
       apiKey,
     }
   }
@@ -374,10 +477,10 @@ export class TtsSynthesizer {
   }
 
   /**
-   * 合成主干（`synthesize` / `test` 共用，docs/06 §13.2 / §13.6）：按 `provider.type`
-   * 分流请求协议。HTTP 失败与 dashscope 的解析 / 下载失败一律折成 `{ ok: false, message }`
-   * （不抛 —— 抛不抛由调用方决定）；超时 / 网络异常仍由 `post` / `getUrl` 抛出。
-   * `scene` 只用于日志文案（「合成」/「连接测试」，沿用既有两条日志的字面）。
+   * 合成主干（`synthesize` / `test` 共用，docs/06 §13.2 / §13.6 / §13.7）：按
+   * `provider.type` 分流请求协议。HTTP 失败与 DashScope 系的解析 / 下载失败一律折成
+   * `{ ok: false, message }`（不抛 —— 抛不抛由调用方决定）；超时 / 网络异常仍由
+   * `post` / `getUrl` 抛出。`scene` 只用于日志文案（「合成」/「连接测试」）。
    */
   private async runSynthesis(
     resolved: ResolvedProvider,
@@ -386,8 +489,8 @@ export class TtsSynthesizer {
     scene: '合成' | '连接测试',
   ): Promise<SynthesisOutcome> {
     const { provider } = resolved
-    if (provider.type === 'dashscope') {
-      return this.runDashscopeSynthesis(resolved, input, timeoutMs, scene)
+    if (provider.type === 'dashscope' || provider.type === 'dashscope-audio') {
+      return this.runDashscopeFamilySynthesis(resolved, input, timeoutMs, scene)
     }
 
     // openai-compat：成功响应体就是音频二进制（docs/06 §13.2）
@@ -417,25 +520,34 @@ export class TtsSynthesizer {
   }
 
   /**
-   * dashscope 合成主干（docs/06 §13.6）：先按配置模型发一次 POST；
-   * 遇**模型级失效**（404 `Model not exist` = 模型已下架 / 400 `url error` = 模型不在
-   * HTTP 端点族）时自动改用备用模型重试一次——只换模型，音色等其它配置不动；
-   * 重试成功把设置里的模型字段一并写回（设置页可见），重试也失败则把两段原因都报出来。
-   * 2xx 的解析与二次下载对所有尝试一致。
+   * DashScope 系合成主干（`dashscope` 与 `dashscope-audio` 共用，docs/06 §13.6 / §13.7）：
+   * 两类型只有**端点与请求体**不同，「模型级失效回退」与「2xx 取 URL + 二次下载」完全同构。
+   * 先按配置模型发一次 POST；遇**模型级失效**（404 `Model not exist` = 模型已下架 /
+   * 400 `url error` = 模型不在 HTTP 端点族）时自动改用该类型的备用模型重试一次——
+   * 只换模型，音色等其它配置不动；重试成功把设置里的模型字段一并写回（设置页可见），
+   * 重试也失败则把两段原因都报出来。
    */
-  private async runDashscopeSynthesis(
+  private async runDashscopeFamilySynthesis(
     resolved: ResolvedProvider,
     input: string,
     timeoutMs: number,
     scene: '合成' | '连接测试',
   ): Promise<SynthesisOutcome> {
     const { provider } = resolved
-    const endpoint = dashscopeEndpoint(provider.baseUrl)
+    const isAudio = provider.type === 'dashscope-audio'
+    const endpoint = isAudio
+      ? dashscopeAudioEndpoint(provider.baseUrl)
+      : dashscopeEndpoint(provider.baseUrl)
+    const bodyFor = (model: string): string =>
+      isAudio
+        ? dashscopeAudioSpeechBody({ ...provider, model }, input)
+        : dashscopeSpeechBody({ ...provider, model }, input)
+    const fallbackModel = FALLBACK_BY_TYPE[provider.type]
     const postOnce = (model: string): Promise<Response> =>
       this.post(
         { ...resolved, provider: { ...provider, model } },
         endpoint,
-        dashscopeSpeechBody({ ...provider, model }, input),
+        bodyFor(model),
         timeoutMs,
       )
 
@@ -444,17 +556,18 @@ export class TtsSynthesizer {
       const detail = await this.readErrorDetail(response)
       if (
         isDashscopeModelLevelFailure(response.status, detail) &&
-        provider.model !== DASHSCOPE_TTS_FALLBACK_MODEL
+        fallbackModel !== undefined &&
+        provider.model !== fallbackModel
       ) {
         this.logger.warn(`TTS ${scene}：配置的模型不可用，改用备用模型重试`, {
           provider: provider.id,
           model: provider.model,
-          fallback: DASHSCOPE_TTS_FALLBACK_MODEL,
+          fallback: fallbackModel,
           status: response.status,
         })
-        const retry = await postOnce(DASHSCOPE_TTS_FALLBACK_MODEL)
+        const retry = await postOnce(fallbackModel)
         if (retry.ok) {
-          this.persistFallbackModel(provider.id, provider.model)
+          this.persistFallbackModel(provider.id, provider.model, fallbackModel)
           response = retry
         } else {
           const retryDetail = await this.readErrorDetail(retry)
@@ -467,8 +580,8 @@ export class TtsSynthesizer {
             ok: false,
             message:
               `配置的模型「${provider.model}」不可用（HTTP ${response.status}：${detail.trim()}），` +
-              `备用模型 ${DASHSCOPE_TTS_FALLBACK_MODEL} 也失败：` +
-              describeHttpFailure(retry.status, retryDetail, endpoint, 'dashscope'),
+              `备用模型 ${fallbackModel} 也失败：` +
+              describeHttpFailure(retry.status, retryDetail, endpoint, provider.type),
             httpStatus: retry.status,
           }
         }
@@ -476,13 +589,26 @@ export class TtsSynthesizer {
         this.logger.warn(`TTS ${scene}失败`, { provider: provider.id, status: response.status })
         return {
           ok: false,
-          message: describeHttpFailure(response.status, detail, endpoint, 'dashscope'),
+          message: describeHttpFailure(response.status, detail, endpoint, provider.type),
           httpStatus: response.status,
         }
       }
     }
 
-    // 2xx 响应体是 JSON，音频在 output.audio.url（24h 有效的签名地址），需要二次 GET 下载
+    return this.downloadDashscopeAudio(response, resolved, timeoutMs, scene)
+  }
+
+  /**
+   * DashScope 系共用的响应尾段（docs/06 §13.6 / §13.7）：2xx 响应体是 JSON，
+   * 音频在 `output.audio.url`（24h 有效的签名地址），需要二次 GET 下载。
+   */
+  private async downloadDashscopeAudio(
+    response: Response,
+    resolved: ResolvedProvider,
+    timeoutMs: number,
+    scene: '合成' | '连接测试',
+  ): Promise<SynthesisOutcome> {
+    const { provider } = resolved
     const raw = await response.text()
     let body: unknown
     try {
@@ -523,12 +649,11 @@ export class TtsSynthesizer {
   }
 
   /**
-   * 备用模型重试成功后把该 provider 的 `model` 字段写回设置（docs/06 §13.6）：
+   * 备用模型重试成功后把该 provider 的 `model` 字段写回设置（docs/06 §13.6 / §13.7）：
    * 设置页能看到实际生效的模型，下次合成不再多付一次失效请求。
    * 写回目标不存在（草稿 providerId）时 mutate 自然 no-op；失败只记日志不阻断本次合成。
    */
-  private persistFallbackModel(providerId: string, from: string): void {
-    const to = DASHSCOPE_TTS_FALLBACK_MODEL
+  private persistFallbackModel(providerId: string, from: string, to: string): void {
     try {
       this.settings.mutate((draft) => {
         const provider = draft.tts.providers[providerId]
@@ -540,6 +665,35 @@ export class TtsSynthesizer {
         provider: providerId,
         error: String(error),
       })
+    }
+  }
+
+  // ───────────────────────── 合成缓存（docs/06 §13.8） ─────────────────────────
+
+  /** 存一条成功结果；超条数 / 超字节按最近访问逐出（Map 迭代序 = 插入序，逐出最旧访问）。 */
+  private cacheStore(key: string, result: TtsSynthesizeResult): void {
+    // 单条超过总预算的不进缓存（避免一条就把缓存清空）
+    if (result.bytes > CACHE_MAX_BYTES) return
+    const existing = this.cache.get(key)
+    if (existing !== undefined) {
+      this.cacheBytes -= existing.bytes
+      this.cache.delete(key)
+    }
+    this.cache.set(key, { result, bytes: result.bytes, lastAccess: Date.now() })
+    this.cacheBytes += result.bytes
+    while (this.cache.size > CACHE_MAX_ENTRIES || this.cacheBytes > CACHE_MAX_BYTES) {
+      let oldestKey: string | null = null
+      let oldestAccess = Number.POSITIVE_INFINITY
+      for (const [candidateKey, entry] of this.cache) {
+        if (entry.lastAccess < oldestAccess) {
+          oldestAccess = entry.lastAccess
+          oldestKey = candidateKey
+        }
+      }
+      if (oldestKey === null) break
+      const evicted = this.cache.get(oldestKey)
+      this.cache.delete(oldestKey)
+      if (evicted !== undefined) this.cacheBytes -= evicted.bytes
     }
   }
 
@@ -702,8 +856,12 @@ const DASHSCOPE_GENERATION_TAIL = '/services/aigc/multimodal-generation/generati
  * URL 非法按原样拼接，错误交给服务端报（不在这里抛）。
  */
 function dashscopeEndpoint(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, '')
+  let trimmed = baseUrl.replace(/\/+$/, '')
   if (trimmed.endsWith(DASHSCOPE_GENERATION_TAIL)) return trimmed
+  // 尾上粘着 Qwen-Audio-TTS 端点（只改类型不改地址）：先剥掉再按常规规整
+  if (trimmed.endsWith(DASHSCOPE_AUDIO_TTS_TAIL)) {
+    trimmed = trimmed.slice(0, trimmed.length - DASHSCOPE_AUDIO_TTS_TAIL.length).replace(/\/+$/, '')
+  }
   for (const suffix of ['/compatible-mode/v1', '/compatible-mode', '/api/v1', '/api']) {
     if (trimmed.endsWith(suffix)) {
       return `${trimmed.slice(0, trimmed.length - suffix.length)}${DASHSCOPE_GENERATION_PATH}`
@@ -713,12 +871,34 @@ function dashscopeEndpoint(baseUrl: string): string {
 }
 
 /**
- * DashScope 原生 TTS 的**当前可用**模型（docs/06 §13.6，2026-11 实测）：
- * 网关与官方 DashScope 都只对 `qwen3-tts-flash` 开放本 HTTP 端点——旧 `qwen-tts` /
- * `qwen-tts-latest` / `qwen3-tts-plus` 已下架（`Model not exist`），
- * `qwen-audio-3.x-tts-*` / CosyVoice / Sambert 是 WebSocket 实时专用（HTTP 400 `url error`）。
+ * Qwen-Audio-TTS 非实时合成端点的完整路径（docs/06 §13.7，含 `/api/v1` 前缀）。
+ * 与 multimodal-generation 是**两个不同的端点族**：qwen-audio-3.x-tts 系列只认这个。
  */
-const DASHSCOPE_TTS_FALLBACK_MODEL = 'qwen3-tts-flash'
+const DASHSCOPE_AUDIO_TTS_PATH = '/api/v1/services/audio/tts/SpeechSynthesizer'
+/** 合成端点不含 `/api/v1` 的尾巴（识别「已经拼好端点」的 baseUrl 用）。 */
+const DASHSCOPE_AUDIO_TTS_TAIL = '/services/audio/tts/SpeechSynthesizer'
+
+/**
+ * `<baseUrl>` → Qwen-Audio-TTS 合成端点（docs/06 §13.7）。容错与 `dashscopeEndpoint()`
+ * 同一套：已以新端点结尾原样用；粘着 multimodal-generation 尾巴（只改类型不改地址）
+ * 先剥掉再规整；`/compatible-mode/v1` / `/compatible-mode` / `/api/v1` / `/api` 尾巴
+ * 整段换成完整路径；其余直接拼（Center 网关 base 得到 `…/tts/api/v1/services/audio/tts/SpeechSynthesizer`）。
+ */
+function dashscopeAudioEndpoint(baseUrl: string): string {
+  let trimmed = baseUrl.replace(/\/+$/, '')
+  if (trimmed.endsWith(DASHSCOPE_AUDIO_TTS_TAIL)) return trimmed
+  if (trimmed.endsWith(DASHSCOPE_GENERATION_TAIL)) {
+    trimmed = trimmed
+      .slice(0, trimmed.length - DASHSCOPE_GENERATION_TAIL.length)
+      .replace(/\/+$/, '')
+  }
+  for (const suffix of ['/compatible-mode/v1', '/compatible-mode', '/api/v1', '/api']) {
+    if (trimmed.endsWith(suffix)) {
+      return `${trimmed.slice(0, trimmed.length - suffix.length)}${DASHSCOPE_AUDIO_TTS_PATH}`
+    }
+  }
+  return `${trimmed}${DASHSCOPE_AUDIO_TTS_PATH}`
+}
 
 /**
  * DashScope 原生根地址规整（`modelsEndpoint` 用；合成端点已改走 `dashscopeEndpoint`
@@ -744,44 +924,118 @@ function normalizeDashscopeBaseUrl(baseUrl: string): string {
   return trimmed
 }
 
-/** `<baseUrl>` 规整后拼 `/models`；dashscope 用原生根规整（docs/06 §13.6）。已以它结尾时不重复拼（也不补 /v1）。 */
+/** `<baseUrl>` 规整后拼 `/models`；DashScope 系用原生根规整（docs/06 §13.6 / §13.7）。已以它结尾时不重复拼（也不补 /v1）。 */
 function modelsEndpoint(baseUrl: string, type: TtsProviderType): string {
   const trimmed = baseUrl.replace(/\/+$/, '')
   if (trimmed.endsWith('/models')) return trimmed
   const normalized =
-    type === 'dashscope' ? normalizeDashscopeBaseUrl(trimmed) : normalizeBaseUrl(trimmed)
+    type === 'openai-compat' ? normalizeBaseUrl(trimmed) : normalizeDashscopeBaseUrl(trimmed)
   return `${normalized}/models`
 }
 
-/** openai-compat 合成请求体（docs/06 §13.2）：文本 / 音色 / 语速 / 格式都平铺在顶层。 */
+/**
+ * openai-compat 合成请求体（docs/06 §13.2）：文本 / 音色 / 语速 / 格式都平铺在顶层。
+ * `instructions`（v43）仅非空时携带 —— gpt-4o-mini-tts 支持；tts-1 不支持，
+ * 填了会被服务端拒绝（错误按 §13.5 降级提示，不静默剥离）。该协议没有语言参数。
+ */
 function openaiSpeechBody(provider: ResolvedProvider['provider'], input: string): string {
-  return JSON.stringify({
+  const body: {
+    model: string
+    input: string
+    voice: string
+    speed: number
+    response_format: TtsFormat
+    instructions?: string
+  } = {
     model: provider.model,
     input,
     voice: provider.voice,
     speed: provider.speed,
     response_format: provider.format,
-  })
+  }
+  if (provider.instructions !== '') body.instructions = provider.instructions
+  return JSON.stringify(body)
 }
 
 /**
  * dashscope 合成请求体（docs/06 §13.6）：文本与音色包在 `input` 里；
  * `audio.format` 仅在格式是 DashScope 实际支持的 wav / mp3 / opus 时携带（aac / flac / pcm
  * 按服务端默认下发，不发 audio 字段）；该协议没有 speed 参数，**永不发送**。
+ * `input.language_type`（v43）仅 language 非 auto 且能映射成全称时携带；
+ * `input.instructions`（v43）仅非空携带（百炼 qwen3-tts-instruct-flash 支持）。
  */
 function dashscopeSpeechBody(provider: ResolvedProvider['provider'], input: string): string {
   const body: {
     model: string
-    input: { text: string; voice: string }
+    input: { text: string; voice: string; language_type?: string; instructions?: string }
     audio?: { format: 'wav' | 'mp3' | 'opus' }
   } = {
     model: provider.model,
     input: { text: input, voice: provider.voice },
   }
+  const languageType = DASHSCOPE_LANGUAGE_TYPE[provider.language]
+  if (languageType !== undefined) body.input.language_type = languageType
+  if (provider.instructions !== '') body.input.instructions = provider.instructions
   if (provider.format === 'wav' || provider.format === 'mp3' || provider.format === 'opus') {
     body.audio = { format: provider.format }
   }
   return JSON.stringify(body)
+}
+
+/**
+ * dashscope-audio 合成请求体（docs/06 §13.7，Qwen-Audio-TTS）：与 dashscope 的差异 ——
+ * 格式在 `input.format`（mp3 / wav / opus / pcm 四者条件携带，aac / flac 按服务端默认）；
+ * 语速走 `input.rate`（协议限 0.5–2.0，夹取后仅 ≠1 携带）；语气指令字段名是
+ * **`instruction`（单数）**；语言走 `input.language_hints: [短码]`（auto 不发）。
+ */
+function dashscopeAudioSpeechBody(provider: ResolvedProvider['provider'], input: string): string {
+  const body: {
+    model: string
+    input: {
+      text: string
+      voice: string
+      format?: 'mp3' | 'wav' | 'opus' | 'pcm'
+      rate?: number
+      instruction?: string
+      language_hints?: string[]
+    }
+  } = {
+    model: provider.model,
+    input: { text: input, voice: provider.voice },
+  }
+  if (
+    provider.format === 'mp3' ||
+    provider.format === 'wav' ||
+    provider.format === 'opus' ||
+    provider.format === 'pcm'
+  ) {
+    body.input.format = provider.format
+  }
+  const rate = Math.min(2, Math.max(0.5, provider.speed))
+  if (rate !== 1) body.input.rate = rate
+  if (provider.instructions !== '') body.input.instruction = provider.instructions
+  if (provider.language !== 'auto') body.input.language_hints = [provider.language]
+  return JSON.stringify(body)
+}
+
+/**
+ * 合成缓存 key（docs/06 §13.8）：全部解析后参数 + 清洗后文本。
+ * 含 providerId 只为日志可读；参数全在 key 里，改配置自然 miss。
+ */
+function synthesisCacheKey(resolved: ResolvedProvider, input: string): string {
+  const { provider } = resolved
+  return JSON.stringify([
+    provider.id,
+    provider.type,
+    provider.baseUrl,
+    provider.model,
+    provider.voice,
+    provider.speed,
+    provider.format,
+    provider.instructions,
+    provider.language,
+    input,
+  ])
 }
 
 /** 错误文案里附的响应体尾巴（尾部 300 字符，够定位又不刷屏）。 */
@@ -877,10 +1131,11 @@ function describeHttpFailure(
           ? '请求过于频繁，已被限流'
           : status >= 500
             ? 'TTS 服务端错误'
-            : type === 'dashscope' && /url error/i.test(detail)
-              ? // DashScope 式网关对「模型不在这个端点族」回 400 + url error（2026-11 实测：
-                // qwen-audio-3.x-tts / CosyVoice / Sambert 系列是 WebSocket 实时专用，不走本协议）
-                '该模型不走 HTTP 合成端点（qwen-audio-3.x-tts / CosyVoice / Sambert 是 WebSocket 实时专用），请换用 qwen3-tts-flash 或检查 baseURL'
+            : type !== 'openai-compat' && /url error/i.test(detail)
+              ? // DashScope 式网关对「模型不在这个端点族」回 400 + url error：
+                // qwen3-tts 走 multimodal-generation，qwen-audio-3.x-tts 走 SpeechSynthesizer，
+                // 挂错端点族就是这个错（CosyVoice / Sambert 旧系列仍是 WebSocket 实时专用）
+                '该模型不走当前 HTTP 合成端点：qwen3-tts 系列请用 DashScope 原生类型，qwen-audio-3.x-tts 系列请改用 Qwen-Audio-TTS 接口类型，或检查 baseURL'
               : '语音合成失败'
   const suffix = detail.trim() === '' ? '' : `：${detail.trim()}`
   return `${prefix}（HTTP ${status}）${suffix}`

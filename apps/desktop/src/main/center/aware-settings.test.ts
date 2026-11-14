@@ -83,6 +83,8 @@ function settingsWithOfficial(): Settings {
     voice: 'alloy',
     speed: 1,
     format: 'mp3',
+    instructions: '',
+    language: 'auto',
   }
   settings.stt.providers['center-stt'] = {
     type: 'openai-compat',

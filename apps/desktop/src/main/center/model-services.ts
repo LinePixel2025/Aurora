@@ -187,13 +187,18 @@ export class CenterModelServices {
     if (tts !== undefined) {
       const entry = resolveOfficialModelEntry(tts, '')?.entry
       ttsProviders[CENTER_OFFICIAL_PROVIDER_IDS.tts] = {
-        type: tts.type === 'dashscope' ? 'dashscope' : 'openai-compat',
+        type:
+          tts.type === 'dashscope' || tts.type === 'dashscope-audio' ? tts.type : 'openai-compat',
         baseUrl: `${base}/api/model-gateway/tts`,
         apiKeyEnc: '',
         model: entry?.id ?? '',
         voice: entry?.voice ?? '',
         speed: entry?.speed ?? 1,
         format: normalizeTtsFormat(entry?.format),
+        // 官方目录不下发语气指令 / 语言（v43）：镜像保持「不发送」默认
+        // （官方行只支持选模，与 voice / speed / format 同口径由目录管理）
+        instructions: '',
+        language: 'auto',
       } satisfies TtsProviderConfig
     }
 
