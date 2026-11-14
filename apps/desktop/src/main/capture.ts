@@ -4760,7 +4760,7 @@ export const CHAT_BROWSER_AGENT_CHECK = `(async () => {
         stopRect === null ? null : { width: stopRect.width, height: stopRect.height },
     }
     // 收尾：关掉这个 Agent 标签，避免后续截图场景在「多出来的标签 + 已释放会话」残局上跑
-    // （场景之间互相污染是 capture 最常见的假红来源，见 Memory/2026-10-03-capture-probe-gotchas.md）。
+    // （场景之间互相污染是 capture 最常见的假红来源）。
     const agentTabId = activeTabId()
     const closeBtn =
       agentTabId === ''

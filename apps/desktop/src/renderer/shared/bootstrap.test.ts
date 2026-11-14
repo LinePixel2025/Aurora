@@ -68,7 +68,7 @@ describe('bootstrapApp 的接线顺序', () => {
     expect(
       bindOffset,
       '接线顺序反了：settings.load() 出现在 settings.bind() 之前 —— 落在两者之间的广播会永久丢失' +
-        '（根因见本文件头注释与 Memory/2026-10-10-flaky-capture-probes.md）',
+        '（根因见本文件头注释）',
     ).toBeLessThan(loadOffset)
   })
 

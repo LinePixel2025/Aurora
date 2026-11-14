@@ -1,22 +1,7 @@
 # AGENTS.md
 
 面向在本仓库工作的 ZCode / 编码代理。**先读 [docs/README.md](docs/README.md) 了解设计（它是 SSOT）**。
-本文件只放**每次动手都要遵守的硬规则**；踩坑的完整现象 / 根因 / 实测证据、历史排查经验与"为什么"都在
-[`Memory/`](Memory/README.md)。
-
-## 会话开始先加载项目记忆（第一个动作）
-
-**每次会话动手之前**先把记忆读进上下文：用 `skill` 工具加载 `memory-read`
-（等价动作 = 读 `Memory/README.md` 索引 + 按当前任务相关性读条目：路径 / 模块 / 错误串 / 动作四类检索词，
-**不强制全量**；但发布、配置 Schema、IPC 契约、权限、数据删除这类跨子系统改动要把相关标签整组读全）——
-**没有这个技能就直接读文件**。
-踩到新坑或确认长期口径时用 `memory-create` 落盘（一个主题一个 md、文件名带日期、同步更新 `Memory/README.md` 索引）。
-读写这两个技能装在**系统共享技能根**（`~/.agents/skills`，即 DSH 的 `agentsHome` 根 / rank 500，与 find-skills、step-planner 同层；
-2026-10-03 从用户级根 `~/.dsh/skills` 移来），不随本仓库分发 —— 别人克隆后按上一句直接读文件即可。
-**整理记忆走 `memory-summary`（同层，只能手动触发）**：用户说「整理 / 清理 / 精简记忆」或输入 `/memory-summary` 时，
-按项目现状删已失效 / 被推翻 / 冗杂的条目、合并同主题、精简正文并重排索引；它带 `disable-model-invocation: true`，
-模型**不会自动调用**，日常只写不删（`memory-create`）。
-**层级**：本文件的硬规则 > `Memory/` 的历史经验；任一条与当前实测冲突时，以实测为准并顺手更正记忆。
+本文件只放**每次动手都要遵守的硬规则**。
 
 ## 项目是什么
 
@@ -79,7 +64,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   v39 Computer Use +5、v40 智慧提醒 §2.5 +6、v41 轮终改动汇总 / 任务完成提醒 +2 条断言）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
-  **全量冒烟只在用户说「提交」时跑**（2026-10-31 口径，见 `Memory/2026-10-31-iteration-vs-full-acceptance.md`）；
+  **全量冒烟只在用户说「提交」时跑**（2026-10-31 口径）；
   迭代期只跑相关单测子集与定向截图，不要每轮任务收尾都全量。
 - **Center 网页端验收（视觉 + 行为）**：`pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
   —— 真实服务器子进程（临时数据目录）+ 协议忠实的桩客户端 + 系统 Edge，逐场景截图 / 读 DOM 并写 `report.json`
@@ -129,7 +114,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
   （只按 `pass === false` 会把纯截图场景误判成失败）。`AURORA_CAPTURE_ONLY` 是**子串**匹配
   （`'chat.png'` 连带命中 `theme-chat.png`），且**每轮必须写独立目录**（同目录会覆盖上一轮 `report.json`）。
-  **跑法预算（2026-10-31 用户口径，见 `Memory/2026-10-31-iteration-vs-full-acceptance.md`）**：
+  **跑法预算（2026-10-31 用户口径）**：
   **迭代期只跑定向**（`AURORA_CAPTURE_ONLY` / 相关窗口 + `pnpm vitest run <相关文件>` + 必要 typecheck，7–15s/轮）；
   **全量验收（全量单测 / 冒烟 / 全量截图）等用户明确说「提交」时再跑**，不要每轮任务收尾自动全量。
   提交前的全量验收口径不降级：绿了才提交并推送，红了先修。
@@ -148,7 +133,6 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
    **渲染器与视觉资产是桌面 + Center Web 的单源**（Markdown 渲染器、`theme.css` 令牌、图标清单、吸底状态机都在
    `packages/shared/src/browser/`，依赖也只声明在 `packages/shared`）：**改这些 = 同时改两端界面**，改完两端截图都要跑；
    齿轮图标在 shared 里叫 **`SettingsGear`**（lucide 的 `Settings` 与配置类型同名）。
-   详见 [Memory/2026-10-03-shared-renderer-single-source.md](Memory/2026-10-03-shared-renderer-single-source.md)。
 5. **重任务走子进程**：文档内容提取等 CPU/IO 重活由 `utilityProcess.fork` 启动 `extract-worker`（`electron.vite.config.ts` 的第二个 main 入口），不阻塞主进程事件循环。
 6. **IPC 命名**：通道用 `namespace:action`（如 `chat:send`、`mcp:status`）；事件推送 `on/off` 成对暴露；大 payload（文件全文）只在主进程 / worker 内流转，不进渲染进程。
 
@@ -203,7 +187,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - 进程 / 模块 / IPC 约定 → `docs/02-architecture.md`
 - 打包发布与自动更新拓扑 → `docs/09-packaging-release.md`
 
-## 改代码前必看的硬规则与接线点（每条一行，现象 / 根因见 `Memory/`）
+## 改代码前必看的硬规则与接线点（每条一行）
 
 - **出网**一律走 `main/net.ts` 的 `netFetch`（否则 `advanced.proxy` 对该调用无效）；内核只接受注入，不 import electron。
 - **跨 IPC 不传 Vue `reactive` / Proxy**：渲染层往主进程送对象前统一 `deepClone()`（`@aurora/shared/browser`）。
@@ -297,7 +281,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 
 ## 尚未生效 / 已知限制（别误当成 bug）
 
-完整清单与原因见 [Memory/2026-10-03-known-limits.md](Memory/2026-10-03-known-limits.md)，速查：
+速查：
 
 - `Alt+Space` 注册失败是**预期路径**（Windows 系统占用），`hotkey.ts` 会回传原因，**不要"修"成静默成功**。
 - 提示条可穿透性（`setIgnoreMouseEvents`）未接入；`general.language` 是死字段（Schema 保留仅为兼容旧配置）。

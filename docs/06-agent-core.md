@@ -219,7 +219,7 @@ export interface LlmProvider {
   已装载会话（`maxLoadedSessions`，默认 8；脏的 / 正在写盘的 / 正在读盘的永不淘汰），
   被淘汰的会话下次 `ensureLoaded` 自动重读；`summaries()` 不再把每个会话的消息都常驻内存 ——
   它先用 `summaryCache` 命中已算过的摘要，未装载的会话按「读盘 → 算摘要 → 立即释放消息」处理，
-  因此 `chat:sessions` 的内存占用与磁盘会话总量脱钩（归因见 Memory 的性能轮记录）。
+  因此 `chat:sessions` 的内存占用与磁盘会话总量脱钩。
 - 上下文窗口管理：超长自动摘要压缩（P1）；v1 先按 **字符上限（默认 60k）** 截断旧消息并保留系统提示词，
   且截断时保证「assistant(toolCalls) + 其后 tool 结果」成对保留。
 - **quick 会话滑动窗口（2026-09 起）**：快速会话（`sessionId = 'quick'`）组装 LLM 上下文时

@@ -3060,8 +3060,7 @@ export const SCENARIOS = [
        *
        * 为什么必须等：`.composer-menu` 用 `rise` 过渡，入场那 250ms 里
        * `transform: translateY(8px)` 会被 `getBoundingClientRect()` 算进去 —— 探针在
-       * 动画中途量，就会把"浮层贴在卡上方"读成"浮层压进卡片 8px"（同类坑见
-       * Memory/2026-10-05-cweb-mobile-drawer-probe.md）。
+       * 动画中途量，就会把"浮层贴在卡上方"读成"浮层压进卡片 8px"。
        */
       const waitMenuSettled = async (menuField) => {
         const settled = await ctx.page
