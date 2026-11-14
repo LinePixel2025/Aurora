@@ -21,6 +21,20 @@
 > v0.5.8 安装包内的回退源仍指向已删除的旧仓库——配置了 Aurora Center 的用户不受影响
 > （Center 更新源优先），未配置 Center 的 v0.5.8 用户请手动下载 v0.5.9 安装包覆盖安装一次。
 
+### 仓库设置基线（对齐大型开源项目）
+
+GitHub 仓库侧按社区档案（community profile）拉齐，均为一次性设置，改动需在 Settings 页面或 `gh repo edit` 完成：
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 社区文件 | 已提供 | `CODE_OF_CONDUCT.md` / `CONTRIBUTING.md` / `SECURITY.md` / `README` / `LICENSE` / `CODEOWNERS` / 三类 Issue 表单 / PR 模板 |
+| 私密漏洞报告 | 开启 | Security → Report a vulnerability，见 `SECURITY.md` |
+| Dependabot 告警 | 开启 | 依赖漏洞提醒；升级 PR 由 `dependabot.yml` 每周分组创建 |
+| Code scanning | 开启 | `codeql.yml` 每周扫描，结果进 Security → Code scanning |
+| Discussions | 开启 | 用法问答与想法交流，不占用 Issue |
+| 合并后删除分支 | 开启 | 与 §2「squash 合并后删分支」一致，不需要手动 `--delete-branch` |
+| 分支保护 required checks | **不配置** | 口径见 §2：PR 只承担自审与可回滚，不构成强制门禁 |
+
 ## 2. 发布流程
 
 ### 本地发布

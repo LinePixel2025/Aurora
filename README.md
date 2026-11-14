@@ -384,6 +384,7 @@ Aurora 不做遥测。数据位置、出网场景与权限清单见 [docs/11-pri
 - **贡献指南**：[CONTRIBUTING.md](./CONTRIBUTING.md) 覆盖环境要求、本地开发、提交前检查、代码约定与分支 / 提交规则，动手前先读一遍。
 - **行为准则**：参与本项目即表示同意遵守 [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)（改编自 Contributor Covenant 2.1）。
 - **安全**：漏洞与凭据问题请走 [SECURITY.md](./SECURITY.md) 的私密报告入口，不要开公开 Issue。
+- **讨论**：用法问答与尚未成形的想法走 [Discussions](https://github.com/LinePixel2025/Aurora/discussions)，Issue 留给可复现的 Bug 与明确的功能建议。
 - **Issue**：Bug 请附版本、复现步骤与脱敏日志（`%APPDATA%/Aurora/logs/`）；功能建议请说明真实场景。模板见 [新建 Issue](https://github.com/LinePixel2025/Aurora/issues/new/choose)。
 - **PR**：从 `main` 开短命分支，提交信息用 Conventional Commits（`feat:` / `fix:` / `docs:` …）；变更涉及配置 Schema、IPC 契约、两端共享渲染资产或发布流程时，先读 [AGENTS.md](./AGENTS.md) 与 [docs/09](./docs/09-packaging-release.md)。
 - **文档先行**：改行为前先改 `docs/`；配置字段与 IPC 契约以文档为准。
