@@ -17,7 +17,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import type { BannerShowPayload } from '@aurora/shared'
 import BannerCard from './BannerCard.vue'
 import GlowBand from './GlowBand.vue'
-import { ttsReady } from './settings.js'
+import { ttsMaxChars, ttsReady } from './settings.js'
 
 const params = new URLSearchParams(window.location.search)
 const layer: 'glow' | 'card' = params.get('layer') === 'glow' ? 'glow' : 'card'
@@ -152,6 +152,7 @@ onUnmounted(() => {
     v-else
     :payload="payload"
     :tts-ready="ttsReady"
+    :tts-max-chars="ttsMaxChars"
     :muted="preview"
     @close="dismiss"
     @activate="activate"

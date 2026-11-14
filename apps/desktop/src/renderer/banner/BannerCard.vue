@@ -26,6 +26,8 @@ import { playBannerSound, stopBannerSound } from '../shared/banner-sound.js'
 const props = defineProps<{
   payload: BannerShowPayload | null
   ttsReady: boolean
+  /** 单次朗读总字数上限（v43：分块前截断，与对话窗同一份 tts.maxChars） */
+  ttsMaxChars: number
   /** 截图核对 / 预览：不播音、不朗读（否则每跑一轮截图都会响） */
   muted: boolean
 }>()
@@ -96,7 +98,7 @@ watch(
     if (next.speak && props.ttsReady) {
       // 朗读「标题 + 正文」：正文为空时只读标题，避免念出一个孤零零的句号
       const text = next.body === '' ? next.title : `${next.title}。${next.body}`
-      void tts.speak(text, next.id)
+      void tts.speak(text, next.id, { maxChars: props.ttsMaxChars })
     }
   },
 )

@@ -16,6 +16,9 @@ import { isTtsConfigured } from '../shared/tts-config.js'
 /** TTS 是否可用（供卡片层决定要不要朗读） */
 export const ttsReady = ref(false)
 
+/** 单次朗读总字数上限（v43：分块前截断用，与对话窗同一份 tts.maxChars） */
+export const ttsMaxChars = ref(2000)
+
 export function startBannerAppearance(): void {
   const apply = (settings: {
     appearance: Parameters<typeof applyAppearance>[0]
@@ -23,6 +26,7 @@ export function startBannerAppearance(): void {
   }): void => {
     applyAppearance(settings.appearance)
     ttsReady.value = isTtsConfigured(settings.tts)
+    ttsMaxChars.value = settings.tts.maxChars
   }
   void window.aurora.settings
     .get()
