@@ -1,0 +1,38 @@
+name: CodeQL
+
+# **周扫 + 手动触发**：与本仓库「CI 按需触发、不跟随 push / PR」的口径一致
+# （docs/09 §2）。安全告警进 Code scanning，不阻塞日常提交；
+# 需要分析某个分支时手动发起：Actions → CodeQL → Run workflow。
+on:
+  schedule:
+    # UTC 周日 20:00 = 北京时间周一 04:00
+    - cron: '0 20 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze JavaScript / TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'

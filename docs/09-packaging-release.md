@@ -72,14 +72,19 @@ PR 只承担「自审 + 可回滚」，**不是强制门禁**；开源后虽然�
 
 ### CI（按需触发，不自动跑）
 
-两个 workflow 都**只在显式发起时运行**，不跟随 push / PR 自动触发：
+**CI 与 Release 两个 workflow 都只在显式发起时运行**，不跟随 push / PR 自动触发；
+CodeQL 另有每周一次的定时扫描（同样不跟随 push / PR）：
 
 | Workflow | 触发 | 用途 |
 |---|---|---|
 | `ci.yml` | `workflow_dispatch` | 干净环境中跑 `format:check → lint → typecheck → test → build` |
 | `release.yml` | `workflow_dispatch` | 云端打包 + GitHub/Center 双投（GitHub 用自带 `GITHUB_TOKEN`，Center 需 `AURORA_CENTER_PASSWORD`，可选 `AURORA_CENTER_URL`） |
+| `codeql.yml` | `schedule`（每周一 04:00）+ `workflow_dispatch` | CodeQL 静态分析（JavaScript / TypeScript，`security-extended`），告警进 Code scanning，不阻塞提交 |
 
 手动发起：Actions 页面 → **Run workflow**，或 `gh workflow run ci.yml`。
+
+> 另有 `dependabot.yml`：每周一自动开分组依赖 PR（开发 / 生产依赖分开，不自动合并），
+> 合并前仍按本地检查验收。除此之外没有自动任务，运维入口只有这两个。
 
 **为什么默认不自动跑**：单人项目；PR 只用于高风险改动自审、不构成强制门禁
 （GitHub 的 branch protection 需 Pro），

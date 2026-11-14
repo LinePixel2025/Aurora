@@ -123,6 +123,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   `pnpm typecheck && pnpm test && pnpm build`（与 CI 同一套检查、全量约 30 秒）；
   需要干净环境时手动发起（Actions → Run workflow，或 `gh workflow run ci.yml`；
   高风险改动的短命分支用 `gh workflow run ci.yml --ref risk/<主题>`）。策略原因见 docs/09 §2。
+  **唯一自动运行的只有** `codeql.yml`（每周一次 CodeQL 扫描）与 `dependabot.yml`（每周分组依赖 PR），
+  两者都不跟随 push / PR、也不阻塞提交。
 
 ## 架构硬约束（改错会直接构建失败或线上炸）
 
