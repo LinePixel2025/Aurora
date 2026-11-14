@@ -28,6 +28,20 @@ coverage/
 .eslintcache
 .stylelintcache
 vite.config.*.timestamp-*
+vitest.config.ts.timestamp-*
+*.timestamp-*
+
+# ── 其它工具链缓存（本项目当前未用，避免误入库） ──
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.svelte-kit/
+.output/
+.vercel/
+.netlify/
+.angular/
+.vitest/
 
 # ── 本地环境 / 凭据（绝不入库） ──
 .env
@@ -100,6 +114,22 @@ allure-results/
 *.bak
 *.orig
 *.rej
+/tmp/
+/temp/
+.tmp/
+
+# ── 本地 AI 编码代理（个人会话与配置，不进版本库） ──
+.claude/
+.codex/
+.cursor/
+.windsurf/
+.trae/
+.qoder/
+.gemini/
+.opencode/
+.continue/
+.zed/
+.aider*
 
 # ── 编码代理 / 本地工具状态（不属于项目源码） ──
 /.agents/
@@ -124,6 +154,8 @@ allure-results/
 .Spotlight-V100/
 .Trashes/
 .fseventsd/
+$RECYCLE.BIN/
+.Trash-*/
 Thumbs.db
 thumbs.db
 ehthumbs.db
