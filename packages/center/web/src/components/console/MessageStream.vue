@@ -20,7 +20,9 @@ import {
   createChartHydrator,
   groupAgentTurns,
   renderMarkdown,
+  runTtsPipeline,
   selectFinalAssistant,
+  splitTtsText,
   type ChartHydrator,
 } from '@aurora/shared/browser'
 import { Volume2 } from '@aurora/shared/browser'
@@ -420,53 +422,114 @@ const speakingId = ref('')
 const synthesizingId = ref('')
 let audio: HTMLAudioElement | null = null
 let audioUrl = ''
+/** 朗读换代令牌：停止 / 换消息让在途中转回包作废（与桌面 useTts 同款） */
+let ttsToken = 0
+/** 在途播放的结算器：stop 时以「正常结束」resolve play Promise，管线随后见取消即返回 */
+let settlePlayback: ((error?: Error) => void) | null = null
 
 function releaseAudio(): void {
+  const settle = settlePlayback
+  settlePlayback = null
   audio?.pause()
   audio = null
   if (audioUrl !== '') {
     URL.revokeObjectURL(audioUrl)
     audioUrl = ''
   }
+  settle?.()
 }
 
 function stopSpeak(): void {
+  ttsToken += 1
   releaseAudio()
   speakingId.value = ''
   synthesizingId.value = ''
 }
 
+/**
+ * 分块边播边取（桌面 v43 / docs/06 §13.8，与桌面共用同一份纯管线）：
+ * 清洗 + 分块后**每块一条 `tts.synthesize` 中转命令**，首块合成完即开播、
+ * 播放期间预取下一块。命令形状不变（hub / connector 零改动）。
+ * 总量上限按默认 2000：网页端读不到客户端的 `tts.maxChars`，
+ * 客户端主进程对每条请求还有同名截断兜底。
+ */
 async function speak(item: ChatItem): Promise<void> {
   if (speakingId.value === item.id || synthesizingId.value === item.id) {
     stopSpeak()
     return
   }
   stopSpeak()
+  const current = ++ttsToken
+  const chunks = splitTtsText(item.content, { maxChars: 2000 })
+  if (chunks.length === 0) return
   synthesizingId.value = item.id
+  const clientId = props.entry.client.clientId
   try {
-    const { audioBase64, mimeType } = await synthesizeSpeech(
-      props.entry.client.clientId,
-      item.content,
+    await runTtsPipeline(
+      chunks,
+      {
+        synthesize: async (text) => {
+          const { audioBase64, mimeType } = await synthesizeSpeech(clientId, text)
+          if (audioBase64 === '') throw new Error('客户端没有回传音频数据')
+          return { audioBase64, mimeType }
+        },
+        play: (chunk, onStarted) =>
+          new Promise<void>((resolve, reject) => {
+            const binary = atob(chunk.audioBase64)
+            const bytes = new Uint8Array(binary.length)
+            for (let index = 0; index < binary.length; index += 1) {
+              bytes[index] = binary.charCodeAt(index)
+            }
+            audioUrl = URL.createObjectURL(new Blob([bytes], { type: chunk.mimeType }))
+            const element = new Audio(audioUrl)
+            audio = element
+            let settled = false
+            const settle = (error?: Error): void => {
+              if (settled) return
+              settled = true
+              if (settlePlayback === settle) settlePlayback = null
+              element.onended = null
+              element.onerror = null
+              releaseAudio()
+              if (error !== undefined) reject(error)
+              else resolve()
+            }
+            settlePlayback = settle
+            element.onended = () => settle()
+            element.onerror = () =>
+              settle(new Error('朗读播放失败（浏览器可能阻止了自动播放）'))
+            element.play().then(
+              () => {
+                if (!settled) onStarted?.()
+              },
+              (cause: unknown) =>
+                settle(
+                  cause instanceof Error
+                    ? cause
+                    : new Error('朗读播放失败（浏览器可能阻止了自动播放）'),
+                ),
+            )
+          }),
+        stop: releaseAudio,
+      },
+      () => current !== ttsToken,
+      {
+        onFirstPlay: () => {
+          if (current !== ttsToken) return
+          synthesizingId.value = ''
+          speakingId.value = item.id
+        },
+      },
     )
-    if (audioBase64 === '') throw new Error('客户端没有回传音频数据')
-    const binary = atob(audioBase64)
-    const bytes = new Uint8Array(binary.length)
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-    const blob = new Blob([bytes], { type: mimeType })
-    audioUrl = URL.createObjectURL(blob)
-    audio = new Audio(audioUrl)
-    audio.onended = () => stopSpeak()
-    audio.onerror = () => {
-      stopSpeak()
-      showNotice('朗读播放失败（浏览器可能阻止了自动播放）')
-    }
-    await audio.play()
-    speakingId.value = item.id
   } catch (error) {
+    if (current !== ttsToken) return
     stopSpeak()
     showNotice(`朗读失败：${error instanceof Error ? error.message : String(error)}`)
   } finally {
-    synthesizingId.value = ''
+    if (current === ttsToken) {
+      speakingId.value = ''
+      synthesizingId.value = ''
+    }
   }
 }
 
