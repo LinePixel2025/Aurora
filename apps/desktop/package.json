@@ -38,7 +38,7 @@
     "@types/ws": "^8.5.10",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/tsconfig": "^0.9.1",
-    "electron": "^44.5.1",
+    "electron": "^44.11.1",
     "electron-builder": "^26.18.0",
     "electron-vite": "^2.3.0",
     "lucide-vue-next": "^1.0.0",
