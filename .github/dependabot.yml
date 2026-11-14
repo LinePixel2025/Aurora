@@ -1,20 +1,25 @@
 version: 2
 
-# 依赖更新按周分组提交，降低噪音；不自动合并，仍按「本地五连检查」验收后再合。
+# 依赖更新按月分组，降低噪音；不自动合并，仍按「本地五连检查」验收后再合。
+#
+# Electron 运行时与 electron-builder 的**大版本**需要人工协同升级（构建链 / 打包产物 /
+# 自动更新都会受影响），自动 PR 只做 minor / patch；大版本按 docs/09 §2 手动处理。
 # 说明见 docs/09 §2「CI（按需触发，不自动跑）」。
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
-      day: monday
-      time: '09:00'
-      timezone: Asia/Shanghai
+      interval: monthly
     open-pull-requests-limit: 5
     labels:
       - dependencies
     commit-message:
       prefix: 'chore(deps)'
+    ignore:
+      - dependency-name: electron
+        update-types: ['version-update:semver-major']
+      - dependency-name: electron-builder
+        update-types: ['version-update:semver-major']
     groups:
       dev-dependencies:
         dependency-type: development
@@ -28,10 +33,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
-      time: '09:00'
-      timezone: Asia/Shanghai
+      interval: monthly
     open-pull-requests-limit: 3
     labels:
       - dependencies

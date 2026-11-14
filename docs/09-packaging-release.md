@@ -29,7 +29,7 @@ GitHub 仓库侧按社区档案（community profile）拉齐，均为一次性�
 |---|---|---|
 | 社区文件 | 已提供 | `CODE_OF_CONDUCT.md` / `CONTRIBUTING.md` / `SECURITY.md` / `README` / `LICENSE` / `CODEOWNERS` / 三类 Issue 表单 / PR 模板 |
 | 私密漏洞报告 | 开启 | Security → Report a vulnerability，见 `SECURITY.md` |
-| Dependabot 告警 | 开启 | 依赖漏洞提醒；升级 PR 由 `dependabot.yml` 每周分组创建 |
+| Dependabot 告警 | 开启 | 依赖漏洞提醒；升级 PR 由 `dependabot.yml` 每月分组创建（Electron / electron-builder 大版本除外） |
 | Code scanning | 开启 | `codeql.yml` 每周扫描，结果进 Security → Code scanning |
 | Discussions | 开启 | 用法问答与想法交流，不占用 Issue |
 | 合并后删除分支 | 开启 | 与 §2「squash 合并后删分支」一致，不需要手动 `--delete-branch` |
@@ -93,16 +93,17 @@ CodeQL 另有每周一次的定时扫描（同样不跟随 push / PR）：
 |---|---|---|
 | `ci.yml` | `workflow_dispatch` | 干净环境中跑 `format:check → lint → typecheck → test → build` |
 | `release.yml` | `workflow_dispatch` | 云端打包 + GitHub/Center 双投（GitHub 用自带 `GITHUB_TOKEN`，Center 需 `AURORA_CENTER_PASSWORD`，可选 `AURORA_CENTER_URL`） |
-| `codeql.yml` | `schedule`（每周一 04:00）+ `workflow_dispatch` | CodeQL 静态分析（JavaScript / TypeScript，`security-extended`），告警进 Code scanning，不阻塞提交 |
+| `codeql.yml` | `schedule`（每周一 04:00）+ `workflow_dispatch` | CodeQL 静态分析（JavaScript / TypeScript，默认安全查询），告警进 Code scanning，不阻塞提交 |
 
 手动发起：Actions 页面 → **Run workflow**，或 `gh workflow run ci.yml`。
 
-> 另有 `dependabot.yml`：每周一自动开分组依赖 PR（开发 / 生产依赖分开，不自动合并），
+> 另有 `dependabot.yml`：每月自动开分组依赖 PR（开发 / 生产依赖分开，不自动合并），
+> **Electron / electron-builder 的大版本不自动提 PR**（构建链与打包产物需要人工协同）；
 > 合并前仍按本地检查验收。除此之外没有自动任务，运维入口只有这两个。
 
 **为什么默认不自动跑**：单人项目；PR 只用于高风险改动自审、不构成强制门禁
 （GitHub 的 branch protection 需 Pro），
-本地 `pnpm test`（2930 项 / 204 个文件，约 30s）+ `pnpm build`（约 6s）已覆盖同一套检查；
+本地 `pnpm test`（3191 项 / 224 个文件，约 30s）+ `pnpm build`（约 20s）已覆盖同一套检查；
 自动跑只会产生与代码无关的红噪音（典型是下方 `minimumReleaseAge` 的安装期拦截），
 拖慢开发节奏。**发布前的权威验证走本地 `scripts/release.mjs`。**
 
