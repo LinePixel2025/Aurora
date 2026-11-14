@@ -1579,12 +1579,28 @@ P6+ 语音轮 起助手回复可以「读出来」：把助手消息的纯文本
 | `tts.active` | 默认 TTS provider id；**空串 = 未配置**（此时不合成，交互窗的朗读按钮也不出现） |
 | `tts.autoRead` | 回复结束后自动朗读最后一条助手消息（默认 `false`） |
 | `tts.maxChars` | 单次朗读的文本上限，默认 2000、Schema 限 50–4096，超出截断（见 §13.4） |
-| `tts.providers.<id>.{type,baseUrl,apiKeyEnc,model,voice,speed,format}` | provider 条目；`type` 为 `openai-compat`（§13.2）或 `dashscope`（§13.6） |
+| `tts.providers.<id>.{type,baseUrl,apiKeyEnc,model,voice,speed,format,instructions,language}` | provider 条目；`type` 为 `openai-compat`（§13.2）、`dashscope`（§13.6）或 `dashscope-audio`（§13.7） |
 
 - `type` 是枚举：未识别的类型视为**不可用**，不猜测、不回落（不把它当 `openai-compat` 试一次）；
-  新增 `dashscope` 是纯增量枚举，旧配置天然合法，无需版本迁移。
+  新增 `dashscope` / `dashscope-audio` 都是纯增量枚举，旧配置天然合法。
 - `format` 取 `mp3 | opus | aac | flac | wav | pcm`（`TTS_FORMATS`），`speed` 限 0.25–4；
   `voice` 是厂商自己的音色 id（如 `alloy`、`FunAudioLLM/CosyVoice2-0.5B:alex`），Aurora 不维护音色字典。
+- `instructions`（**v43 新增**）：语气指令，自然语言描述语气 / 情感 / 说话方式
+  （如「用温柔平缓的语气朗读，语速稍慢」），Schema 限 ≤1000 字符、默认空串。
+  **空 = 不发送**（旧配置请求体逐字不变）；非空时按协议下发：`openai-compat` 走顶层
+  `instructions`、`dashscope` 走 `input.instructions`、`dashscope-audio` 走 `input.instruction`
+  （单数）。**效果取决于模型是否支持指令控制**：OpenAI 的 `gpt-4o-mini-tts`、百炼的
+  `qwen3-tts-instruct-flash`、千问AI平台的 Qwen-Audio-TTS 系列支持；`tts-1` 与千问AI平台的
+  `qwen3-tts-flash` 不支持（前者会报参数错误，后者忽略）——设置页 hint 如实提示，Aurora 不猜。
+- `language`（**v43 新增**）：合成语言，统一短码 `auto | zh | en | ja | ko | fr | de | es | it | pt | ru`，
+  默认 `auto`（= 不发送，服务端自动判定）。指定语种可显著降低「中文读出外语腔」的误判
+  （DashScope 官方文档明示 Auto「无法保证完全精准」）。下发位置随 `type` 变：
+  `dashscope` 走 `input.language_type`（短码映射成 `Chinese / English / …` 全称），
+  `dashscope-audio` 走 `input.language_hints: [短码]`，`openai-compat` **没有语言参数，永不发送**。
+  `auto` 时三种协议都不携带该字段。
+- `v42 → v43` 迁移为每个已有 `tts.providers.<id>` 补 `instructions: ''` / `language: 'auto'`
+  （只补缺失 / 非法值，不改正值）；两个字段在 Schema 里都带 `.default`，手改配置漏填由 parse 补齐。
+  补出来的默认值 = v43 之前的行为，升级本身不改变任何请求体。
 - `tts.providers` 与 `llm.providers` 一样是**动态 record**：缺项 ≠ 删除（见 §12.4 的合并语义）。
 
 ### 13.2 请求协议（OpenAI 兼容 `/audio/speech`）
@@ -1594,8 +1610,13 @@ POST <baseUrl>/audio/speech
 Authorization: Bearer <apiKey>
 Content-Type: application/json
 
-{ "model": "<model>", "input": "<被朗读的文本>", "voice": "<voice>", "speed": 1, "response_format": "<format>" }
+{ "model": "<model>", "input": "<被朗读的文本>", "voice": "<voice>", "speed": 1, "response_format": "<format>", "instructions": "<语气指令，仅非空时携带>" }
 ```
+
+- `instructions` **条件携带**：仅当 provider 的 `instructions` 非空时才出现在请求体里
+  （v43，§13.1）。OpenAI 的 `gpt-4o-mini-tts` 支持该参数；`tts-1` / `tts-1-hd` 不支持，
+  对它们填写语气指令会被服务端拒绝——错误按 §13.5 降级提示，不做静默剥离。
+  该协议**没有语言参数**，`language` 配置对它不生效（设置页 hint 如实说明）。
 
 - 端点由**用户填的地址 + 固定路径**拼出（与 §3 的 chat 端点同一个套路），拼接前在主进程
   `speechEndpoint()` 里按下面的规则规整 `baseUrl`（实测 404 大多来自「漏写 /v1」或
@@ -1633,13 +1654,21 @@ Content-Type: application/json
   provider 的增删改只能由用户在设置页完成。
 - 日志与「导出脱敏配置」里的该凭据一律 `***`（11 §5）。
 
-### 13.4 `maxChars` 截断语义
+### 13.4 文本清洗与 `maxChars` 截断语义
 
-- 朗读文本取自**助手消息的 `content`**（助手回复的原始正文），先 `trim()` 丢掉首尾空白；
-  本轮**不剥离 Markdown 标记**（`**`、代码块围栏、链接语法都会原样送去合成），这是已知取舍。
-- 长度按**字符数**计算；超出 `tts.maxChars` 时从**尾部截断**，超出部分不下发，
+- 朗读文本取自**助手消息的 `content`**（助手回复的原始正文）。送合成前先经
+  `cleanTtsText()`（`packages/shared/src/tts-text.ts`，纯函数、**幂等**）清洗（v43 起）：
+  围栏代码块整段删除、行内代码保留内容去掉反引号、图片 `![alt](url)` 整删、
+  链接 `[text](url)` 只留 text、裸 http(s) URL 删除、标题 / 强调 / 删除线 / 引用 /
+  列表符号 / 表格竖线与分隔行 / HTML 标记剥离、空白折叠。
+  代码与链接不再被念出来，也减少混排英文触发服务端语种误判的机会。
+  `[excited]` 这类情感标签不是链接语法，**原样保留**（Qwen-Audio-TTS 支持文本内标签）。
+- 清洗发生在**两处且互为冗余**：渲染层分块前（`splitTtsText` 内部）与主进程
+  `synthesize` / `test` 入口（Center 中转的全量文本路径同样被清洗）。幂等保证两次清洗 = 一次。
+- 长度按**字符数**计算；**清洗后**的文本超出 `tts.maxChars` 时从**尾部截断**，超出部分不下发，
   结果里用 `truncated: true` 回报（渲染层据此可提示「已截断」；**不改写**被朗读的文本、
-  也不往文本里补任何提示串）。
+  也不往文本里补任何提示串）。分块朗读时总量上限在渲染层**分块前**执行（§13.8），
+  主进程对每个请求仍保留同款截断作兜底。
 - 截断发生在**发送前**：超长回复不会整段出网，`maxChars` 同时是一条隐私边界（见 11 §4）。
 
 ### 13.5 失败降级与「不做 STT」的边界
@@ -1675,12 +1704,17 @@ Content-Type: application/json
 - **请求头**：`Authorization: Bearer <apiKey>`、`Content-Type: application/json`，与 §13.2 同款。
 - **请求体**：
   ```json
-  { "model": "<model>", "input": { "text": "<被朗读的文本>", "voice": "<voice>" }, "audio": { "format": "wav | mp3 | opus" } }
+  { "model": "<model>", "input": { "text": "<被朗读的文本>", "voice": "<voice>", "language_type": "Chinese", "instructions": "<语气指令>" }, "audio": { "format": "wav | mp3 | opus" } }
   ```
   `audio.format` **条件携带**：仅当用户配置的 `format` 是 `wav` / `mp3` / `opus` 三者之一时才发
   （该协议只认这三种输出格式；`aac` / `flac` / `pcm` 不发 `audio` 字段，按服务端默认下发）。
   **没有 `speed` 参数，永不发送** —— 该协议不提供语速控制，OpenAI 兼容体的 `speed` 在这里
   没有对应字段，发了只会被忽略或报错。
+  `input.language_type`（v43）**条件携带**：`language` 非 `auto` 时按 §13.1 的映射表发全称
+  （`zh → Chinese` 等）；`auto` 不发（= 服务端 Auto，v43 之前的行为）。
+  `input.instructions`（v43）**条件携带**：仅语气指令非空时发。百炼的 `qwen3-tts-instruct-flash`
+  支持指令控制；千问AI平台实测 `qwen3-tts-flash` **不支持**（平台文档明示指令控制已迁移至
+  CosyVoice / Qwen-Audio-TTS 系列）——要在该网关上用语气指令，换 §13.7 的 `dashscope-audio` 类型。
 - **响应与二次下载**：2xx 响应体是 JSON，音频在 `output.audio.url`（**24h 有效**的签名地址，
   另有 `output.audio.expires_at` 与 `output.finish_reason`），**必须再发一次 GET 下载**
   才能拿到音频字节。二次下载：
@@ -1722,10 +1756,63 @@ Content-Type: application/json
   （Cherry / Serena / Ethan 等，实测 Cherry 可用）；声音复刻 id（如 `longanlufeng` /
   `loongstella`）不被接受——复刻音色要在朗读里可用，得等平台侧的非实时复刻模型或
   Aurora 支持 WebSocket 协议。
-- **边界**：CosyVoice 异步任务 API（`/services/audio/tts`，POST 建任务 + 轮询取结果）与
-  WebSocket 实时合成**不在支持范围** —— 本协议只覆盖「一次 POST 拿 URL + 一次 GET 拿音频」
-  的非实时路径；`output.audio.url` 的 24h 有效期对朗读场景（拿到即播）绰绰有余，
-  Aurora 不做音频缓存。
+- **边界**：CosyVoice 异步任务 API（POST 建任务 + 轮询取结果）与 WebSocket 实时合成
+  **不在支持范围** —— 本协议只覆盖「一次 POST 拿 URL + 一次 GET 拿音频」的非实时路径；
+  `output.audio.url` 的 24h 有效期对朗读场景（拿到即播）绰绰有余。
+  （v43 起主进程有一份**内存 LRU 合成缓存**，见 §13.8；不落盘、不缓存 URL 本身。）
+
+### 13.7 Qwen-Audio-TTS HTTP 协议（type: dashscope-audio，v43）
+
+千问AI平台（`maas.qianwenaiapi.com`）的 Qwen-Audio-TTS 系列
+（`qwen-audio-3.1-tts-flash / plus`、`qwen-audio-3.0-tts-flash / plus`）走**另一个**非实时
+HTTP 端点，且是该平台上**支持语气指令（`instruction`）与复刻音色**的系列
+（`qwen3-tts-flash` 两者都不支持）。设置页「接口类型」下拉第三项，协议形状与 §13.6
+同为「POST 拿 URL + GET 拿音频」，主进程复用同一条下载 / MIME 推导尾段。
+
+- **端点**：`POST <base>/api/v1/services/audio/tts/SpeechSynthesizer`。
+  `dashscopeAudioEndpoint()` 与 `dashscopeEndpoint()` 同一套容错：已以该端点结尾原样用；
+  尾上粘着 `/compatible-mode/v1` / `/compatible-mode` / `/api/v1` / `/api` 整段换成完整路径；
+  **粘着 §13.6 的 multimodal-generation 尾巴也整段替换**（覆盖「只改类型不改地址」）；
+  其余直接拼完整路径（Center 网关 base 得到 `…/api/model-gateway/tts/api/v1/services/audio/tts/SpeechSynthesizer`，
+  Center `routeKind` 自 v0.3.x 起接受该 rest）。
+- **请求体**：
+  ```json
+  { "model": "<model>", "input": { "text": "<被朗读的文本>", "voice": "<voice>", "format": "mp3", "rate": 1.0, "instruction": "<语气指令>", "language_hints": ["zh"] } }
+  ```
+  与 §13.6 的差异：格式在 `input.format`（**mp3 / wav / opus / pcm** 四者条件携带，
+  aac / flac 不发、按服务端默认 mp3）；语速走 `input.rate`（**协议限 0.5–2.0**，
+  主进程夹取后仅在 ≠1 时携带）；语气指令字段名是 **`instruction`（单数）**，仅非空携带；
+  语言走 `input.language_hints: [短码]`（数组但服务端只处理第一个元素），`auto` 不发。
+  系统音色 / 复刻音色 / 设计音色都接受（复刻音色如 `loongstella`）。
+- **响应与二次下载**：与 §13.6 完全同形（`output.audio.url` 24h 签名地址 → 无鉴权 GET →
+  `pickAudioMime` 三级推导），签名参数同样不进日志与错误文案。
+- **模型级失效自动回退**：判定与写回同 §13.6，备用模型按类型取
+  `FALLBACK_BY_TYPE['dashscope-audio'] = 'qwen-audio-3.1-tts-flash'`
+  （`dashscope` 仍是 `qwen3-tts-flash`；openai-compat 不回退）。
+- **模型列表**：与 dashscope 共用原生 `/models` 端点规整与翻页（§13.6）。
+- **边界**：SSE 流式（`X-DashScope-SSE: enable`）、SSML / LaTeX / hot_fix / 字级时间戳
+  本轮不接入；Center 网关需重新部署后才路由新端点（桌面直连网关不受影响）。
+
+### 13.8 分块管线与合成缓存（v43）
+
+**分块边播边取**（渲染层 `useTts` 与 Center Web 朗读共用
+`packages/shared/src/browser/ttsPipeline.ts` 的纯管线）：
+
+- `splitTtsText(text, { maxChars })`：清洗（§13.4）→ **总量截断到 maxChars** →
+  按句界（`。！？!?；;…` 与换行）贪心分块，**首块 ≤120 字、后续每块 ≤300 字**，
+  超长单句硬切。300 字远低于 qwen-tts 系单请求 512 Token / 600 字符的上限。
+- 管线顺序：合成块 0 → 立即开播，**播放期间预取块 1**；块 i 播完接已预取的 i+1。
+  同一时刻**最多 1 个在途合成**（防限流）；合成远快于播放时后续块零等待。
+- 失败语义：块 0 合成失败 → 立即报错停止（同 §13.5）；块 i>0 失败 → **当前块播完**再报错停止
+  （不打断正在播放的声音）。停止 / 换读沿用 `useTts` 的自增令牌：在途回包作废、管线逐步检查取消。
+- 状态口径不变：`loading`（合成中）在**首块开播**时转 `speaking`（播放中）；
+  朗读按钮 / 流光提醒 / 设置页试听共用这一份实现。试听样例句只有一块，行为与旧版一致。
+- Center Web 朗读按块发**多条** `tts.synthesize` 中转命令（每块一条，协议形状不变，
+  hub / connector 零改动；60s 回执超时按块计更宽裕）。
+- **主进程 LRU 缓存**（仅 `synthesize` 成功结果）：key = 解析后全部 provider 字段
+  （type / baseUrl / model / voice / speed / format / instructions / language）+ 清洗后文本；
+  上限 **16 条 / 32MB**，超限按最近访问逐出。重读同一条消息即时出声；
+  改任何合成参数自然 miss（key 含全部参数，无需监听配置变化）。不缓存失败、不落盘。
 
 ## 14. 扩展工具八件套（v0.0.1；`show_preview` / `show_image` / `notify_banner` 后续补入）
 

@@ -77,13 +77,15 @@
     "maxChars": 2000, // 单次朗读的文本上限（50–4096，超出截断）
     "providers": {
       "siliconflow": {
-        "type": "openai-compat", // openai-compat | dashscope（DashScope 原生协议，见 docs/06 §13.6）
+        "type": "openai-compat", // openai-compat | dashscope（06 §13.6）| dashscope-audio（06 §13.7）
         "baseUrl": "https://api.siliconflow.cn/v1",
         "apiKeyEnc": "<safeStorage 密文>",
         "model": "FunAudioLLM/CosyVoice2-0.5B", // 唯一生效值：合成请求实际用的模型就是它
         "voice": "alex", // 音色 id，如 alloy / FunAudioLLM/CosyVoice2-0.5B:alex
-        "speed": 1, // 0.25–4
+        "speed": 1, // 0.25–4（dashscope-audio 协议限 0.5–2，主进程夹取）
         "format": "mp3", // mp3 | opus | aac | flac | wav | pcm
+        "instructions": "", // v43：语气指令（自然语言），空 = 不发送；效果取决于模型支持面
+        "language": "auto", // v43：合成语言短码 auto|zh|en|ja|ko|fr|de|es|it|pt|ru，auto = 不发送
       },
     },
   },
@@ -431,11 +433,16 @@
   `tts.active` 是默认 TTS provider id，**为空串 = 未配置**，此时对话窗的朗读按钮**不出现**；
   `tts.autoRead` 控制助手回复结束后是否自动朗读；`tts.maxChars` 是**单次朗读的截断上限**
   （50–4096，默认 2000，超出部分先截断再送合成）。
-  `tts.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, voice, speed, format }`，
-  `type` 为 `openai-compat`（06 §13.2）或 `dashscope`（06 §13.6，DashScope 原生协议））与
+  `tts.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, voice, speed, format, instructions, language }`，
+  `type` 为 `openai-compat`（06 §13.2）、`dashscope`（06 §13.6，DashScope 原生协议）
+  或 `dashscope-audio`（06 §13.7，Qwen-Audio-TTS HTTP 协议））与
   `llm.providers.<id>` **结构同构但彼此独立**：两边的 provider 列表不共享、不联动，
   改一边不影响另一边；`apiKeyEnc` 同为 safeStorage 密文（回传口径见 §1.1）。
-  `v6 → v7` 迁移会为旧配置补齐 `tts.*`（`fillMissing` 对已存在的值一律保留，因此天然幂等）。
+  `instructions`（**v43 新增**）是语气指令（自然语言描述语气 / 情感，≤1000 字符，默认空 = 不发送），
+  `language`（**v43 新增**）是合成语言短码（`auto | zh | en | ja | ko | fr | de | es | it | pt | ru`，
+  默认 `auto` = 不发送）；两者按协议条件下发、效果取决于模型支持面（见 06 §13.1）。
+  `v6 → v7` 迁移会为旧配置补齐 `tts.*`（`fillMissing` 对已存在的值一律保留，因此天然幂等）；
+  `v42 → v43` 为每个已有 provider 补 `instructions: ''` / `language: 'auto'`（不改正值）。
 - `WRITABLE_PATH_OVERRIDES`（**v8 新增**，见 06 §12）：AI 的 `set_setting` **显式可写覆盖表**，
   判定**先于** `advanced.readonlyPrefixes` 黑名单前缀。两类登记：
   ① **真的放开** —— `llm.providers.<id>.model / .modelParams.<modelId>.reasoningEffort` 落在
@@ -788,7 +795,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 41`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 43`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -908,12 +915,17 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   用户已写的 `channel` / 智慧提醒字段原样保留）、
   `v41 → v42`（**自定义提示音**，见 §1 的 `notifications` 与 07 §2.2.3 R4：为已有 `notifications` 补
   `customSoundPath: ''` —— 空串 = 默认提示音，升级后行为不变（默认音本身自本版起对齐
-  Windows 11 风格，那是合成参数变化、不是配置变化）；用户已写字段原样保留）。
-  四十二条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  Windows 11 风格，那是合成参数变化、不是配置变化）；用户已写字段原样保留）、
+  `v42 → v43`（**TTS 语气指令与合成语言**，见 §1 的 `tts` 与 06 §13.1：为**每个已有**
+  `tts.providers.<id>` 补 `instructions: ''` / `language: 'auto'` —— 只补缺失 / 非法值，
+  不改正值，补出来的默认值 = v43 之前的行为（两字段都不发送）；`tts` 分组缺失时留给
+  默认配置兜底，不凭空造半截对象。同批新增 `dashscope-audio` 接口类型是纯增量枚举，
+  旧配置天然合法，不需要迁移表达）。
+  四十三条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **42** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **43** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1185,10 +1197,19 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   （`tts.active`）、「自动朗读」（`tts.autoRead`）、「截断上限」（`tts.maxChars`），以及 provider 列表的
   **增 / 改 / 删 + 「试听」**（用当前表单值合成一小段试听音频）。字段路径见 §1，请求协议与失败降级见 06 §13。
   - provider 表单与 `llm.providers` **同构但独立**（`type` / `baseUrl` / `apiKey` / `model` /
-    `voice` / `speed` / `format`）：两边的列表不共享、不联动，改一边不影响另一边（见 §1）。
-    「接口类型」（`tts.providers.<id>.type`）下拉切换两套请求协议：`openai-compat` →
-    OpenAI 兼容 `/audio/speech`；`dashscope` → DashScope 原生生成端点（baseURL 提示与
-    输出格式说明随类型切换，协议细节见 06 §13.6）；新建草稿默认 `openai-compat`。
+    `voice` / `speed` / `format` / `instructions` / `language`）：两边的列表不共享、不联动，
+    改一边不影响另一边（见 §1）。
+    「接口类型」（`tts.providers.<id>.type`）下拉切换三套请求协议：`openai-compat` →
+    OpenAI 兼容 `/audio/speech`；`dashscope` → DashScope 原生生成端点（06 §13.6）；
+    `dashscope-audio` → Qwen-Audio-TTS HTTP 端点（06 §13.7，支持语气指令与复刻音色）；
+    baseURL 提示 / 语速 / 输出格式说明随类型切换，新建草稿默认 `openai-compat`。
+    「语气指令」（`instructions`，v43）是 textarea + 常用语气 chips（温柔舒缓 / 活泼明快 /
+    沉稳正式 / 新闻播报），hint 如实提示「仅支持指令控制的模型生效」；
+    「语言」（`language`，v43）是下拉（自动 / 中文 / 英语 / …），hint 按类型切换
+    （openai-compat 档明示「该协议无语言参数，此项不发送」）。两字段**常显**
+    （与 speed 同款策略），探针按可见性断言。
+    预设 chips 自 v43 起四条：OpenAI TTS / SiliconFlow 语音 / Qwen3-TTS（dashscope）/
+    Qwen-Audio-TTS（dashscope-audio），后两条自带 `type` 与 `language: 'zh'`。
   - 凭据沿用 §1.1 的只读标记口径：列表里只显示 `apiKeySet`（`凭据已保存` / `缺少凭据`），
     密文**永不回显**，编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**。
   - **「获取模型列表」（编辑卡内，模型名输入框旁）**：调 `tts:listModels`
