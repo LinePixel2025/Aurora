@@ -2,7 +2,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { JsonStore } from './store.js'
+import { JsonStore, renameWithRetry } from './store.js'
 
 /**
  * JsonStore 原子写（docs/12 §2.2）。并发回归（2026-09-27 真实事故）：登录的
@@ -39,5 +39,55 @@ describe('JsonStore', () => {
       m.readFile(join(dir, 'users.json'), 'utf8'),
     )
     expect(JSON.parse(raw)).toEqual([{ id: 'a' }, { id: 'b' }])
+  })
+})
+
+/**
+ * Windows 回归（2026-11-14 实测偶发红）：杀软 / 索引器短暂占用目标文件时，
+ * rename 覆盖会瞬时 EPERM / EBUSY；不重试就会让低概率的登录落盘 500 复现。
+ */
+describe('renameWithRetry', () => {
+  it('EPERM / EBUSY 退避重试后成功', async () => {
+    const codes = ['EPERM', 'EBUSY']
+    let calls = 0
+    const rename = async () => {
+      calls += 1
+      const code = codes[calls - 1]
+      if (code !== undefined) {
+        const error = new Error('transient') as NodeJS.ErrnoException
+        error.code = code
+        throw error
+      }
+    }
+    await renameWithRetry('tmp.json', 'target.json', rename)
+    expect(calls).toBe(3)
+  })
+
+  it('非瞬时错误不重试，原样抛出', async () => {
+    let calls = 0
+    const rename = async () => {
+      calls += 1
+      const error = new Error('missing') as NodeJS.ErrnoException
+      error.code = 'ENOENT'
+      throw error
+    }
+    await expect(renameWithRetry('tmp.json', 'target.json', rename)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    expect(calls).toBe(1)
+  })
+
+  it('重试次数耗尽后抛出最后一次错误', async () => {
+    let calls = 0
+    const rename = async () => {
+      calls += 1
+      const error = new Error('locked') as NodeJS.ErrnoException
+      error.code = 'EPERM'
+      throw error
+    }
+    await expect(renameWithRetry('tmp.json', 'target.json', rename, 3)).rejects.toMatchObject({
+      code: 'EPERM',
+    })
+    expect(calls).toBe(3)
   })
 })

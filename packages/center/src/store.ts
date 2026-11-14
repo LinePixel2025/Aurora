@@ -9,6 +9,7 @@
 import { randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { Logger } from '@aurora/shared'
 
 export class JsonStore<T> {
@@ -70,7 +71,32 @@ export class JsonStore<T> {
       `.${basename(this.file)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`,
     )
     await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
-    await fs.rename(tmp, this.file)
+    await renameWithRetry(tmp, this.file)
+  }
+}
+
+/** Windows 上杀软 / 索引器 / 其它句柄短暂占用目标文件时，rename 覆盖会瞬时失败。 */
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+/**
+ * 带退避的 rename：只对 Windows 常见的瞬时错误重试，其它错误立即抛出（别掩盖真实缺陷）。
+ * 导出仅供单测注入 `rename`；生产走 `fs.rename` 默认参数。
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  rename: (oldPath: string, newPath: string) => Promise<void> = fs.rename,
+  attempts = 5,
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rename(from, to)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? ''
+      if (!TRANSIENT_RENAME_CODES.has(code) || attempt >= attempts) throw error
+      await delay(10 * attempt)
+    }
   }
 }
 
