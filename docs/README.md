@@ -11,29 +11,26 @@
 
 ## 当前实现状态
 
-**当前发布 v0.6.4：插件临时输入窗口**（配置 Schema **v41** 不变；插件 API 仍为 **v1**，
+**当前发布 v0.7.0：TTS 朗读优化**（配置 Schema **v41 → v43**，两条自动迁移；插件 API 仍为
+**v1**）——语气指令可设定（自然语言描述语气 / 情感，按协议下发，效果取决于模型支持面）、
+合成语言可锁定（DashScope `language_type` / `language_hints`，根治 Auto 语种误判的「中文读出
+外语腔」）、分块边播边取（首块 ≤120 字合成完即开播、播放期间预取下一块，长回复首声延迟降一个
+量级）；新增 Qwen-Audio-TTS 接口类型（`dashscope-audio`，语气指令 / 复刻音色）；朗读前清洗
+Markdown / 代码块 / 链接，主进程 LRU 合成缓存。同批含全局统一缩放 `Ctrl +/−/0` 与 DPI 适配、
+流光提醒自定义音效（v42）、右栏文件面板重做（Office 正文 / 版式双视图 + 系统打开）。设计见
+[06 §13](./06-agent-core.md)、[08 §1](./08-settings-onboarding.md)，完整更新点与验收结果见
+[release-notes/v0.7.0.md](./release-notes/v0.7.0.md)。
+Aurora Center 服务器随本版升级到 **0.6.0**（版本线独立）：网关路由 Qwen-Audio-TTS 新端点并换
+音频签名票，网页端朗读分块边播边取；需按 `packages/center/deploy/README.md` 重新部署。
+
+**上一发布 v0.6.4：插件临时输入窗口**（配置 Schema **v41** 不变；插件 API 仍为 **v1**，
 新增 `ui.dialogs` 权限与 `contributes.dialogs`）——桌面小组件继续“不抢前台”，插件改可用
 `ctx.ui.openDialog` 唤起由宿主创建的临时窗口，可正常键入文字；支持 Aurora 声明式 schema
 （宿主绘制取消 / 确定）或自定义 HTML / CSS 页面（沙箱内自行提交）。确定 / 取消 / × / Esc /
-10 分钟超时 / 插件退出后窗口立即销毁，不常驻；每个插件同时 1 扇、全局 ≤ 4 扇。插件开发工具包、
-示例插件与文档同步更新（新增 `/hello-note` 与 `/hello-page-note`）。设计见
+10 分钟超时 / 插件退出后窗口立即销毁，不常驻；每个插件同时 1 扇、全局 ≤ 4 扇。设计见
 [14 §5.8](./14-plugin-system.md)，完整更新点与验收结果见
 [release-notes/v0.6.4.md](./release-notes/v0.6.4.md)。
-Aurora Center 服务器随后单独更新到 **0.5.3**（版本线独立），同步了 `ui.dialogs` 清单校验；
-桌面安装包仍是本版唯一的客户端发布。
-
-**上一发布 v0.6.3：多会话并行 + 轮终改动卡片 + 浏览器 UA + 提醒统一拦截 + 小组件去毛玻璃**
-（配置 Schema **v41**，v40 → v41 自动迁移；插件 API 仍为 **v1**）——渲染层按会话保存运行态，
-切回仍在流式的会话能看到完整回复，左栏状态点与头部汇总展示后台进度，敏感确认卡支持多会话并存；
-每轮结束在最后一条回复后显示「已编辑 N 个文件」卡片（增删行数 / 二进制 / 过大 / 未知，点击在右栏
-预览），并新增可配置的「任务完成」提醒（默认仅后台、点击跳回会话）；内置浏览器用户与 Agent 标签
-都可独立选择 UA（兼容默认 / 桌面移动预设 / 自定义），Agent 忙时内容区四边显示鼠标穿透流光；
-智慧提醒统一拦截默认通知、`notify_banner`、插件 `ctx.banner` 与 `ask_user` 旁路播报，结束后统一
-汇总投递；桌面小组件统一为不透明卡片，不再启用原生 Acrylic / 窗口 shape / 玻璃令牌，旧
-`windowMaterial` 字段仅为兼容保留。设计见 [07 §4](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)、
-[14 §5.3](./14-plugin-system.md)；完整更新点与验收结果见
-[release-notes/v0.6.3.md](./release-notes/v0.6.3.md)。
-Aurora Center 服务器不随本版升级（仍为 **0.5.2**，版本线独立，本版无 Center 代码改动）。
+Aurora Center 服务器随后单独更新到 **0.5.3**（版本线独立），同步了 `ui.dialogs` 清单校验。
 
 更早的逐版说明（**v0.6.2 及以前**）不再在本文维护，逐版见
 [`release-notes/`](./release-notes/) 与 [04-roadmap.md](./04-roadmap.md) 的「实现说明」；
