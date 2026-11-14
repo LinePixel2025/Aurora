@@ -6631,11 +6631,12 @@ export const SETTINGS_NOTIFICATIONS_STYLE_ACT = `(async () => {
 })()`
 
 /**
- * 提醒细节区组的探针（v38；2026-11-01 补「试听提示音」按钮）。
+ * 提醒细节区组的探针（v38；2026-11-01 补「试听提示音」按钮；v42 补自定义音效行）。
  *
- * 只量矩形与默认选中态：五个设置项都在、每行都能点（高度 ≥ 24）、
+ * 只量矩形与默认选中态：六个设置项都在、每行都能点（高度 ≥ 24）、
  * 大小档三选一里「标准」被选中、停留时长三档里「6 秒」被选中、音量滑杆是 60、
- * 音量行有可点的「试听」按钮（不点它 —— 截图不该出声）。
+ * 音量行有可点的「试听」按钮、自定义音效行显示默认音说明且「选择文件…」可点
+ * （不点它们 —— 截图不该出声、也不该弹选择框）。
  * 判据只写一份（pass 取 conditions 的乘积）。
  */
 export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
@@ -6658,6 +6659,9 @@ export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
     const volumeValue = document.querySelector('[data-field="notifications.volume"] .volume-value')
     const testSound = field('testSound')
     const testSoundRect = rectOf(testSound)
+    const customSoundName = field('customSoundName')
+    const pickSound = field('pickSound')
+    const pickSoundRect = rectOf(pickSound)
     const sectionRect = rectOf(field('style'))
     const conditions = {
       sectionPresent: sectionRect !== null && sectionRect.width > 300,
@@ -6672,6 +6676,15 @@ export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
         testSoundRect !== null &&
         testSoundRect.height >= 24 &&
         testSoundRect.width >= 40,
+      // 自定义音效行（v42）：出厂显示默认音说明，「选择文件…」可点（不点 —— 不弹选择框）
+      customSoundField:
+        customSoundName !== null &&
+        (customSoundName.textContent || '').includes('默认') &&
+        pickSound !== null &&
+        pickSound.disabled === false &&
+        pickSoundRect !== null &&
+        pickSoundRect.height >= 24 &&
+        pickSoundRect.width >= 40,
       sizeOptions: sizeInfo.every((item) => item !== null),
       // 出厂态是「标准」，不是第一项（第一项是紧凑档）
       sizeDefault: sizeInfo[1] !== null && sizeInfo[1].active === true && sizeInfo[0].active === false && sizeInfo[2].active === false,
@@ -6689,6 +6702,7 @@ export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
       durationInfo,
       volume: volumeRange === null ? '' : volumeRange.value,
       testSound: testSoundRect,
+      customSound: pickSoundRect,
       conditions,
       pass,
     }

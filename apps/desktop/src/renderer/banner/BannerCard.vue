@@ -21,7 +21,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BannerShowPayload } from '@aurora/shared'
 import { useTts } from '../shared/composables/useTts.js'
-import { playBannerChime } from '../shared/chime.js'
+import { playBannerSound, stopBannerSound } from '../shared/banner-sound.js'
 
 const props = defineProps<{
   payload: BannerShowPayload | null
@@ -82,12 +82,15 @@ watch(
   () => props.payload,
   (next) => {
     tts.stop()
+    // 自定义音效可能比卡片停留时长长：换条 / 清空时先停掉上一条的（与 tts.stop 同一时机）
+    stopBannerSound()
     if (next === null) return
     reportedHeight = -1
     // 内容换了 → 高度可能变了：等 DOM 更新再量（ResizeObserver 只在尺寸真的变化时才回调）
     void nextTick(() => requestAnimationFrame(reportHeight))
     if (props.muted) return
-    if (next.sound) playBannerChime(next.volume)
+    // 自定义优先、失败回落默认合成音（v42，docs/07 §2.2.3 R4）；音量与朗读共用
+    if (next.sound) void playBannerSound(next.volume)
     // 语音也按同一个音量设置播（用户调的是「提醒有多大声」，不是「音效多大声」）
     tts.volume.value = next.volume
     if (next.speak && props.ttsReady) {
@@ -108,6 +111,7 @@ onUnmounted(() => {
   observer?.disconnect()
   observer = null
   tts.stop()
+  stopBannerSound()
 })
 </script>
 

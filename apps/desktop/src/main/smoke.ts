@@ -319,6 +319,48 @@ export function smokeScript(
       )
     }
 
+    // 2.4.1 自定义提示音（v42，docs/07 §2.2.3 R4）：readSound 只读设置里那条路径 ——
+    //       未配置回 null；不支持的格式 / 缺失文件如实拒绝（渲染层据此回落 / 报错）。
+    //       合法文件的读取正路由 notification-sound.test.ts 用真实临时文件覆盖。
+    {
+      const unset = await window.aurora.notifications.readSound()
+      record(
+        '自定义提示音未配置回 null（走默认合成音）',
+        Boolean(unset) && unset.ok === true && unset.value === null,
+        JSON.stringify(unset),
+      )
+
+      expectOk('settings.update(customSoundPath 不支持的格式)', await window.aurora.settings.update({
+        notifications: { customSoundPath: 'C:/aurora-smoke-not-exist/ring.txt' },
+      }))
+      const badExt = await window.aurora.notifications.readSound()
+      record(
+        '不支持的音频格式被拒绝（扩展名白名单）',
+        Boolean(badExt) && badExt.ok === false && badExt.message.includes('不支持的音频格式'),
+        JSON.stringify(badExt),
+      )
+
+      expectOk('settings.update(customSoundPath 缺失的 wav)', await window.aurora.settings.update({
+        notifications: { customSoundPath: 'C:/aurora-smoke-not-exist/ring.wav' },
+      }))
+      const missing = await window.aurora.notifications.readSound()
+      record(
+        '缺失的提示音文件被拒绝（提示重新选择）',
+        Boolean(missing) && missing.ok === false && missing.message.includes('不存在或已被移动'),
+        JSON.stringify(missing),
+      )
+
+      expectOk('settings.update(customSoundPath 还原为空)', await window.aurora.settings.update({
+        notifications: { customSoundPath: '' },
+      }))
+      const restoredSound = await window.aurora.notifications.readSound()
+      record(
+        '自定义提示音已还原（重新回 null）',
+        Boolean(restoredSound) && restoredSound.ok === true && restoredSound.value === null,
+        JSON.stringify(restoredSound),
+      )
+    }
+
     // 2.5 智慧提醒（v40，docs/07 §4）：免打扰期抑制入队 → 窗口结束结算出汇总卡片。
     //     自测环境没有可用模型，总结走纯文本回落 —— 恰好覆盖回落分支（不丢提醒）。
     //     通道切到流光，用原生卡片窗可见性证明「摘要真的弹出来了」。

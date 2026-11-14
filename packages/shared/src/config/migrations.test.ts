@@ -1122,6 +1122,7 @@ describe('配置迁移链', () => {
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
+        'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1175,6 +1176,7 @@ describe('配置迁移链', () => {
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
+        'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1608,6 +1610,7 @@ describe('配置迁移链', () => {
         'v38 → v39：v38 → v39：新增 computerUse（Computer Use 桌面操控，默认关闭）',
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
+        'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2165,6 +2168,7 @@ describe('配置迁移链', () => {
       expect(outcome.data['notifications']).toEqual({
         channel: 'banner',
         sound: true,
+        customSoundPath: '',
         volume: 30,
         speak: true,
         size: 'standard',
@@ -2211,6 +2215,7 @@ describe('配置迁移链', () => {
       expect(outcome.data['notifications']).toEqual({
         channel: 'banner',
         sound: true,
+        customSoundPath: '',
         volume: 30,
         speak: true,
         size: 'standard',
@@ -2236,6 +2241,48 @@ describe('配置迁移链', () => {
       })
       const twice = migrate({ ...outcome.data, version: 40 })
       expect(twice.data['notifications']).toEqual(outcome.data['notifications'])
+    })
+  })
+
+  describe('v41 → v42（自定义提示音，docs/07 §2.2.3 R4）', () => {
+    it('为老配置补 customSoundPath 空串（= 默认提示音），已有提醒字段原样保留', () => {
+      const outcome = migrate({
+        version: 41,
+        notifications: { channel: 'banner', sound: false, volume: 30, taskDoneEnabled: false },
+      })
+      expect(outcome.applied[0]).toContain('v41 → v42')
+      expect(outcome.data['notifications']).toMatchObject({
+        channel: 'banner',
+        sound: false,
+        customSoundPath: '',
+        volume: 30,
+        taskDoneEnabled: false,
+      })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('用户已写的自定义路径不被默认值覆盖（幂等）', () => {
+      const once = migrate({
+        version: 41,
+        notifications: { customSoundPath: 'D:/sounds/ring.mp3' },
+      })
+      expect(once.data['notifications']).toMatchObject({ customSoundPath: 'D:/sounds/ring.mp3' })
+      const twice = migrate({ ...once.data, version: 41 })
+      expect(twice.data['notifications']).toEqual(once.data['notifications'])
+    })
+
+    it('缺 notifications 组时补完整默认（含空路径），迁移结果过 Schema 的 notifications 段', () => {
+      const outcome = migrate({ version: 41 })
+      expect(outcome.data['notifications']).toMatchObject({ customSoundPath: '' })
+      const parsed = SettingsSchema.safeParse(outcome.data)
+      if (parsed.success) {
+        expect(parsed.data.notifications.customSoundPath).toBe('')
+      } else {
+        expect(
+          parsed.error.issues.every((issue) => issue.path[0] !== 'notifications'),
+          JSON.stringify(parsed.error.issues),
+        ).toBe(true)
+      }
     })
   })
 })
