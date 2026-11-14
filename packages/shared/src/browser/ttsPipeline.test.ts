@@ -4,7 +4,11 @@ import { runTtsPipeline, type TtsPipelineAudio, type TtsPipelineBackend } from '
 const AUDIO: TtsPipelineAudio = { audioBase64: 'QQ==', mimeType: 'audio/mpeg' }
 
 /** 手动控制的 Promise：resolve / reject 由用例决定时机。 */
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (e: Error) => void } {
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (e: Error) => void
+} {
   let resolve!: (value: T) => void
   let reject!: (e: Error) => void
   const promise = new Promise<T>((res, rej) => {

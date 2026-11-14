@@ -496,8 +496,7 @@ async function speak(item: ChatItem): Promise<void> {
             }
             settlePlayback = settle
             element.onended = () => settle()
-            element.onerror = () =>
-              settle(new Error('朗读播放失败（浏览器可能阻止了自动播放）'))
+            element.onerror = () => settle(new Error('朗读播放失败（浏览器可能阻止了自动播放）'))
             element.play().then(
               () => {
                 if (!settled) onStarted?.()

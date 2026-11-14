@@ -55,7 +55,7 @@ export function cleanTtsText(text: string): string {
   // 单下划线斜体：两侧不能是词字符（保住 snake_case 标识符）
   out = out.replace(/(?<![A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, '$1')
   // Markdown 转义还原
-  out = out.replace(/\\([\\`*_{}\[\]()#+\-.!>~|])/g, '$1')
+  out = out.replace(/\\([\\`*_{}[\]()#+\-.!>~|])/g, '$1')
   // 空白折叠：换行 → 空格（句读交给标点），连续空白合一
   out = out.replace(/\s*\n\s*/g, ' ')
   out = out.replace(/[ \t]+/g, ' ')

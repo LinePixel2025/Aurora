@@ -411,7 +411,9 @@ export class TtsSynthesizer {
     // 未知语言短码按 auto 处理（不发送），不让手改配置的笔误变成请求参数
     const instructions = (request.instructions ?? saved?.instructions ?? '').trim()
     const rawLanguage = (request.language ?? saved?.language ?? 'auto').trim()
-    const language = (TTS_LANGUAGES as readonly string[]).includes(rawLanguage) ? rawLanguage : 'auto'
+    const language = (TTS_LANGUAGES as readonly string[]).includes(rawLanguage)
+      ? rawLanguage
+      : 'auto'
 
     const apiKey =
       request.apiKey !== undefined && request.apiKey !== ''
@@ -423,7 +425,17 @@ export class TtsSynthesizer {
     if (apiKey === '') throw new Error('缺少 API Key：请填写密钥')
 
     return {
-      provider: { id: providerId, type, baseUrl, model, voice, speed, format, instructions, language },
+      provider: {
+        id: providerId,
+        type,
+        baseUrl,
+        model,
+        voice,
+        speed,
+        format,
+        instructions,
+        language,
+      },
       apiKey,
     }
   }
@@ -876,7 +888,9 @@ function dashscopeAudioEndpoint(baseUrl: string): string {
   let trimmed = baseUrl.replace(/\/+$/, '')
   if (trimmed.endsWith(DASHSCOPE_AUDIO_TTS_TAIL)) return trimmed
   if (trimmed.endsWith(DASHSCOPE_GENERATION_TAIL)) {
-    trimmed = trimmed.slice(0, trimmed.length - DASHSCOPE_GENERATION_TAIL.length).replace(/\/+$/, '')
+    trimmed = trimmed
+      .slice(0, trimmed.length - DASHSCOPE_GENERATION_TAIL.length)
+      .replace(/\/+$/, '')
   }
   for (const suffix of ['/compatible-mode/v1', '/compatible-mode', '/api/v1', '/api']) {
     if (trimmed.endsWith(suffix)) {

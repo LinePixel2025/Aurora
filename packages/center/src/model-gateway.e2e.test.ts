@@ -191,7 +191,12 @@ describe('Center 官方模型网关 · 端到端', () => {
         headers: { Authorization: `Bearer ${clientToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'qwen-audio-3.1-tts-flash',
-          input: { text: '你好', voice: 'longanhuan_v3.1', instruction: '温柔一些', language_hints: ['zh'] },
+          input: {
+            text: '你好',
+            voice: 'longanhuan_v3.1',
+            instruction: '温柔一些',
+            language_hints: ['zh'],
+          },
         }),
       },
     )

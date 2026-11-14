@@ -435,7 +435,9 @@ function baseUrlHint(type: TtsProviderType): string {
 
 /** 编辑卡按接口类型切换的 baseURL 占位符 */
 function baseUrlPlaceholder(type: TtsProviderType): string {
-  return type === 'openai-compat' ? 'https://api.openai.com/v1' : 'https://maas.qianwenaiapi.com/api/v1'
+  return type === 'openai-compat'
+    ? 'https://api.openai.com/v1'
+    : 'https://maas.qianwenaiapi.com/api/v1'
 }
 
 /** 语速 hint 按类型切换（dashscope 无此参数；dashscope-audio 协议限 0.5–2） */

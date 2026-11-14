@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  cleanTtsText,
-  splitTtsText,
-  TTS_CHUNK_CHARS,
-  TTS_FIRST_CHUNK_CHARS,
-} from './tts-text.js'
+import { cleanTtsText, splitTtsText, TTS_CHUNK_CHARS, TTS_FIRST_CHUNK_CHARS } from './tts-text.js'
 
 describe('cleanTtsText（朗读前清洗，docs/06 §13.4）', () => {
   it('围栏代码块整段删除（带语言标记），正文保留', () => {

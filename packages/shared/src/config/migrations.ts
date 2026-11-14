@@ -1432,7 +1432,10 @@ const migrateV42ToV43: Migration = {
             patched['instructions'] = ''
           }
           const language = patched['language']
-          if (typeof language !== 'string' || !(TTS_LANGUAGES as readonly string[]).includes(language)) {
+          if (
+            typeof language !== 'string' ||
+            !(TTS_LANGUAGES as readonly string[]).includes(language)
+          ) {
             patched['language'] = 'auto'
           }
           nextProviders[id] = patched

@@ -1229,7 +1229,10 @@ describe('TtsSynthesizer · 语气指令与合成语言（v43，docs/06 §13.1�
       dashJsonResponse('https://oss.example.com/a.mp3'),
       audioResponse([0]),
     ])
-    const tts = make(fakeSettings({ provider: { type: 'dashscope', language: 'klingon' } }), fetchImpl)
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', language: 'klingon' } }),
+      fetchImpl,
+    )
     await tts.synthesize({ text: '你好' })
     const body = JSON.parse(String(requests[0]!.init.body)) as { input: { language_type?: string } }
     expect(body.input.language_type).toBeUndefined()
@@ -1276,7 +1279,9 @@ describe('TtsSynthesizer · dashscope-audio（v43，docs/06 §13.7）', () => {
   it('端点规整：已以新端点结尾不重复拼；粘着旧生成端点（只改类型不改地址）整段替换', async () => {
     const full = `${DASH_BASE}${AUDIO_TAIL}`
     expect(await audioEndpointOf(`${full}/`)).toBe(full)
-    expect(await audioEndpointOf(`${DASH_BASE}${GENERATION_TAIL}`)).toBe(`${DASH_BASE}${AUDIO_TAIL}`)
+    expect(await audioEndpointOf(`${DASH_BASE}${GENERATION_TAIL}`)).toBe(
+      `${DASH_BASE}${AUDIO_TAIL}`,
+    )
   })
 
   it('请求体：input.format / instruction（单数）/ language_hints；rate 夹取到 0.5–2 且 ≠1 才发', async () => {
@@ -1388,7 +1393,10 @@ describe('TtsSynthesizer · dashscope-audio（v43，docs/06 §13.7）', () => {
     ])
     const result = await make(
       fakeSettings({
-        provider: { type: 'dashscope-audio', baseUrl: 'https://maas.qianwenaiapi.com/compatible-mode' },
+        provider: {
+          type: 'dashscope-audio',
+          baseUrl: 'https://maas.qianwenaiapi.com/compatible-mode',
+        },
       }),
       fetchImpl,
     ).listModels({})
