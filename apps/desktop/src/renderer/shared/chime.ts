@@ -1,15 +1,24 @@
 /**
- * 流光提醒的提示音（docs/07 §2.2.3、R4）。
+ * 流光提醒的**默认**提示音（docs/07 §2.2.3、R4）。
  *
- * 用 **Web Audio 现场合成**三音上行（A5 → C#6 → E6），不新增音频资产：
- * 打包体积、CSP（`media-src` 只放行 blob:`/`self`）与"资源找不到"这三件事一起省掉。
+ * 用 **Web Audio 现场合成**，不新增音频资产：打包体积、CSP（`media-src` 只放行
+ * blob:`/`self`）与"资源找不到"这三件事一起省掉。自定义音效文件由 `banner-sound.ts`
+ * 负责（那条链路走 blob URL 播放），本模块只管默认音。
+ *
+ * **音色对齐 Windows 11 通知音（2026-11-14）**：对本机 `C:\Windows\Media\Windows Notify.wav`
+ * 做包络 / 频谱实测后按特征重新合成（**不复制微软音频资产**）：
+ * - 两音**下行纯四度**：D#6 ≈ 1244.5Hz → A#5 ≈ 932.3Hz（实测主频 1249 / 937Hz），
+ *   近纯正弦（实测二次谐波仅 1–2%），柔和圆润 —— Win11「平静提示」的声音设计；
+ * - 第一音 0s 起、第二音 0.2s 进入（实测第二音 0.21s 起爬升）；
+ * - 软起音（实测约 0.14s / 0.10s 到峰值），先快衰到约 30% 再长尾收干净
+ *   （实测总时长约 1.29s），第二音峰值约为第一音的 0.78 倍（实测 0.0337 / 0.0444）。
  *
  * 两个「有时不响 / 听不见」的历史根因（2026-11-01 修）：
  * 1. **每次新建 `AudioContext` 并把音符排在 `currentTime`**：窗口刚显示 / 后台节流时上下文可能
  *    还是 `suspended`，`currentTime` 停在 0；等它恢复时这些音符已经"在过去"，浏览器直接不播。
  *    现在**复用同一个上下文**，播放前 `resume()`，并从 `currentTime + 40ms` 开始调度。
  * 2. **峰值太低**：旧实现 `0.05 × 音量`，默认 60% 下 ≈ 0.03 —— 笔记本 / 投影喇叭上几乎听不见。
- *    现在每音峰值 `0.26 × 音量^0.7`（默认下 ≈ 0.18），三角波 + 压缩器（防叠加削波）。
+ *    现在每音峰值 `0.26 × 音量^0.7`（默认下 ≈ 0.18）+ 压缩器（防叠加削波）。
  *
  * 音量来自用户设置（`notifications.volume`，0–100 → 这里收到 0–1），与语音播报共用。
  * 失败一律静默：音效只是锦上添花 —— 绝不能因为它没响就让卡片也不显示。
@@ -20,30 +29,43 @@ export interface ChimeNote {
   frequency: number
   /** 相对第一个音的起点（秒） */
   atSeconds: number
-  /** 峰值增益（已乘过音量曲线） */
+  /** 峰值增益（已乘过音量曲线与音间比例） */
   peak: number
-  /** 指数衰减时长（秒） */
+  /** 软起音时长（秒）：0 → 峰值的线性爬升，Win11 风格的关键（不是打击乐式的硬起） */
+  attackSeconds: number
+  /** 峰值后的总衰减时长（秒）：先快衰到 30% 再长尾收干净 */
   decaySeconds: number
 }
 
-/** 三音上行：A5 → C#6 → E6（大三和弦琶音，短促但不刺耳） */
-const NOTE_PLAN: ReadonlyArray<{ frequency: number; atSeconds: number }> = [
-  { frequency: 880, atSeconds: 0 },
-  { frequency: 1108.73, atSeconds: 0.13 },
-  { frequency: 1318.51, atSeconds: 0.26 },
+/**
+ * 两音下行纯四度（D#6 → A#5）：Win11 通知音的实测特征。
+ * `peakScale` 是音间比例（第二音更轻，实测 ≈ 0.78）。
+ */
+const NOTE_PLAN: ReadonlyArray<{
+  frequency: number
+  atSeconds: number
+  attackSeconds: number
+  decaySeconds: number
+  peakScale: number
+}> = [
+  { frequency: 1244.51, atSeconds: 0, attackSeconds: 0.14, decaySeconds: 0.95, peakScale: 1 },
+  { frequency: 932.33, atSeconds: 0.2, attackSeconds: 0.1, decaySeconds: 1.0, peakScale: 0.78 },
 ]
 
 /** 每音峰值（未乘音量）：桌面提醒要"听得见"，但不该刺耳 */
 const NOTE_PEAK = 0.26
-/** attack / 指数衰减：快起慢落，约 0.72s 收干净 */
-const ATTACK_SECONDS = 0.008
-const DECAY_SECONDS = 0.72
+/**
+ * 衰减两段式（实测包络）：峰值后先快衰到 `peak × DECAY_KNEE`（约 0.12s），
+ * 再慢衰到无声 —— 单段指数衰减会把"长尾"吃掉，听起来像短促的"叮"而不是 Win11 的柔和钟音。
+ */
+const DECAY_KNEE = 0.3
+const FAST_DECAY_SECONDS = 0.12
 /**
  * 调度前瞻：上下文恢复与调度都需要时间，起点不能正好等于 `currentTime`
  * （否则一帧之内的抖动就可能把音符排到"已经过去"）。
  */
 const SCHEDULE_LEAD_SECONDS = 0.04
-/** 主增益：留出压缩器工作点，避免三音重叠时削波 */
+/** 主增益：留出压缩器工作点，避免两音重叠时削波 */
 const MASTER_GAIN = 0.9
 
 /** 音量 → 感知曲线（线性音量在低档太轻，0.7 次方接近等响） */
@@ -61,8 +83,9 @@ export function bannerChimeNotes(volume: number): ChimeNote[] {
   return NOTE_PLAN.map((note) => ({
     frequency: note.frequency,
     atSeconds: note.atSeconds,
-    peak: NOTE_PEAK * level,
-    decaySeconds: DECAY_SECONDS,
+    peak: NOTE_PEAK * note.peakScale * level,
+    attackSeconds: note.attackSeconds,
+    decaySeconds: note.decaySeconds,
   }))
 }
 
@@ -145,17 +168,21 @@ function scheduleChime(context: ChimeContextLike, notes: ChimeNote[]): void {
   const start = context.currentTime + SCHEDULE_LEAD_SECONDS
   for (const note of notes) {
     const at = start + note.atSeconds
+    const peakAt = at + note.attackSeconds
     const oscillator = context.createOscillator()
     const gain = context.createGain()
-    oscillator.type = 'triangle'
+    // 正弦波：Win11 通知音实测近纯音（二次谐波 1–2%），柔和不刺耳
+    oscillator.type = 'sine'
     oscillator.frequency.setValueAtTime(note.frequency, at)
     gain.gain.setValueAtTime(0, at)
-    gain.gain.linearRampToValueAtTime(note.peak, at + ATTACK_SECONDS)
-    gain.gain.exponentialRampToValueAtTime(0.0001, at + note.decaySeconds)
+    gain.gain.linearRampToValueAtTime(note.peak, peakAt)
+    // 两段衰减：先快衰到 30%（实测 0.12s 内），再长尾收干净
+    gain.gain.exponentialRampToValueAtTime(note.peak * DECAY_KNEE, peakAt + FAST_DECAY_SECONDS)
+    gain.gain.exponentialRampToValueAtTime(0.0001, peakAt + note.decaySeconds)
     oscillator.connect(gain)
     gain.connect(master)
     oscillator.start(at)
-    oscillator.stop(at + note.decaySeconds + 0.02)
+    oscillator.stop(peakAt + note.decaySeconds + 0.02)
   }
 }
 

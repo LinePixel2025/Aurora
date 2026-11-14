@@ -294,6 +294,7 @@
   "notifications": {
     "channel": "system", // system 系统通知 | banner 流光提醒 | both 两者都发 | off 不打扰（只记日志）
     "sound": true, // v38：提示音总闸（关掉后请求级 sound:true 也不响）
+    "customSoundPath": "", // v42：自定义音效文件绝对路径（空 = 默认 Win11 风格合成音；wav/mp3/ogg/m4a/aac/flac/webm，≤2MB）
     "volume": 60, // v38：提示音与语音播报音量（0–100）
     "speak": true, // v38：语音朗读总闸（仍需 tts 已配置）
     "size": "standard", // v38：compact / standard / large —— 按显示器宽度比例取卡宽并流体放大字号（2026-11-01 放大）
@@ -644,12 +645,19 @@
   provider + model，严格使用该选择，不可用时暂停而不是回落。整组在 `SETTINGS_READONLY_PREFIXES` 里：
   它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
   内嵌图片是否真正读取由有效后台模型的 `vision` 决定；运行状态会如实显示「已开启 / 仅分析文字」。
-- `notifications`（**v37 新增，v38 / v40 / v41 扩展**，见 07 §4）：提醒通道与细节。
+- `notifications`（**v37 新增，v38 / v40 / v41 / v42 扩展**，见 07 §4）：提醒通道与细节。
   `channel`：`system`（默认，系统通知中心）/ `banner`（流光提醒）/ `both`（两条都发）/
   `off`（不打扰，只记日志）；`sound` / `volume` / `speak` / `size` / `durationMs`（v38）：
   流光提醒的提示音、音量（0–100）、语音朗读、卡片大小（`compact` / `standard` / `large`：
   按显示器宽度比例取卡宽 + 流体字号，2026-11-01 起整体放大、v40 起三档视觉差异拉开；
   取值与默认值未变）与停留时长（2–30s）。
+  `customSoundPath`（**v42**）：自定义提示音文件的绝对路径，空串 = 默认提示音
+  （2026-11-14 起对齐 Windows 11 风格的两音下行合成音，见 07 §2.2.3 R4）。
+  播放时主进程只读**设置里这条路径**（`notifications:readSound`，不接受渲染层传路径）：
+  扩展名白名单 wav / mp3 / ogg / m4a / aac / flac / webm、大小 ≤ 2MB；
+  文件缺失 / 超限 / 不支持时卡片侧静默回落默认提示音，设置页试听如实报错。
+  它仍是单段叶子，天然被 `notifications.*` 通配覆盖（AI 可照用户要求改），
+  不是密文字段（路径本身不含凭据）。
   `smartEnabled` / `smartWindow` / `smartDuringClass` / `smartSummarize`（**v40**，智慧提醒，见 07 §4）：
   免打扰总开关、手动免打扰时段（`start` / `end` 为 "HH:mm"，`daily` = 每天重复，
   `daily: false` 时仅 `armedDate`（YYYY-MM-DD）当天一次性生效、结束后自动清空）、
@@ -897,12 +905,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   —— 升级后默认关闭，行为与 v39 逐字一致；用户已写的 `channel` 等字段原样保留）、
   `v40 → v41`（**任务完成提醒**，见 §1 的 `notifications` 与 07 §4：为已有 `notifications` 补
   `taskDoneEnabled: true` / `taskDoneBackgroundOnly: true` —— 升级后默认开启但只在你离开主界面时提醒；
-  用户已写的 `channel` / 智慧提醒字段原样保留）。
-  四十一条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  用户已写的 `channel` / 智慧提醒字段原样保留）、
+  `v41 → v42`（**自定义提示音**，见 §1 的 `notifications` 与 07 §2.2.3 R4：为已有 `notifications` 补
+  `customSoundPath: ''` —— 空串 = 默认提示音，升级后行为不变（默认音本身自本版起对齐
+  Windows 11 风格，那是合成参数变化、不是配置变化）；用户已写字段原样保留）。
+  四十二条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **41** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **42** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1073,9 +1084,10 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   - **连接**：`center` Aurora Center；
   - **扩展**：`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
   - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
-  - **`notifications` 提醒（v37 新增，v38 / v40 / v41 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
+  - **`notifications` 提醒（v37 新增，v38 / v40 / v41 / v42 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
     自上而下六个区组 —— ①「默认提醒方式」四选一；②「流光提醒」细节
-    （提示音 / 音量 / 朗读 / 弹窗大小 / 停留时长，非流光通道时置灰）；
+    （提示音 / 自定义音效（v42：选择文件 / 恢复默认）/ 音量 / 朗读 / 弹窗大小 / 停留时长，
+    非流光通道时置灰）；
     ③「智慧提醒」（v40：总开关 / 免打扰时段 / 上课期间 / Agent 总结）；
     ④**「任务完成提醒」**（v41：`taskDoneEnabled` 总开关 +
     `taskDoneBackgroundOnly`「仅主界面不在前台时提醒」，总开关关闭时后者置灰）；
@@ -1088,7 +1100,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     留空 = 不启用，只填开始按默认「07:00」补全；起止用时间轮盘，见 07 §2.5）；
     页尾「发送测试提醒」按钮
     （细节见 07 §2.2.3 / §4）。锚点 `notifications.channel.<key>` /
-    `notifications.sound` / `.volume` / `.speak` / `.size.<key>` / `.duration.<ms>` /
+    `notifications.sound` / `.customSoundPath` / `.volume` / `.speak` / `.size.<key>` /
+    `.duration.<ms>` /
     `notifications.taskDoneEnabled` / `.taskDoneBackgroundOnly` /
     `notifications.test`，截图场景 `settings-notifications.png`（通道）、
     `settings-notifications-style.png`（细节区，拍前把通道切到流光以显示可用态）、

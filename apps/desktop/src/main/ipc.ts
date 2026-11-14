@@ -30,6 +30,7 @@ import type { WidgetManager } from './plugins/widgets.js'
 import type { PluginDialogManager } from './plugins/dialogs.js'
 import type { PluginMarketplaceClient } from './plugins/marketplace.js'
 import { pluginPageGuestOf } from './page-protocol.js'
+import { readNotificationSound, SOUND_FILE_EXTENSIONS } from './notification-sound.js'
 import { isPathOutsideError, type WorkspaceGuardOptions } from './tools/file-port.js'
 import {
   assertRestorablePath,
@@ -49,6 +50,7 @@ import {
   type BannerDismissResult,
   type BannerMeasureRequest,
   type NotificationTestResult,
+  type NotificationSoundData,
   type BrowserAgentReportRequest,
   type BrowserAgentStopRequest,
   type ChatArchiveRequest,
@@ -1894,6 +1896,34 @@ export function registerIpc(deps: DesktopDeps): () => void {
       return err('E_INVALID_STATE', '提醒服务尚未装配')
     }
     return ok(deps.notificationTest())
+  })
+
+  /**
+   * 自定义提示音（v42，docs/07 §2.2.3 R4）：弹文件选择框。
+   * 渲染层没有文件系统能力，选择框只能由主进程弹（同 `plugins:choosePackage` 口径）；
+   * 取消返回 null，选中返回绝对路径 —— 保存与试听由设置页随后发起。
+   */
+  handle<string | null>(IPC.notifications.pickSound, async () => {
+    const picked = await dialog.showOpenDialog({
+      title: '选择自定义提示音',
+      buttonLabel: '选择音效',
+      properties: ['openFile'],
+      filters: [{ name: '音频文件', extensions: [...SOUND_FILE_EXTENSIONS] }],
+    })
+    return ok(picked.canceled ? null : (picked.filePaths[0] ?? null))
+  })
+
+  /**
+   * 读**设置里那条** `customSoundPath`（不接受渲染层传路径 —— 那会开出读任意文件的口子）。
+   * 空串回 null = 未配置（渲染层走默认合成音）；校验 / 读取失败折成 E_IO 错误文案，
+   * 卡片侧据此静默回落默认音，设置页试听据此如实报错。
+   */
+  handle<NotificationSoundData | null>(IPC.notifications.readSound, async () => {
+    try {
+      return ok(await readNotificationSound(deps.settings.get().notifications.customSoundPath))
+    } catch (error) {
+      return err('E_IO', error instanceof Error ? error.message : String(error))
+    }
   })
 
   // ───────────────────────── Aurora Center（docs/12） ─────────────────────────

@@ -1371,6 +1371,29 @@ const migrateV40ToV41: Migration = {
   },
 }
 
+/**
+ * v41 → v42：`notifications` 补自定义音效路径（docs/07 §2.2.3 R4）。
+ *
+ * 口径同上：以默认值为底、已有对象在上。补出来的 `customSoundPath: ''` = 默认提示音，
+ * 升级本身不改变任何用户已写的设置；默认音的音色变化（对齐 Win11 风格）发生在
+ * 渲染层合成参数里，不需要迁移表达。
+ */
+const migrateV41ToV42: Migration = {
+  from: 41,
+  to: 42,
+  describe: 'v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const notifications = asRecord(next['notifications'])
+    next['notifications'] = {
+      ...DEFAULT_NOTIFICATIONS,
+      ...(notifications ?? {}),
+    }
+    next['version'] = 42
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1413,6 +1436,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV38ToV39,
   migrateV39ToV40,
   migrateV40ToV41,
+  migrateV41ToV42,
 ]
 
 export interface MigrationOutcome {

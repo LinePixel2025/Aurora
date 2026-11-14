@@ -254,6 +254,12 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
   主进程 `main/banner.ts` 的 `BannerService.show()`；排队 / 去重 / 超时兜底只在那一处实现。
   两个内部窗口由 `WindowManager.showBanner()` 驱动（光带窗整屏穿透、卡片窗可点），
   不经过 `WINDOW_NAMES` 状态机、不写几何持久化。
+  **提示音（v42）**：默认音是渲染层 Web Audio 合成的 Win11 风格两音下行
+  （`renderer/shared/chime.ts`）；`notifications.customSoundPath` 非空时改播用户文件 ——
+  `notifications:pickSound`（invoke，主进程弹文件选择框，回路径或 null）与
+  `notifications:readSound`（invoke，主进程读**设置里那条路径**：扩展名白名单 + ≤2MB，
+  回 `{ dataBase64, mime }` 或 null = 未配置；渲染层不能传任意路径）两条通道，
+  播放链在 `renderer/shared/banner-sound.ts`（卡片与设置页试听共用，失败回落默认音）。
 - 跨进程类型统一定义于 `packages/shared`；preload 只暴露白名单方法。
 - 事件推送使用 `on/off` 成对暴露，渲染层卸载时自动解绑。
 - **`chat:event` 事件带 `seq` 与 `round`**（2026-09）：`seq` 是会话内单调序号（主进程 `emit`

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 提醒设置页（v37，v38 / v40 扩展；2026-10-25 聚合定时提醒与勿扰时段；docs/07 §4、docs/08 §6/§6.1）。
+ * 提醒设置页（v37，v38 / v40 / v42 扩展；2026-10-25 聚合定时提醒与勿扰时段；docs/07 §4、docs/08 §6/§6.1）。
  *
  * Aurora 所有提醒相关配置的集中入口，全部即时生效：
  * 1. **提醒走哪条通道**（`notifications.channel`）—— 系统通知 / 流光提醒 / 两者 / 不打扰；
- * 2. **流光提醒长什么样、多大声、留多久**（`sound` / `volume` / `speak` / `size` / `durationMs`）；
+ * 2. **流光提醒长什么样、多大声、留多久**（`sound` / `customSoundPath`（v42 自定义音效）/
+ *    `volume` / `speak` / `size` / `durationMs`）；
  * 3. **智慧提醒**（v40）：免打扰期（手动时段 / ClassRoom 上课期间）不弹提醒，期结束后
  *    汇总成一条投递（`smartEnabled` / `smartWindow` / `smartDuringClass` / `smartSummarize`）；
  * 3.1 **任务完成提醒**（v41）：Agent 正常收敛后提醒「任务完成」，点击跳回会话；
@@ -31,6 +32,11 @@ import SettingField from '../../shared/components/SettingField.vue'
 import TimeDial from '../../shared/components/TimeDial.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 import { playBannerChime } from '../../shared/chime.js'
+import {
+  loadBannerSound,
+  playCustomBannerSound,
+  stopBannerSound,
+} from '../../shared/banner-sound.js'
 
 const settingsStore = useSettingsStore()
 const error = ref<string | null>(null)
@@ -88,12 +94,55 @@ const durationMs = computed(() => notifications.value?.durationMs ?? 6000)
 /** 只有流光通道才吃这些细节：选系统通知时整块置灰（文案仍可见，免得用户找不到） */
 const bannerActive = computed(() => channel.value === 'banner' || channel.value === 'both')
 
+/** 自定义音效路径（v42）：空串 = 默认提示音（Win11 风格合成音） */
+const customSoundPath = computed(() => notifications.value?.customSoundPath ?? '')
+/** 展示用文件名（完整路径放 title，悬停可见）；未配置时显示默认音说明 */
+const customSoundLabel = computed(() => {
+  const path = customSoundPath.value
+  if (path === '') return '默认提示音（Windows 11 风格）'
+  return path.split(/[\\/]/).pop() ?? path
+})
+
 /**
- * 试听提示音：与流光卡片走**同一个** `playBannerChime`（同一个音量曲线 / 音色）。
- * 听不到 = 系统 / 设备侧没声，而不是"流光提醒没响"—— 排障时这条比猜测有用。
+ * 试听提示音：与流光卡片走**同一条播放链**（`banner-sound.ts`：自定义优先、
+ * 否则默认合成音，同一个音量）。区别只在失败口径：卡片侧静默回落，
+ * 这里如实报错 —— 用户正在排障，不能让他以为"设置生效了"。
  */
-function previewSound(): void {
+async function previewSound(): Promise<void> {
+  error.value = null
+  const source = await loadBannerSound()
+  if (source.kind === 'error') {
+    error.value = source.message
+    return
+  }
+  if (source.kind === 'custom') {
+    const played = await playCustomBannerSound(source.data, volume.value / 100)
+    if (!played) error.value = '自定义音效播放失败：文件可能已损坏或格式不被支持'
+    return
+  }
   void playBannerChime(volume.value / 100)
+}
+
+/** 选择自定义音效文件：主进程弹选择框（渲染层无文件系统能力），选中即保存 */
+async function pickCustomSound(): Promise<void> {
+  error.value = null
+  try {
+    const result = await window.aurora.notifications.pickSound()
+    if (!result.ok) {
+      error.value = result.message
+      return
+    }
+    if (result.value === null) return // 用户取消
+    await save({ customSoundPath: result.value })
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+/** 恢复默认提示音：清空路径（不是删文件），并停掉可能在播的自定义音效 */
+async function resetCustomSound(): Promise<void> {
+  stopBannerSound()
+  await save({ customSoundPath: '' })
 }
 
 async function save(patch: Partial<NonNullable<typeof notifications.value>>): Promise<void> {
@@ -325,7 +374,7 @@ function describeTest(result: NotificationTestResult): string {
       <SettingField
         data-field="notifications.sound"
         label="提示音"
-        hint="弹出时播一段上行提示音，与系统提示音互不影响"
+        hint="弹出时播一段柔和提示音，与系统提示音互不影响"
       >
         <input
           type="checkbox"
@@ -333,6 +382,39 @@ function describeTest(result: NotificationTestResult): string {
           :disabled="!bannerActive"
           @change="save({ sound: ($event.target as HTMLInputElement).checked })"
         />
+      </SettingField>
+
+      <SettingField
+        data-field="notifications.customSoundPath"
+        label="自定义音效"
+        hint="支持 wav/mp3/ogg 等，不超过 2MB；空 = 默认提示音"
+      >
+        <div class="custom-sound-row">
+          <span
+            class="custom-sound-name tiny muted"
+            data-field="notifications.customSoundName"
+            :title="customSoundPath"
+          >
+            {{ customSoundLabel }}
+          </span>
+          <AppButton
+            size="sm"
+            data-field="notifications.pickSound"
+            :disabled="!bannerActive || !sound"
+            @click="pickCustomSound"
+          >
+            选择文件…
+          </AppButton>
+          <AppButton
+            v-if="customSoundPath !== ''"
+            size="sm"
+            data-field="notifications.resetSound"
+            :disabled="!bannerActive || !sound"
+            @click="resetCustomSound"
+          >
+            恢复默认
+          </AppButton>
+        </div>
       </SettingField>
 
       <SettingField
@@ -747,6 +829,22 @@ function describeTest(result: NotificationTestResult): string {
   align-items: center;
   gap: var(--space-3);
   min-width: 220px;
+}
+
+/* 自定义音效行：文件名占满剩余宽度（超长省略，完整路径在 title），按钮靠右 */
+.custom-sound-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 220px;
+}
+
+.custom-sound-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .volume-range {

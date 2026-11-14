@@ -284,9 +284,13 @@ export const IPC = {
   /**
    * 默认提醒方式（v37，docs/07 §4、docs/08 §6.1）：
    * 设置页「提醒」的**试一下**按钮 —— 按当前默认方式真的投递一条示例提醒。
+   * v42 起另有自定义提示音两条（docs/07 §2.2.3 R4）：`pickSound` 弹文件选择框，
+   * `readSound` 读**设置里那条**自定义音效路径（渲染层不能传任意路径）。
    */
   notifications: {
     test: 'notifications:test',
+    pickSound: 'notifications:pickSound',
+    readSound: 'notifications:readSound',
   },
   /**
    * Computer Use（v39，docs/06 §28）：用户对「截屏 + 合成鼠标键盘」的显式授权。

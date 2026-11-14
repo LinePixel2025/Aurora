@@ -195,8 +195,11 @@ const CHANNELS = {
     activate: 'banner:activate',
   },
   // 默认提醒方式（v37，docs/07 §4）：设置页「试一下」按当前方式投递一条示例提醒
+  // v42 自定义提示音（docs/07 §2.2.3 R4）：pickSound 弹选择框 / readSound 读设置里那条路径
   notifications: {
     test: 'notifications:test',
+    pickSound: 'notifications:pickSound',
+    readSound: 'notifications:readSound',
   },
   // Computer Use（v39，docs/06 §28）：与 shared 契约同构，编译期双向断言会兜住
   computerUse: {

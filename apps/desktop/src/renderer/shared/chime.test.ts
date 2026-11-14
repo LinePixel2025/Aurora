@@ -1,9 +1,12 @@
 /**
- * 提示音合成逻辑的单测（`renderer/shared/chime.ts`，docs/07 §2.2.3 R4）。
+ * 默认提示音合成逻辑的单测（`renderer/shared/chime.ts`，docs/07 §2.2.3 R4）。
  *
- * 这些用例锁住「有时不响 / 听不见」这两个回归：
- * 1. 必须先 `resume()` 再调度，且起点要在 `currentTime` **之后**（旧实现排在 0 点，恢复后已成过去）；
- * 2. 音量 0.6 时峰值要明显高于旧实现（旧值 ≈ 0.03），否则现场就是"几乎听不见"。
+ * 这些用例锁住三类回归：
+ * 1. 「有时不响」：必须先 `resume()` 再调度，且起点要在 `currentTime` **之后**
+ *    （旧实现排在 0 点，恢复后已成过去）；
+ * 2. 「听不见」：音量 0.6 时峰值要明显高于旧实现（旧值 ≈ 0.03）；
+ * 3. 「Win11 风格走样」（2026-11-14）：两音下行纯四度（D#6 → A#5）、正弦波、
+ *    软起音 + 两段衰减（先快衰到 30% 再长尾）—— 改回上行三连音 / 三角波 / 硬起音都会红。
  *
  * node 环境没有 `AudioContext`，所以模块留了 `createContext` 注入点，这里塞个假上下文。
  */
@@ -17,13 +20,21 @@ import {
   type ChimeOscillatorLike,
 } from './chime.js'
 
+interface RampRecord {
+  value: number
+  when: number
+}
+
 interface FakeLog {
   events: string[]
   starts: number[]
   stops: number[]
   frequencies: number[]
   oscillatorTypes: string[]
-  notePeaks: number[]
+  /** 线性爬升（软起音）的目标值与时刻 */
+  linearRamps: RampRecord[]
+  /** 指数衰减（两段式）的目标值与时刻 */
+  exponentialRamps: RampRecord[]
   masterGains: number[]
   compressor: Record<string, number>
 }
@@ -50,7 +61,8 @@ function makeFakeContext(options: { state?: string; resumeRejects?: boolean } = 
     stops: [],
     frequencies: [],
     oscillatorTypes: [],
-    notePeaks: [],
+    linearRamps: [],
+    exponentialRamps: [],
     masterGains: [],
     compressor: {},
   }
@@ -60,14 +72,14 @@ function makeFakeContext(options: { state?: string; resumeRejects?: boolean } = 
       gain: {
         setValueAtTime: (value: number) => {
           log.events.push('gain')
-          if (value > 0 && value < 0.5) log.notePeaks.push(value)
           if (value >= 0.5) log.masterGains.push(value)
         },
-        linearRampToValueAtTime: (value: number) => {
-          if (value > 0 && value < 0.5) log.notePeaks.push(value)
-          if (value >= 0.5) log.masterGains.push(value)
+        linearRampToValueAtTime: (value: number, when: number) => {
+          log.linearRamps.push({ value, when })
         },
-        exponentialRampToValueAtTime: () => undefined,
+        exponentialRampToValueAtTime: (value: number, when: number) => {
+          log.exponentialRamps.push({ value, when })
+        },
       },
       connect: () => undefined,
     }
@@ -137,18 +149,26 @@ describe('bannerChimeNotes', () => {
     expect(bannerChimeNotes(0.0001)).toEqual([])
   })
 
-  it('三音上行、时间递增', () => {
+  it('Win11 风格：两音下行纯四度（D#6 → A#5）、第二音晚 0.2s 进入', () => {
     const notes = bannerChimeNotes(0.6)
-    expect(notes).toHaveLength(3)
-    expect(notes.map((note) => note.frequency)).toEqual([880, 1108.73, 1318.51])
-    expect(notes[1]!.atSeconds).toBeGreaterThan(notes[0]!.atSeconds)
-    expect(notes[2]!.atSeconds).toBeGreaterThan(notes[1]!.atSeconds)
+    expect(notes).toHaveLength(2)
+    expect(notes.map((note) => note.frequency)).toEqual([1244.51, 932.33])
+    expect(notes[1]!.frequency).toBeLessThan(notes[0]!.frequency)
+    expect(notes[0]!.atSeconds).toBe(0)
+    expect(notes[1]!.atSeconds).toBeCloseTo(0.2, 5)
   })
 
-  it('默认音量 60% 的峰值明显高于旧实现（0.05 × 0.6 ≈ 0.03）', () => {
+  it('默认音量 60% 的峰值明显高于旧实现（0.05 × 0.6 ≈ 0.03），第二音更轻（×0.78）', () => {
     const notes = bannerChimeNotes(0.6)
     expect(notes[0]!.peak).toBeGreaterThan(0.12)
     expect(notes[0]!.peak).toBeCloseTo(0.26 * 0.6 ** 0.7, 5)
+    expect(notes[1]!.peak).toBeCloseTo(notes[0]!.peak * 0.78, 5)
+  })
+
+  it('软起音：两音各有 0.1s 量级的 attack（不是打击乐式硬起）', () => {
+    const notes = bannerChimeNotes(0.6)
+    expect(notes[0]!.attackSeconds).toBeGreaterThanOrEqual(0.1)
+    expect(notes[1]!.attackSeconds).toBeGreaterThanOrEqual(0.08)
   })
 
   it('音量越大峰值越大，且不超过单音上限', () => {
@@ -168,21 +188,39 @@ describe('playBannerChime', () => {
     const firstStartIndex = log.events.indexOf('start')
     expect(resumeIndex).toBeGreaterThanOrEqual(0)
     expect(firstStartIndex).toBeGreaterThan(resumeIndex)
-    expect(log.starts).toHaveLength(3)
-    // currentTime = 3.5 → 起点 3.54，三个音依次 +0 / +0.13 / +0.26
+    expect(log.starts).toHaveLength(2)
+    // currentTime = 3.5 → 起点 3.54，第二音 +0.2
     expect(log.starts[0]).toBeCloseTo(3.54, 5)
-    expect(log.starts[1]).toBeCloseTo(3.67, 5)
-    expect(log.starts[2]).toBeCloseTo(3.8, 5)
+    expect(log.starts[1]).toBeCloseTo(3.74, 5)
     expect(log.stops.every((when) => when > 3.54)).toBe(true)
-    // 三角波（比旧实现的 sine 更"厚"，小喇叭上更明显）
-    expect(log.oscillatorTypes).toEqual(['triangle', 'triangle', 'triangle'])
+    // 正弦波（Win11 通知音实测近纯音；三角波是旧实现的音色）
+    expect(log.oscillatorTypes).toEqual(['sine', 'sine'])
+  })
+
+  it('软起音 + 两段衰减：线性爬到峰值，先快衰到 30% 再长尾收干净', async () => {
+    const { context, log } = makeFakeContext({ state: 'running' })
+    await playBannerChime(1, () => context)
+
+    const level = chimeLevel(1)
+    const firstPeak = 0.26 * level
+    // 第一音：3.54 起，0.14s 爬到峰值
+    expect(log.linearRamps[0]!.value).toBeCloseTo(firstPeak, 5)
+    expect(log.linearRamps[0]!.when).toBeCloseTo(3.54 + 0.14, 5)
+    // 两段指数衰减：先到 peak × 0.3（快衰段），再到 0.0001（长尾）
+    expect(log.exponentialRamps[0]!.value).toBeCloseTo(firstPeak * 0.3, 5)
+    expect(log.exponentialRamps[0]!.when).toBeCloseTo(3.54 + 0.14 + 0.12, 5)
+    expect(log.exponentialRamps[1]!.value).toBeCloseTo(0.0001, 5)
+    expect(log.exponentialRamps[1]!.when).toBeCloseTo(3.54 + 0.14 + 0.95, 5)
+    // 第二音同样两段（每音 2 条指数衰减，共 4 条）
+    expect(log.exponentialRamps).toHaveLength(4)
+    expect(log.exponentialRamps[3]!.when).toBeCloseTo(3.74 + 0.1 + 1.0, 5)
   })
 
   it('上下文已在 running 时不重复 resume', async () => {
     const { context, log } = makeFakeContext({ state: 'running' })
     await playBannerChime(0.6, () => context)
     expect(log.events).not.toContain('resume')
-    expect(log.starts).toHaveLength(3)
+    expect(log.starts).toHaveLength(2)
   })
 
   it('音量 0 不创建上下文', async () => {
@@ -198,7 +236,7 @@ describe('playBannerChime', () => {
   it('resume 失败也照样排音（不抛、不静默吞掉整条提醒）', async () => {
     const { context, log } = makeFakeContext({ state: 'suspended', resumeRejects: true })
     await expect(playBannerChime(0.6, () => context)).resolves.toBeUndefined()
-    expect(log.starts).toHaveLength(3)
+    expect(log.starts).toHaveLength(2)
   })
 
   it('上下文创建抛错 / 返回 null 时静默降级', async () => {

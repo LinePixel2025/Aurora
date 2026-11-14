@@ -231,8 +231,11 @@ const api: AuroraApi = {
     activate: (id) => invoke(IPC.banner.activate, { id }),
   },
   // 提醒通道（v37）：设置页「提醒」的试一下按钮（按当前默认方式投递一条示例）
+  // v42 自定义提示音：pickSound 弹选择框 / readSound 读设置里那条路径（docs/07 §2.2.3 R4）
   notifications: {
     test: () => invoke(IPC.notifications.test),
+    pickSound: () => invoke(IPC.notifications.pickSound),
+    readSound: () => invoke(IPC.notifications.readSound),
   },
   // Computer Use（v39，docs/06 §28）：start/stop 只由 `/computer` 斜杠命令 / 状态条调用
   computerUse: {

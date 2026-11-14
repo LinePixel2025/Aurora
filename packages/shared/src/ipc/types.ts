@@ -1575,6 +1575,20 @@ export interface NotificationTestResult {
   suppressed?: boolean
 }
 
+/**
+ * 自定义提示音的音频数据（v42，`notifications:readSound`，docs/07 §2.2.3 R4）。
+ *
+ * 主进程读**设置里那条** `customSoundPath`（扩展名白名单 + ≤2MB）后回传字节，
+ * 渲染层用 blob URL 播放。`null` = 未配置自定义音效（走默认合成音）。
+ * 与 TTS 的 `audioBase64` 同款口径：音频以 base64 过 IPC，不落明文路径给渲染层拼 URL。
+ */
+export interface NotificationSoundData {
+  /** 音频字节的 base64（不含 data: 前缀） */
+  dataBase64: string
+  /** 播放用 MIME（按扩展名推导，如 audio/mpeg） */
+  mime: string
+}
+
 // ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────
 
 /**
@@ -3162,9 +3176,19 @@ export interface AuroraApi {
   /**
    * 提醒通道（v37，docs/07 §4）：设置页「提醒」的试一下按钮。
    * 只按当前默认方式投递一条固定的示例提醒，不接受调用方指定标题 / 正文。
+   *
+   * v42 起另有自定义提示音两条（docs/07 §2.2.3 R4）：
+   * `pickSound` 弹文件选择框（渲染层无文件系统能力），`readSound` 读设置里那条路径。
    */
   notifications: {
     test(): Promise<Result<NotificationTestResult>>
+    /** 弹文件选择框选自定义提示音；返回选中路径，取消返回 null。 */
+    pickSound(): Promise<Result<string | null>>
+    /**
+     * 读**设置里那条** `customSoundPath` 的音频字节（不接受调用方传路径）。
+     * 未配置（空串）返回 null；文件缺失 / 超限 / 不支持时回错误（渲染层据此回落 / 报错）。
+     */
+    readSound(): Promise<Result<NotificationSoundData | null>>
   }
   /**
    * Computer Use（v39，docs/06 §28）。

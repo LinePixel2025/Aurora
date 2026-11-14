@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 41 as const
+export const CONFIG_VERSION = 42 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -1202,6 +1202,13 @@ export const NotificationsSchema = z.object({
    * 开着时请求级 `sound: false` 仍可让某一条静音。
    */
   sound: z.boolean().default(true),
+  /**
+   * 自定义提示音文件路径（v42，docs/07 §2.2.3 R4）。空串 = 默认提示音
+   * （Win11 风格的两音下行合成音）；非空 = 音频文件绝对路径，播放时主进程
+   * 经 `notifications:readSound` 读取（扩展名白名单 + ≤2MB，见 main/notification-sound.ts）。
+   * 文件不可用时卡片侧静默回落默认音 —— 提醒不能因为音效文件丢了就无声。
+   */
+  customSoundPath: z.string().default(''),
   /** 提示音与语音播报的音量（0–100，缺省 60：桌面提醒不该刺耳）。 */
   volume: z.number().int().min(0).max(100).default(60),
   /**
