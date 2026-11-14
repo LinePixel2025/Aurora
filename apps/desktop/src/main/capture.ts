@@ -17,10 +17,10 @@
  * - 每个窗口之间留 `delayMs`（默认 700ms）让进场动画落位，否则会拍到过渡中间帧；
  * - 需要深链的窗口（设置页 `?page=`）用 reload 而不是新开窗口，避免堆一排窗口。
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, truncate, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { nativeTheme, webContents, type BrowserWindow, type WebContents } from 'electron'
+import { nativeTheme, shell, webContents, type BrowserWindow, type WebContents } from 'electron'
 import {
   createFileSnapshotPort,
   type AskUserAnswer,
@@ -35,6 +35,7 @@ import {
   type WindowName,
 } from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
+import { buildDocxFixture } from './capture-office-fixture.js'
 /**
  * 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致。
  *
@@ -3198,12 +3199,12 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
  * （与 settingsProjectAct 同一条口径 —— 启动后写 config.json 对运行中的进程无效）；
  * ② 切到**绑定了该项目的会话**（`sessions/chat-seed-project.json` 的种子会话，
  *    `meta.projectId = 'capture'`）；切之前记下当前激活行，收尾由 check 点它回来；
- * ③ 切到"文件"tab 并等 prepare 种的那份文件出现。
+ * ③ 切到"文件"tab 并等 prepare 种的那份文件出现（`marker` 由场景指定要等哪一份）。
  *
  * act 的返回值不进 report，所以把现场读数挂在 `window` 上（check 里读）——
  * act 里的失败（没找到会话行 / 没等到列表）必须能被 check 看见，否则会静默假 PASS。
  */
-export function chatFileProjectAct(root: string): string {
+export function chatFileProjectAct(root: string, marker = '报告.md'): string {
   return `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const report = { ok: false, reason: '', switched: false, listed: false }
@@ -3219,9 +3220,10 @@ export function chatFileProjectAct(root: string): string {
     })
     if (!updated.ok) { report.reason = updated.message; return report }
     await wait(400)
-    // 收尾要回到原来那条会话：用应用自己的行按钮（active 类即当前会话），不猜标题
-    const activeRow = document.querySelector('button.nav-item.active')
-    window.__auroraFileProjectPrevText = activeRow === null ? '' : activeRow.textContent || ''
+    // 收尾要回到原来那条会话：用行上的稳定 id，不用整行文本 ——
+    // 行里含相对时间，跨分钟会从「刚刚」变成「1 分钟前」，文本匹配会失配（SessionRow 同款坑）。
+    const activeRow = document.querySelector('.nav-row.active')
+    window.__auroraFileProjectPrevId = activeRow === null ? '' : activeRow.getAttribute('data-session-id') || ''
     let target = null
     for (let attempt = 0; attempt < 20 && target === null; attempt += 1) {
       const rows = Array.from(document.querySelectorAll('button.nav-item'))
@@ -3232,21 +3234,88 @@ export function chatFileProjectAct(root: string): string {
     target.click()
     report.switched = true
     await wait(500)
-    const tab = document.querySelector('[data-field="chat.ctx-tab-files"]')
-    if (tab === null) { report.reason = '没有文件 tab'; return report }
-    tab.click()
     for (let attempt = 0; attempt < 25 && !report.listed; attempt += 1) {
-      const listText = document.querySelector('[data-field="chat.file-list"]')?.textContent || ''
-      report.listed = listText.indexOf('报告.md') !== -1
+      // 切会话的异步收尾可能晚于这一下点击、把右栏打回默认 tab：每轮重新确认选中态。
+      // 判据要量矩形 —— 面板可能挂载但不可见，只读 textContent 会假绿、截图拍到别的 tab。
+      const tab = document.querySelector('[data-field="chat.ctx-tab-files"]')
+      if (tab === null) { report.reason = '没有文件 tab'; return report }
+      if (tab.getAttribute('aria-selected') !== 'true') tab.click()
+      const list = document.querySelector('[data-field="chat.file-list"]')
+      const rect = list === null ? null : list.getBoundingClientRect()
+      report.listed =
+        rect !== null &&
+        rect.height > 0 &&
+        (list.textContent || '').indexOf(${JSON.stringify(marker)}) !== -1
       if (!report.listed) await wait(200)
     }
-    if (!report.listed) report.reason = '文件列表里没有出现 prepare 种的文件'
+    if (!report.listed) report.reason = '文件列表没有可见地列出 prepare 种的文件'
     report.ok = report.listed
     return report
   } catch (error) {
     report.reason = String(error)
     return report
   }
+})()`
+}
+
+/**
+ * Office 正文场景的现场（2026-11-12）：在项目 act 之后**点开 docx 停在正文**。
+ * 截图是在 check 之前拍的 —— 现场不摆好，`chat-file-office.png` 里就只有一张目录列表。
+ */
+export function chatFileOfficeAct(root: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const report = await ${chatFileProjectAct(root, '报告.docx')}
+  if (!report.ok) return report
+  const row = Array.from(document.querySelectorAll('[data-field="chat.file-list"] .fp-row')).find(
+    (item) => (item.textContent || '').indexOf('报告.docx') !== -1,
+  )
+  if (row !== undefined) row.click()
+  report.previewed = false
+  for (let attempt = 0; attempt < 40 && !report.previewed; attempt += 1) {
+    const body = document.querySelector('.fp-markdown')
+    report.previewed = body !== null && (body.textContent || '').indexOf('季度经营报告') !== -1
+    if (!report.previewed) await wait(150)
+  }
+  if (!report.previewed) report.reason = 'docx 正文没有渲染出来'
+  report.ok = report.previewed
+  return report
+})()`
+}
+
+/**
+ * 版式场景的现场（2026-11-12）：点开 docx → 切「版式」→ **等首页图真的解码出来**。
+ * 本机没有 OfficeCLI / Edge 时版式钮是禁用的，这里不点、把现场留在正文，
+ * 由 check 走显式跳过分支（报告里留原因）。
+ */
+export function chatFileLayoutAct(root: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const report = await ${chatFileProjectAct(root, '报告.docx')}
+  if (!report.ok) return report
+  const row = Array.from(document.querySelectorAll('[data-field="chat.file-list"] .fp-row')).find(
+    (item) => (item.textContent || '').indexOf('报告.docx') !== -1,
+  )
+  if (row !== undefined) row.click()
+  let body = false
+  for (let attempt = 0; attempt < 40 && !body; attempt += 1) {
+    const el = document.querySelector('.fp-markdown')
+    body = el !== null && (el.textContent || '').indexOf('季度经营报告') !== -1
+    if (!body) await wait(150)
+  }
+  const layoutView = document.querySelectorAll('.fp-viewswitch .fp-view')[1]
+  report.layoutAvailable = layoutView !== undefined && layoutView.disabled !== true
+  if (!report.layoutAvailable) { report.ok = body; return report }
+  layoutView.click()
+  report.rendered = false
+  for (let attempt = 0; attempt < 200 && !report.rendered; attempt += 1) {
+    const img = document.querySelector('.fp-page')
+    report.rendered = img !== null && img.naturalWidth > 0
+    if (!report.rendered) await wait(300)
+  }
+  report.ok = report.rendered
+  if (!report.rendered) report.reason = '版式首页图没有渲染出来'
+  return report
 })()`
 }
 
@@ -3775,6 +3844,70 @@ export const CHAT_CTX_EMPTY_CHECK = `(async () => {
 })()`
 
 /**
+ * 截图期间拦下**真正的**系统打开（2026-11-12）。
+ *
+ * 不支持预览的类型点一下就会调 `preview:open` —— 实测 `.bin` 会让 Windows 弹出
+ * 「选取应用」模态（OpenWith.exe），抢焦点后后续场景全废。这里只换掉链路的**最后一步**
+ * （`shell.openPath` / `showItemInFolder`），渲染层 → IPC → `assertPreviewPath` → lstat →
+ * 软链拒绝 → isFile 全部照常跑，调用被记下来交给 `nativeCheck` 断言。
+ */
+let systemOpenCalls: Array<{ mode: 'default' | 'reveal'; path: string }> = []
+let restoreSystemOpen: (() => void) | undefined
+
+function interceptSystemOpen(): void {
+  if (restoreSystemOpen !== undefined) return
+  systemOpenCalls = []
+  const openPath = shell.openPath
+  const showItemInFolder = shell.showItemInFolder
+  shell.openPath = async (path: string) => {
+    systemOpenCalls.push({ mode: 'default', path })
+    return ''
+  }
+  shell.showItemInFolder = (path: string) => {
+    systemOpenCalls.push({ mode: 'reveal', path })
+  }
+  restoreSystemOpen = () => {
+    shell.openPath = openPath
+    shell.showItemInFolder = showItemInFolder
+    restoreSystemOpen = undefined
+  }
+}
+
+/**
+ * 文件面板三个场景共用的收尾（判据只写一份）：点回原来的会话行 + 撤销项目登记。
+ * 依赖调用方已定义 `wait` / `text`，并留下 `restored` / `clearOk` / `projectsAfter` 三个读数。
+ */
+const FILE_PROJECT_RESTORE = `
+    let restored = false
+    let clearOk = null
+    let projectsAfter = -1
+    const prevId = window.__auroraFileProjectPrevId || ''
+    if (prevId !== '') {
+      const prev = document.querySelector(
+        '.nav-row[data-session-id="' + prevId + '"] button.nav-item',
+      )
+      if (prev !== null) { prev.click(); await wait(400) }
+    }
+    const state = await window.aurora.settings.get()
+    if (state.ok) {
+      const clear = await window.aurora.settings.update({
+        projects: { ...state.value.projects, list: [] },
+      })
+      clearOk = clear.ok
+      // 轮询等还原生效：settings:changed 回推 + 左栏重算是异步的，固定 300ms 在重负载下
+      // 会偶发 restored:false（2026-11-08 全量首跑实测）；判据只认「项目分组标签消失」。
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (text('.nav').indexOf('截图项目') === -1) break
+        await wait(150)
+      }
+    }
+    const stateAfter = await window.aurora.settings.get()
+    projectsAfter = stateAfter.ok ? stateAfter.value.projects.list.length : -1
+    // 还原判据：项目分组标签消失（项目登记确实撤掉了）
+    restored = text('.nav').indexOf('截图项目') === -1
+`
+
+/**
  * 右栏文件面板＝项目文件夹的断言（2026-10-03，docs/07 §2.3；同日补导航与布局护栏）。
  *
  * 现场（act 留下）：会话切到绑项目的种子会话、停在"文件"tab、列表已出。
@@ -3787,6 +3920,8 @@ export const CHAT_CTX_EMPTY_CHECK = `(async () => {
  *    aside 与面板都不许横向溢出，且工具条五枚按钮的矩形必须落在 aside 可视矩形内。
  *    这一条是对着用户实测症状写的：内容撑破右栏后按钮被推到可视区之外，
  *    **只查 DOM 存在的探针会全绿**（按钮在 DOM 里、`getBoundingClientRect` 也有值）。
+ * ⑥ 视觉重做后的行规格（2026-11-12）：每行 32px 定高、每行都带类型色图标、
+ *    搜索框矩形落在 aside 内（窄栏时它与排序组挤一行，最容易被顶出去）。
  * 收尾：点回原来的会话行 + 撤销项目登记（后续场景读到的仍是出厂门控）。
  */
 export const CHAT_FILE_PROJECT_CHECK = `(async () => {
@@ -3805,13 +3940,38 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
       )
     const rows = () => Array.from(document.querySelectorAll('[data-field="chat.file-list"] .fp-row'))
     const rowNamed = (name) => rows().find((row) => (row.textContent || '').indexOf(name) !== -1)
+    // 每次点击都重新取行：列表 ↔ 预览切换会整棵重挂载，缓存下来的旧节点已脱离文档，
+    // 子组件的 emit 在卸载后是空操作（真实用户点不到它，探针也不该点）。
+    const clickRow = (name) => {
+      const row = rowNamed(name)
+      if (row === undefined) return false
+      row.click()
+      return true
+    }
     const rootCrumbs = crumbs()
+    // 只有根一段时，「项目：截图项目」必须整段可读（被 ellipsis 截成「项目：截…」等于没绑定信息）
+    const rootText = document.querySelector('[data-field="chat.file-root"] .fp-crumb-text')
+    const rootCrumbFits = rootText !== null && rootText.scrollWidth <= rootText.clientWidth + 1
     const rootEntries = rows().map((row) => (row.textContent || '').replace(/\\s+/g, ' ').trim())
     const assetsRow = rowNamed('assets')
-    const reportRow = rowNamed('报告.md')
-    const wideRow = rowNamed('宽内容.md')
     // 目录在前（第一行必须是 assets 这个目录）
     const dirsFirst = rows().length > 0 && (rows()[0].className || '').indexOf('dir') !== -1
+    // 视觉重做后的行规格（2026-11-12）：32px 定高 + 每行都有类型色图标
+    const rowHeights = rows().map((row) => Math.round(row.getBoundingClientRect().height))
+    const rowHeightOk = rowHeights.length > 0 && rowHeights.every((h) => h >= 30 && h <= 34)
+    const rowsHaveIcon = rows().length > 0 && rows().every((row) => row.querySelector('svg') !== null)
+    // 搜索框必须真的在右栏可视区内（窄栏时它和排序组挤在一行，最容易被顶出去）
+    const rootAside = document.querySelector('aside.context')
+    const searchEl = document.querySelector('[data-field="chat.file-preview"] .fp-search')
+    const searchRect = searchEl === null ? null : searchEl.getBoundingClientRect()
+    const rootAsideRect = rootAside === null ? null : rootAside.getBoundingClientRect()
+    const searchInView =
+      searchRect !== null &&
+      rootAsideRect !== null &&
+      searchRect.width > 0 &&
+      searchRect.height > 0 &&
+      searchRect.left >= rootAsideRect.left - 1 &&
+      searchRect.right <= rootAsideRect.right + 1
 
     // ③ 进目录 → 后退回根 → 前进再进一层 → 上级回根
     let intoDir = false
@@ -3841,8 +4001,7 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
     let previewText = ''
     let exitButton = false
     let backToList = false
-    if (reportRow) {
-      reportRow.click()
+    if (clickRow('报告.md')) {
       for (let attempt = 0; attempt < 25 && previewText.indexOf('文件面板') === -1; attempt += 1) {
         previewText = text('.fp-markdown') || text('.fp-text')
         if (previewText.indexOf('文件面板') === -1) await wait(150)
@@ -3860,8 +4019,7 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
     let panelOverflowX = -1
     let toolbarInView = false
     let wideExitOk = false
-    if (wideRow) {
-      wideRow.click()
+    if (clickRow('宽内容.md')) {
       for (let attempt = 0; attempt < 25 && wideText.indexOf('宽内容夹具') === -1; attempt += 1) {
         wideText = text('.fp-markdown') || text('.fp-text')
         if (wideText.indexOf('宽内容夹具') === -1) await wait(150)
@@ -3899,40 +4057,19 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
     }
 
     // 收尾：切回原会话 + 撤销项目登记（两条都要成功才认 restored）
-    let restored = false
-    let clearOk = null
-    let projectsAfter = -1
-    const prevText = window.__auroraFileProjectPrevText || ''
-    if (prevText !== '') {
-      const rowsAll = Array.from(document.querySelectorAll('button.nav-item'))
-      const prev = rowsAll.find((row) => (row.textContent || '') === prevText)
-      if (prev) { prev.click(); await wait(400) }
-    }
-    const state = await window.aurora.settings.get()
-    if (state.ok) {
-      const clear = await window.aurora.settings.update({
-        projects: { ...state.value.projects, list: [] },
-      })
-      clearOk = clear.ok
-      // 轮询等还原生效：settings:changed 回推 + 左栏重算是异步的，固定 300ms 在重负载下
-      // 会偶发 restored:false（2026-11-08 全量首跑实测）；判据只认「项目分组标签消失」。
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        if (text('.nav').indexOf('截图项目') === -1) break
-        await wait(150)
-      }
-    }
-    const stateAfter = await window.aurora.settings.get()
-    projectsAfter = stateAfter.ok ? stateAfter.value.projects.list.length : -1
-    // 还原判据：项目分组标签消失（项目登记确实撤掉了）
-    restored = text('.nav').indexOf('截图项目') === -1
-
+${FILE_PROJECT_RESTORE}
     return {
       actOk: act.ok,
       actReason: act.reason || '',
       rootLabel,
       rootCrumbs,
+      rootCrumbFits,
       rootEntries,
       dirsFirst,
+      rowHeights,
+      rowHeightOk,
+      rowsHaveIcon,
+      searchInView,
       intoDir,
       backToRoot,
       forwardIntoTarget,
@@ -3952,10 +4089,14 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
         act.ok === true &&
         rootLabel.indexOf('项目：截图项目') !== -1 &&
         rootCrumbs.length === 1 &&
+        rootCrumbFits &&
         rootEntries.join('|').indexOf('assets') !== -1 &&
         rootEntries.join('|').indexOf('报告.md') !== -1 &&
         rootEntries.join('|').indexOf('宽内容.md') !== -1 &&
         dirsFirst &&
+        rowHeightOk &&
+        rowsHaveIcon &&
+        searchInView &&
         intoDir &&
         backToRoot &&
         forwardIntoTarget &&
@@ -3969,6 +4110,305 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
         panelOverflowX <= 0 &&
         toolbarInView &&
         wideExitOk &&
+        restored,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * Office 正文预览 + 不支持类型的信息卡 + 搜索 / 排序（2026-11-12，docs/07 §2.3）。
+ *
+ * 夹具全部离线可造：`报告.docx` 是 `buildDocxFixture` 现拼的**真** OOXML 包
+ * （改扩展名的假文件只会验到降级分支），`表格.csv` 供搜索，`二进制.bin` 带 NUL 走 unsupported。
+ *
+ * 断言：① act 停在 docx 正文 —— 出**干净正文**（有段落文字、没有「文件名：」证据 header），
+ *    正文 / 版式两枚切换钮都在，版式不可用时 title 里必须写着原因；
+ * ② 返回列表后三种文件都列得出来、目录仍在前；③ 搜索「表格」只剩一行，清除后条目数复原；
+ * ④ 按大小排序时目录恒在最前，且升 / 降序两次得到的文件序列互为逆序；
+ * ⑤ 点 .bin 出信息卡（类型 / 大小 / 修改时间 + 两枚动作钮），**并且这一下点击真的触发了
+ *    系统打开**（用户要求：不支持预览的类型直接交给默认程序）；再点「在资源管理器中显示」
+ *    验第二枚钮。两次调用由 `nativeCheck` 核对 —— prepare 里 `interceptSystemOpen()`
+ *    只换掉链路最后一步的 `shell.*`，边界校验与 lstat 全部照常跑，不会弹出 OpenWith 模态。
+ */
+export const CHAT_FILE_OFFICE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const text = (selector) => {
+    const el = document.querySelector(selector)
+    return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
+  }
+  try {
+    const act = window.__auroraFileProjectAct || { ok: false, reason: 'act 没有留下读数' }
+    const rows = () => Array.from(document.querySelectorAll('[data-field="chat.file-list"] .fp-row'))
+    const nameOf = (row) => (row.querySelector('.fp-row-name')?.textContent || '').trim()
+    const names = () => rows().map(nameOf)
+    const fileNames = () => rows().filter((row) => (row.className || '').indexOf('dir') === -1).map(nameOf)
+    const firstIsDir = () => rows().length > 0 && (rows()[0].className || '').indexOf('dir') !== -1
+    const clickRow = (name) => {
+      const row = rows().find((item) => nameOf(item) === name)
+      if (row === undefined) return false
+      row.click()
+      return true
+    }
+
+    // ① act 已经把现场停在 docx 正文（截图拍的就是这一屏）：先量它，再返回列表
+    const docText = text('.fp-markdown')
+    const kindLabel = text('.fp-kind')
+    const views = Array.from(document.querySelectorAll('.fp-viewswitch .fp-view'))
+    const viewCount = views.length
+    const layoutView = views[1]
+    const layoutDisabled = layoutView === undefined ? false : layoutView.disabled === true
+    const layoutTitle = layoutView === undefined ? '' : layoutView.getAttribute('title') || ''
+    const open = document.querySelector('.fp-open')
+    const openButton = open !== null && open.disabled !== true
+    const docExit = document.querySelector('[data-field="chat.file-exit"]')
+    if (docExit !== null) docExit.click()
+    for (let attempt = 0; attempt < 20 && rows().length === 0; attempt += 1) await wait(150)
+    const docExitOk = rows().length > 0
+    const docBodyOk = docText.indexOf('季度经营报告') !== -1 && docText.indexOf('文件名：') === -1
+    // 版式钮：能用就写「看真实排版」，不能用就必须把原因写在 title 里
+    const layoutGateOk = layoutDisabled ? layoutTitle !== '' : layoutTitle === '看真实排版'
+
+    const rootNames = names()
+    const rootCount = rootNames.length
+    const listed = ['报告.docx', '表格.csv', '二进制.bin'].every((n) => rootNames.indexOf(n) !== -1)
+    const dirsFirst = firstIsDir()
+
+    // ② 即时搜索：只过滤当前目录，清除后原样回来
+    let searchHit = false
+    let searchCleared = false
+    const search = document.querySelector('[data-field="chat.file-preview"] .fp-search')
+    if (search !== null) {
+      search.value = '表格'
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+      for (let attempt = 0; attempt < 20 && rows().length !== 1; attempt += 1) await wait(100)
+      searchHit = rows().length === 1 && nameOf(rows()[0]) === '表格.csv'
+      const clear = document.querySelector('.fp-search-clear')
+      if (clear !== null) clear.click()
+      for (let attempt = 0; attempt < 20 && rows().length !== rootCount; attempt += 1) await wait(100)
+      searchCleared = rows().length === rootCount
+    }
+
+    // ③ 排序：目录恒在最前；同一枚键点两次 = 升降序互换
+    let sizeDescFirstDir = false
+    let sizeAscFirstDir = false
+    let sizeSortOk = false
+    const sizeKey = document.querySelector('.fp-sort-key[data-sort="size"]')
+    if (sizeKey !== null) {
+      sizeKey.click()
+      await wait(200)
+      sizeDescFirstDir = firstIsDir()
+      const desc = fileNames()
+      sizeKey.click()
+      await wait(200)
+      sizeAscFirstDir = firstIsDir()
+      const asc = fileNames()
+      sizeSortOk =
+        desc.length >= 2 && asc.join('|') === desc.slice().reverse().join('|')
+      const nameKey = document.querySelector('.fp-sort-key[data-sort="name"]')
+      if (nameKey !== null) nameKey.click()
+      await wait(200)
+    }
+
+    // ④ 不支持的类型：点一下 = 信息卡 + 自动交给系统默认程序（shell 已被 prepare 拦下）
+    let cardNote = ''
+    let cardMeta = ''
+    let cardButtons = 0
+    let cardEnabled = false
+    let revealClicked = false
+    let cardExitOk = false
+    if (clickRow('二进制.bin')) {
+      for (let attempt = 0; attempt < 30 && document.querySelector('.fp-infocard') === null; attempt += 1) {
+        await wait(150)
+      }
+      cardNote = text('.fp-card-note')
+      cardMeta = text('.fp-card-meta')
+      const buttons = Array.from(document.querySelectorAll('.fp-card-actions .fp-card-btn'))
+      cardButtons = buttons.length
+      // 自动打开是异步的：等它结算完（opening 落下）两枚钮才该重新可点
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if (buttons.length === 2 && buttons.every((btn) => btn.disabled !== true)) break
+        await wait(150)
+      }
+      cardEnabled = buttons.length === 2 && buttons.every((btn) => btn.disabled !== true)
+      const reveal = buttons[1]
+      if (reveal !== undefined) { reveal.click(); revealClicked = true }
+      await wait(400)
+      const exit = document.querySelector('[data-field="chat.file-exit"]')
+      if (exit !== null) exit.click()
+      await wait(300)
+      cardExitOk = document.querySelector('[data-field="chat.file-list"]') !== null
+    }
+
+${FILE_PROJECT_RESTORE}
+    return {
+      actOk: act.ok,
+      actReason: act.reason || '',
+      rootNames,
+      listed,
+      dirsFirst,
+      searchHit,
+      searchCleared,
+      sizeDescFirstDir,
+      sizeAscFirstDir,
+      sizeSortOk,
+      docBodyOk,
+      docText: docText.slice(0, 120),
+      kindLabel,
+      viewCount,
+      layoutDisabled,
+      layoutTitle,
+      layoutGateOk,
+      openButton,
+      docExitOk,
+      cardNote,
+      cardMeta,
+      cardButtons,
+      cardEnabled,
+      revealClicked,
+      cardExitOk,
+      restored,
+      clearOk,
+      projectsAfter,
+      pass:
+        act.ok === true &&
+        listed &&
+        dirsFirst &&
+        searchHit &&
+        searchCleared &&
+        sizeDescFirstDir &&
+        sizeAscFirstDir &&
+        sizeSortOk &&
+        docBodyOk &&
+        kindLabel.indexOf('Word') !== -1 &&
+        viewCount === 2 &&
+        layoutGateOk &&
+        openButton &&
+        docExitOk &&
+        cardNote !== '' &&
+        cardMeta.indexOf('类型') !== -1 &&
+        cardMeta.indexOf('大小') !== -1 &&
+        cardMeta.indexOf('修改时间') !== -1 &&
+        cardButtons === 2 &&
+        cardEnabled &&
+        revealClicked &&
+        cardExitOk &&
+        restored,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * Office 版式视图（2026-11-12，docs/07 §2.3）：正文 ⇄ 版式切换、首页图、翻页、切回正文。
+ *
+ * 版式依赖本机 OfficeCLI + Edge，**装不上就必须显式跳过而不是假绿**：
+ * 报告里留 `skipped: true` 与 `skipReason`（版式钮 title 里的原因），
+ * 同时断言「不可用时确实给了原因」——只写 pass:true 不留读数的跳过是静默假 PASS。
+ *
+ * 可用时断言：页图是 `data:image/png;base64,` 的 `<img>`（生产 CSP 的 object-src 'none'
+ * 会挡掉 embed / object / iframe-blob）、图片真的解码出来了（naturalWidth > 0）、
+ * 页码文案与页数一致、多页时翻页换图、切回正文后 markdown 回来、右栏不横向溢出。
+ */
+export const CHAT_FILE_LAYOUT_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const text = (selector) => {
+    const el = document.querySelector(selector)
+    return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
+  }
+  try {
+    const act = window.__auroraFileProjectAct || { ok: false, reason: 'act 没有留下读数' }
+    const views = Array.from(document.querySelectorAll('.fp-viewswitch .fp-view'))
+    const layoutView = views[1]
+    if (layoutView === undefined) return { reason: '没有版式切换钮', pass: false }
+    const skipReason = layoutView.getAttribute('title') || ''
+    // act 已经切好版式（截图拍的就是页图）；不可用时它把现场留在正文，这里显式跳过
+    if (layoutView.disabled === true) {
+      const body = text('.fp-markdown')
+${FILE_PROJECT_RESTORE}
+      return {
+        skipped: true,
+        skipReason,
+        bodyShown: body.indexOf('季度经营报告') !== -1,
+        restored,
+        clearOk,
+        projectsAfter,
+        pass: skipReason !== '' && body.indexOf('季度经营报告') !== -1 && restored,
+      }
+    }
+
+    const pageImg = () => document.querySelector('.fp-page')
+    let ready = false
+    for (let attempt = 0; attempt < 200 && !ready; attempt += 1) {
+      const img = pageImg()
+      ready = img !== null && img.naturalWidth > 0
+      if (!ready) await wait(300)
+    }
+    const first = pageImg()
+    const firstSrc = first === null ? '' : first.getAttribute('src') || ''
+    const firstWidth = first === null ? 0 : first.naturalWidth
+    const pagerText = text('.fp-pager-text')
+    const total = Number((pagerText.split('页')[0].split('/')[1] || '0').trim())
+    const layoutError = text('.fp-warn')
+
+    // 多页就翻一页：图必须换掉，页码必须跟着走
+    let turned = null
+    let secondSrcChanged = null
+    if (total > 1) {
+      const next = document.querySelector('.fp-pager .fp-mini:last-child')
+      if (next !== null) next.click()
+      for (let attempt = 0; attempt < 200 && text('.fp-pager-text').indexOf('第 2 ') === -1; attempt += 1) {
+        await wait(300)
+      }
+      turned = text('.fp-pager-text')
+      const second = pageImg()
+      secondSrcChanged = second !== null && (second.getAttribute('src') || '') !== firstSrc
+    }
+
+    const bodyView = views[0]
+    if (bodyView !== undefined) bodyView.click()
+    let backBody = ''
+    for (let attempt = 0; attempt < 30 && backBody.indexOf('季度经营报告') === -1; attempt += 1) {
+      backBody = text('.fp-markdown')
+      if (backBody.indexOf('季度经营报告') === -1) await wait(150)
+    }
+    const aside = document.querySelector('aside.context')
+    const overflowX = aside === null ? -1 : aside.scrollWidth - aside.clientWidth
+    const exit = document.querySelector('[data-field="chat.file-exit"]')
+    if (exit !== null) exit.click()
+    await wait(300)
+    const exitOk = document.querySelector('[data-field="chat.file-list"]') !== null
+
+${FILE_PROJECT_RESTORE}
+    return {
+      skipped: false,
+      ready,
+      firstWidth,
+      dataUrl: firstSrc.slice(0, 30),
+      pagerText,
+      total,
+      layoutError,
+      turned,
+      secondSrcChanged,
+      backToBody: backBody.indexOf('季度经营报告') !== -1,
+      overflowX,
+      exitOk,
+      restored,
+      clearOk,
+      projectsAfter,
+      pass:
+        act.ok === true &&
+        ready &&
+        firstSrc.indexOf('data:image/png;base64,') === 0 &&
+        firstWidth > 0 &&
+        total >= 1 &&
+        pagerText.indexOf('第 ') === 0 &&
+        (total <= 1 || (turned !== null && turned.indexOf('第 2 ') === 0 && secondSrcChanged === true)) &&
+        backBody.indexOf('季度经营报告') !== -1 &&
+        overflowX <= 0 &&
+        exitOk &&
         restored,
     }
   } catch (error) {
@@ -4152,11 +4592,12 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
 
     // 收尾：切回原会话 + 撤销项目登记（与 chat-file-project 同一套）
     let restored = false
-    const prevText = window.__auroraFileProjectPrevText || ''
-    if (prevText !== '') {
-      const rowsAll = Array.from(document.querySelectorAll('button.nav-item'))
-      const prev = rowsAll.find((row) => (row.textContent || '') === prevText)
-      if (prev) { prev.click(); await wait(400) }
+    const prevId = window.__auroraFileProjectPrevId || ''
+    if (prevId !== '') {
+      const prev = document.querySelector(
+        '.nav-row[data-session-id="' + prevId + '"] button.nav-item',
+      )
+      if (prev !== null) { prev.click(); await wait(400) }
     }
     const state = await window.aurora.settings.get()
     if (state.ok) {
@@ -14684,6 +15125,89 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       act: chatFileProjectAct(captureProjectRoot(userData)),
       check: CHAT_FILE_PROJECT_CHECK,
+    },
+    // Office 正文 + 不支持类型的信息卡 + 搜索 / 排序（2026-11-12，docs/07 §2.3）。
+    // 夹具离线可造：docx 是现拼的真 OOXML 包（假扩展名只会验到降级分支）。
+    // 与上一条共用项目登记 / 会话切换的 act 与收尾，只是等的是 报告.docx。
+    {
+      name: 'chat',
+      file: 'chat-file-office.png',
+      prepare: async () => {
+        const root = captureProjectRoot(userData)
+        interceptSystemOpen()
+        await mkdir(join(root, 'assets'), { recursive: true })
+        await writeFile(
+          join(root, '报告.docx'),
+          buildDocxFixture([
+            '季度经营报告',
+            '营收同比增长，毛利率保持稳定。',
+            '下一步：把文件面板的版式预览接上。',
+          ]),
+        )
+        await writeFile(
+          join(root, '表格.csv'),
+          '科目,课时,备注\n语文,12,搜索夹具\n数学,10,\n',
+          'utf8',
+        )
+        // 带 NUL 的**大**二进制（稀疏文件，只占几百字节磁盘）：走 unsupported → 信息卡。
+        // 体积必须 > 2 MB —— 旧实现把「超限」当成文本截断，2 MB 二进制垃圾进 `<pre>`，
+        // 既看不到信息卡也会把界面拖死（2026-11-14 用户点 .mov / .mp3 实测）。
+        const binary = join(root, '二进制.bin')
+        await writeFile(binary, '')
+        await truncate(binary, 64 * 1024 * 1024)
+        await manager.reload('chat', {})
+      },
+      act: chatFileOfficeAct(captureProjectRoot(userData)),
+      check: CHAT_FILE_OFFICE_CHECK,
+      // 渲染层那半条链的对照读数：可预览的 docx 一次都不该调系统打开；
+      // .bin 点一下自动调 default，再点「在资源管理器中显示」调 reveal —— 顺序也要对。
+      nativeCheck: () => {
+        const calls = systemOpenCalls
+        restoreSystemOpen?.()
+        return {
+          calls: calls.map((call) => call.mode + ':' + basename(call.path)),
+          pass:
+            calls.length === 2 &&
+            calls.every((call) => basename(call.path) === '二进制.bin') &&
+            calls[0]?.mode === 'default' &&
+            calls[1]?.mode === 'reveal',
+        }
+      },
+    },
+    // 版式视图（2026-11-12）：与上一条同一份 docx，切「版式」看 OfficeCLI 渲染的页图。
+    // 本机没有 OfficeCLI / Edge 时**显式跳过**并在报告里留原因，不假绿。
+    {
+      name: 'chat',
+      file: 'chat-file-layout.png',
+      prepare: async () => {
+        const root = captureProjectRoot(userData)
+        // 正文抽取万一失败会落到 unsupported → 自动系统打开；同样先拦下 shell
+        interceptSystemOpen()
+        await writeFile(
+          join(root, '报告.docx'),
+          // 两页：翻页链路（pageIndex 单取 + wantedPage 双重护栏）要有真现场才验得到
+          buildDocxFixture([
+            '季度经营报告',
+            ...Array.from(
+              { length: 64 },
+              (_unused, index) =>
+                '第 ' + String(index + 1) + ' 条：营收同比增长，毛利率保持稳定，渠道结构持续优化。',
+            ),
+          ]),
+        )
+        await manager.reload('chat', {})
+      },
+      act: chatFileLayoutAct(captureProjectRoot(userData)),
+      check: CHAT_FILE_LAYOUT_CHECK,
+      nativeCheck: () => {
+        const calls = systemOpenCalls
+        restoreSystemOpen?.()
+        // 版式场景里 docx 始终可预览（正文或版式），不该有任何系统打开
+        return {
+          calls: calls.map((call) => call.mode + ':' + basename(call.path)),
+          pass: calls.length === 0,
+        }
+      },
     },
     // "show_preview" 推送链路的渲染层半边（2026-10-03，docs/06 §14）：act 与上一条同款
     // （切到绑项目的会话），mainAct 合成一条 "preview:show"（通道与 payload 形状与工具

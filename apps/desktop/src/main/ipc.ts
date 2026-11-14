@@ -19,6 +19,7 @@ import {
 import { resolveWorkspaceOpenTarget } from './tools/workspace-target.js'
 import { executeFileAwarenessSuggestion } from './file-awareness-execute.js'
 import { buildFileList } from './file-list.js'
+import { openWithSystem } from './file-open.js'
 import { buildAttachmentPreview, type ImageReadPort } from './attachments.js'
 // 附件链路与 Center 远程会话共用一份实现（docs/07 §2.3）：从 ipc.ts 抽出，行为不变。
 import { prepareAttachments, type AttachmentDigest } from './attachment-prepare.js'
@@ -59,6 +60,11 @@ import {
   type ChatMessageDto,
   type FileListRequest,
   type FileListResult,
+  type FileOpenRequest,
+  type FileLayoutManifest,
+  type FileLayoutPage,
+  type FileLayoutPageRequest,
+  type FileLayoutRequest,
   type FilePreviewRequest,
   type FilePreviewResult,
   type FileAwarenessAnalyzeRequest,
@@ -183,7 +189,8 @@ import type {
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
 import { buildInitCommandContext, isInitCommand } from './agent-commands.js'
-import { buildFilePreview } from './file-preview.js'
+import { buildFilePreview, type DocumentBody } from './file-preview.js'
+import type { FileLayoutService } from './file-layout.js'
 import type { TerminalService } from './terminal-service.js'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
 import { redactSettings } from './settings-redact.js'
@@ -335,6 +342,20 @@ export interface DesktopDeps {
    * 生成 AGENTS.md 的目标目录。未注入时 `/init` 原样透传（模型只看到三个字符，按普通提问处理）。
    */
   workspaceRootOf?: (sessionId?: string) => string | undefined
+  /**
+   * 文件面板的文档正文提取（2026-11-12，docs/07 §2.3）：走预览专用提取池。
+   * 未装配时 Office / PDF 落 unsupported + 信息卡（渲染层仍可一键交给系统程序）。
+   */
+  previewDocumentBodyOf?: (
+    path: string,
+    ext: string,
+    sizeBytes: number,
+    mtimeMs: number,
+  ) => Promise<DocumentBody>
+  /** 本机 OfficeCLI 版式渲染是否可用：决定「版式」档位能不能点 */
+  previewLayoutAvailable?: () => boolean
+  /** 版式分步渲染（2026-11-12）：未装配时两条通道按 E_INVALID_STATE 如实报错 */
+  previewLayout?: FileLayoutService
   /** PTY 终端（terminal:*，docs/07 §2.3）。未装配时四条通道按 E_INVALID_STATE 如实报错 */
   terminal?: TerminalService
   /**
@@ -851,7 +872,15 @@ export function registerIpc(deps: DesktopDeps): () => void {
       return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId'))
     }
     return buildFilePreview(
-      { rootOf: (id) => deps.workspaceRootOf?.(id) },
+      {
+        rootOf: (id) => deps.workspaceRootOf?.(id),
+        ...(deps.previewDocumentBodyOf === undefined
+          ? {}
+          : { documentBodyOf: deps.previewDocumentBodyOf }),
+        ...(deps.previewLayoutAvailable === undefined
+          ? {}
+          : { layoutAvailable: deps.previewLayoutAvailable }),
+      },
       { sessionId, path: request?.path ?? '' },
     )
       .then(ok)
@@ -875,6 +904,68 @@ export function registerIpc(deps: DesktopDeps): () => void {
         ...(typeof request?.path === 'string' ? { path: request.path } : {}),
       },
     )
+      .then(ok)
+      .catch((error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+  })
+  /**
+   * 交给系统（2026-11-12，docs/07 §2.3）：默认程序打开 / 资源管理器定位。
+   * 边界判定与 `preview:read` 共用 `assertPreviewPath`；用户手动操作面，不走确认闸门。
+   */
+  handle<void>(IPC.preview.open, (request: FileOpenRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '') {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId'))
+    }
+    const mode = request?.mode === 'reveal' ? 'reveal' : 'default'
+    return openWithSystem(
+      { rootOf: (id) => deps.workspaceRootOf?.(id) },
+      {
+        openPath: (path) => shell.openPath(path),
+        showItemInFolder: (path) => shell.showItemInFolder(path),
+      },
+      { sessionId, path: request?.path ?? '', mode },
+    )
+      .then(() => ok(undefined))
+      .catch((error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+  })
+  /**
+   * Office 版式渲染（2026-11-12，docs/07 §2.3）：manifest 只带首页，其余页走 renderPage。
+   * 引擎忙时**立即**回错不排队 —— 正文已经在看，版式是按需加档，不能把面板卡住。
+   */
+  handle<FileLayoutManifest>(IPC.preview.render, (request: FileLayoutRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '') {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId'))
+    }
+    if (deps.previewLayout === undefined) {
+      return Promise.resolve(err('E_INVALID_STATE', '版式预览服务不可用'))
+    }
+    return deps.previewLayout
+      .manifest({ sessionId, path: request?.path ?? '' })
+      .then(ok)
+      .catch((error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+  })
+  /** 按 index 单取一页版式图；命中主进程缓存时不调 OfficeCLI。 */
+  handle<FileLayoutPage>(IPC.preview.renderPage, (request: FileLayoutPageRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '') {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId'))
+    }
+    if (deps.previewLayout === undefined) {
+      return Promise.resolve(err('E_INVALID_STATE', '版式预览服务不可用'))
+    }
+    return deps.previewLayout
+      .page({
+        sessionId,
+        renderId: typeof request?.renderId === 'string' ? request.renderId : '',
+        index: typeof request?.index === 'number' ? request.index : -1,
+      })
       .then(ok)
       .catch((error: unknown) =>
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),

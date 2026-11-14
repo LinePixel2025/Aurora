@@ -156,6 +156,8 @@ import { resolveScheduleProvider, type IScheduleProvider } from './schedule.js'
 import { resolveSubjectFolder } from './paths.js'
 import { AuroraFileWatcher } from './file-watcher.js'
 import { ExtractPool, type ExtractWorkerChild } from './extract-pool.js'
+import { createPreviewExtractor, type PreviewExtractor } from './preview-extract.js'
+import { LAYOUT_MAX_BYTES, createFileLayoutService, type FileLayoutService } from './file-layout.js'
 import { OfficePool, type OfficeChildLike } from './office-pool.js'
 import { SELF_AWARENESS_EVIDENCE_LIMIT_BYTES } from './extract.js'
 import { ClassificationHistory } from './classification-history.js'
@@ -465,6 +467,11 @@ let fileWatcher: AuroraFileWatcher | undefined
 let extractPool: ExtractPool | undefined
 /** 文件自感知独立提取池，避免与 ClassRoom 分类互相排队饿死（docs/06 §26）。 */
 let awarenessExtractPool: ExtractPool | undefined
+/** 文件面板预览专用提取池 + 正文 LRU（2026-11-12，docs/07 §2.3）：点开即看，不排后台队尾。 */
+let previewExtractPool: ExtractPool | undefined
+let previewExtractor: PreviewExtractor | undefined
+/** 文件面板版式预览（2026-11-12）：独立 office-port + 自管产物缓存，不进 Agent 工具表。 */
+let fileLayout: FileLayoutService | undefined
 let fileAwareness: FileAwarenessService | undefined
 let fileAwarenessAnalyzer: FileAwarenessAnalyzer | undefined
 let agentActivityDetach: (() => void) | undefined
@@ -3143,6 +3150,38 @@ async function bootstrap(): Promise<void> {
       }) as unknown as ExtractWorkerChild,
     logger: logger.child('extract'),
   })
+  previewExtractPool = new ExtractPool({
+    fork: () =>
+      utilityProcess.fork(join(__dirname, 'extract-worker.js'), [], {
+        serviceName: 'aurora-preview-extract',
+      }) as unknown as ExtractWorkerChild,
+    logger: logger.child('preview-extract'),
+    // 预览是人在等：12s 不回就降级给信息卡，不像后台管线那样容忍 30s
+    timeoutMs: 12_000,
+  })
+  previewExtractor = createPreviewExtractor(previewExtractPool)
+  // 版式预览另实例化一个 office-port：只调 render，产物落自管目录，Agent 工具表不受影响
+  const previewOfficePort = createNodeOfficePort({
+    pool: ensureOfficePool(),
+    workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId),
+    renderRoot: join(userData, 'office-previews', 'panel-tmp'),
+    maxFileBytes: LAYOUT_MAX_BYTES,
+    renderTimeoutMs: 90_000,
+    logger: logger.child('file-layout'),
+  })
+  fileLayout = createFileLayoutService(
+    {
+      rootOf: (sessionId) => sessionProjects.boundaryRoot(sessionId),
+      render: (request) => previewOfficePort.render(request),
+      busy: () => officePool?.running ?? false,
+    },
+    {
+      cacheRoot: join(userData, 'office-previews', 'panel'),
+      sweepRoot: join(userData, 'office-previews'),
+      logger: logger.child('file-layout'),
+    },
+  )
+  void fileLayout.sweep()
   const classificationHistory = new ClassificationHistory({
     dir: userData,
     logger: logger.child('classification-history'),
@@ -3367,6 +3406,11 @@ async function bootstrap(): Promise<void> {
     // `/init` 内置命令的生成目标目录（docs/06 §6）：同一条 boundaryRoot 回落链，
     // 与快照 guard、file-port 边界同源（别再抄第二份解析）
     workspaceRootOf: (sessionId) => sessionProjects.boundaryRoot(sessionId),
+    // 文件面板的 Office / PDF 正文（docs/07 §2.3）：预览专用池，不与分类 / 自感知排队
+    previewDocumentBodyOf: (path, ext, sizeBytes, mtimeMs) =>
+      previewExtractor!.documentBodyOf(path, ext, sizeBytes, mtimeMs),
+    previewLayoutAvailable: officeCliAvailable,
+    ...(fileLayout === undefined ? {} : { previewLayout: fileLayout }),
     snapshots: {
       capture: (input) => ensureSnapshotPort().capture(input),
       list: (query) => ensureSnapshotPort().list(query),
@@ -7085,6 +7129,9 @@ async function shutdown(): Promise<void> {
   })
   extractPool?.close()
   awarenessExtractPool?.close()
+  previewExtractPool?.close()
+  previewExtractor?.clear()
+  await fileLayout?.dispose().catch(() => undefined)
   officePool?.close()
   // 流光提醒先收尾：清掉兜底定时器与队列，退出过程中不再操作已经开始销毁的窗口
   bannerService?.dispose()

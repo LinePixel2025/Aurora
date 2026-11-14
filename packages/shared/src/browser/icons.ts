@@ -140,4 +140,16 @@ export {
   Blocks,
   BookOpenText,
   LogOut,
+  // 右栏文件面板（2026-11-12，docs/07 §2.3）：按扩展名分色的类型图标
+  // （文本 / 代码 / 图片 / 文件夹复用上面的 FileText、Code2、ImageIcon、FolderOpen）
+  FileSpreadsheet,
+  Presentation,
+  FileArchive,
+  FileVideo,
+  FileAudio,
+  FileQuestion,
+  // 文件面板的动作图标：交给系统默认程序 / 排序切换 / 正文⇄版式
+  ExternalLink,
+  ArrowDownUp,
+  LayoutTemplate,
 } from 'lucide-vue-next'

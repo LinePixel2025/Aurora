@@ -48,6 +48,10 @@ describe('buildFileList（右栏文件管理器）', () => {
     const readme = result.entries.find((entry) => entry.name === 'readme.md')
     expect(readme?.path).toBe(join(base, 'readme.md'))
     expect(readme?.bytes).toBeGreaterThan(0)
+    // mtimeMs 顺带从已有的 stat 回填（信息卡「修改时间」要用，零额外 IO）
+    expect(readme?.mtimeMs).toBeGreaterThan(0)
+    // 目录不额外 stat：列表只要名字与类型，不为「修改时间」多付一轮 IO
+    expect(result.entries[0]?.mtimeMs).toBeUndefined()
   })
 
   it('可以列出子目录（`dir` 回填请求的目录，`root` 仍是边界根）', async () => {

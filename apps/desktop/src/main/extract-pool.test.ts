@@ -102,6 +102,21 @@ describe('ExtractPool · 子进程回包', () => {
     })
   })
 
+  it('bodyOnly 请求透传，回包带干净正文（预览专用，缺省时不影响证据链路）', async () => {
+    const fake = fakeChild()
+    const pool = new ExtractPool({ fork: () => fake.child, timeoutMs: 5_000 })
+    const promise = pool.extract({
+      path: 'D:\\项目\\书.docx',
+      ext: 'docx',
+      sizeBytes: 10,
+      bodyOnly: true,
+    })
+    const sent = fake.messages[0] as { id: string; bodyOnly?: boolean }
+    expect(sent.bodyOnly).toBe(true)
+    fake.reply({ id: sent.id, ok: true, body: '# 正文', warnings: [] })
+    await expect(promise).resolves.toMatchObject({ body: '# 正文', degraded: false })
+  })
+
   it('{ data } 包装回包同样被接收（跨 Electron 版本兼容）', async () => {
     const fake = fakeChild({ shape: 'wrapped' })
     const pool = new ExtractPool({ fork: () => fake.child, timeoutMs: 5_000 })

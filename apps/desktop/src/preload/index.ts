@@ -102,6 +102,11 @@ const api: AuroraApi = {
     list: (request) => invoke(IPC.preview.list, request),
     // Agent 展示推送（show_preview 工具）：主进程 → 渲染层，on/off 成对
     onShow: (listener) => subscribe(IPC.preview.show, listener),
+    // Office 版式（2026-11-12）：manifest 只带首页，其余页按 index 单取，避免一次推 N 张图
+    render: (request) => invoke(IPC.preview.render, request),
+    renderPage: (request) => invoke(IPC.preview.renderPage, request),
+    // 交给系统（默认程序打开 / 资源管理器定位）：边界校验与 read 同源，都在主进程侧
+    open: (request) => invoke(IPC.preview.open, request),
   },
   browser: {
     // 站点自开标签（target="_blank" / window.open 的 http(s) 目标）：主进程 → 渲染层，成对

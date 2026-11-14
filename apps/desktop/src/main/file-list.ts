@@ -10,37 +10,25 @@
  */
 import { promises as nodeFs } from 'node:fs'
 import { join } from 'node:path'
-import { resolveWithin, isPathOutsideError, type WorkspaceGuardOptions } from './tools/file-port.js'
+import { assertPreviewPath, type PreviewPathPort } from './preview-path.js'
 import type { FileListEntry, FileListResult } from '@aurora/shared'
 
 /** 单次列出的条目上限：目录再大也只列前 N 条（避免一次把上万条推给渲染层） */
 export const FILE_LIST_MAX_ENTRIES = 500
 
-export interface FileListPort {
-  /** 会话边界根（`sessionProjects.boundaryRoot` 回落链）；返回 undefined = 无法确定边界 */
-  rootOf(sessionId: string): string | undefined
-}
+export type FileListPort = PreviewPathPort
 
 export async function buildFileList(
   port: FileListPort,
   request: { sessionId: string; path?: string },
 ): Promise<FileListResult> {
-  const root = port.rootOf(request.sessionId)
-  if (root === undefined || root.trim() === '') {
-    throw new Error('当前会话没有可用的工作目录，无法确定文件边界；请先绑定项目或检查工作目录设置')
-  }
   const requested = typeof request.path === 'string' ? request.path.trim() : ''
-  const dir = requested === '' ? root : requested
-
-  const guard: WorkspaceGuardOptions = { workspaceRoot: () => root }
-  try {
-    await resolveWithin(dir, false, guard, request.sessionId)
-  } catch (error) {
-    if (isPathOutsideError(error)) {
-      throw new Error('该路径在当前会话的工作目录边界之外，不能列出')
-    }
-    throw error
-  }
+  // 缺省列边界根。根不可用时这里得到空串，由 assertPreviewPath 统一报「没有可用的工作目录」
+  const target = requested === '' ? (port.rootOf(request.sessionId) ?? '') : requested
+  const { path: dir, root } = await assertPreviewPath(port, {
+    sessionId: request.sessionId,
+    path: target,
+  })
 
   const stat = await nodeFs.stat(dir).catch(() => undefined)
   if (stat === undefined) throw new Error('目录不存在或无法访问')
@@ -59,11 +47,19 @@ export async function buildFileList(
     const isDir = dirent.isDirectory()
     const path = join(dir, dirent.name)
     let bytes = 0
+    let mtimeMs: number | undefined
     if (!isDir) {
       const fileStat = await nodeFs.stat(path).catch(() => undefined)
       bytes = fileStat?.size ?? 0
+      mtimeMs = fileStat?.mtimeMs
     }
-    entries.push({ name: dirent.name, path, kind: isDir ? 'dir' : 'file', bytes })
+    entries.push({
+      name: dirent.name,
+      path,
+      kind: isDir ? 'dir' : 'file',
+      bytes,
+      ...(mtimeMs === undefined ? {} : { mtimeMs }),
+    })
   }
 
   entries.sort((left, right) => {

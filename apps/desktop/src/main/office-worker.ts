@@ -252,7 +252,10 @@ async function renderOffice(
     return { files: [file], warnings: [] }
   }
   const pages = await resolveRenderPages(runner, request, request.timeoutMs)
-  const selected = pages.slice(0, request.maxPages)
+  const selected =
+    request.pageIndex === undefined
+      ? pages.slice(0, request.maxPages)
+      : pages.slice(request.pageIndex, request.pageIndex + 1)
   const files: string[] = []
   for (const [index, page] of selected.entries()) {
     const file = join(request.outputDir, `${safeStem(request.sourcePath)}-${index + 1}.png`)
@@ -263,6 +266,9 @@ async function renderOffice(
   return {
     files,
     ...(pages.length === 1 ? { pageCount: 1 } : { pageCount: pages.length }),
+    ...(request.pageIndex === undefined
+      ? {}
+      : { pageLabels: pages.map((page) => page.label ?? '') }),
     warnings: [],
   }
 }
@@ -319,6 +325,8 @@ async function pdfOffice(
 
 interface RenderPage {
   args: string[]
+  /** 面板翻页用的可读标签（工作表名 / 页序号）；target / grid 单页时留空 */
+  label?: string
 }
 
 async function resolveRenderPages(
@@ -327,7 +335,7 @@ async function resolveRenderPages(
   timeoutMs: number,
 ): Promise<RenderPage[]> {
   if (request.action === 'render' && request.target !== undefined) {
-    return [{ args: ['--range', request.target] }]
+    return [{ args: ['--range', request.target], label: request.target }]
   }
   if (request.action === 'render' && request.grid !== undefined) {
     return [{ args: ['--grid', String(request.grid), ...pageRangeArgs(request)] }]
@@ -335,7 +343,7 @@ async function resolveRenderPages(
   if (request.format === 'xlsx') {
     const sheets = await workbookSheets(runner, request.sourcePath, timeoutMs)
     if (sheets.length > 0) {
-      return sheets.map((sheet) => ({ args: ['--range', sheetRange(sheet)] }))
+      return sheets.map((sheet) => ({ args: ['--range', sheetRange(sheet)], label: sheet.name }))
     }
   }
   const start = request.pageStart ?? 1
@@ -345,7 +353,12 @@ async function resolveRenderPages(
   const to = Math.max(from, end)
   const pages: RenderPage[] = []
   for (let page = from; page <= to; page += 1) {
-    pages.push({ args: ['--start', String(page), '--end', String(page)] })
+    pages.push({
+      // screenshot 模式认的是 --page；--start/--end 是 text 模式的段落过滤，
+      // 截图时被**静默忽略**，每页都会拍成第 1 页（2026-11-14 实测三页 PNG 字节全等）。
+      args: ['--page', String(page)],
+      label: request.format === 'pptx' ? `幻灯片 ${page}` : `第 ${page} 页`,
+    })
   }
   return pages
 }
@@ -353,10 +366,10 @@ async function resolveRenderPages(
 function pageRangeArgs(
   request: Extract<OfficeWorkerRequest, { action: 'render' | 'pdf' }>,
 ): string[] {
-  const args: string[] = []
-  if (request.pageStart !== undefined) args.push('--start', String(request.pageStart))
-  if (request.pageEnd !== undefined) args.push('--end', String(request.pageEnd))
-  return args
+  if (request.pageStart === undefined && request.pageEnd === undefined) return []
+  const from = request.pageStart ?? 1
+  const to = request.pageEnd ?? from
+  return ['--page', from === to ? String(from) : `${from}-${to}`]
 }
 
 async function pageCount(

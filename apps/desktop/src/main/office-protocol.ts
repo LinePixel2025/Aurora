@@ -68,6 +68,12 @@ export interface OfficeWorkerRenderRequest extends OfficeWorkerBaseRequest {
   pageEnd?: number
   grid?: number
   maxPages: number
+  /**
+   * 只渲染第 n 页（0 基，2026-11-12 文件面板版式预览）。在 `resolveRenderPages` 得出的
+   * pages 数组上切片 —— xlsx 走工作表分支、完全忽略 pageStart/pageEnd，只有数组切片
+   * 能同时覆盖 docx 页 / xlsx 工作表 / pptx 幻灯片。缺省时行为逐字不变。
+   */
+  pageIndex?: number
 }
 
 export interface OfficeWorkerPdfRequest extends OfficeWorkerBaseRequest {
@@ -111,6 +117,8 @@ export interface OfficeWorkerWriteResult {
 export interface OfficeWorkerRenderResult {
   files: string[]
   pageCount?: number
+  /** 每页标签（工作表名 / 页序号）；只在 `pageIndex` 请求时回，缺省响应形状不变 */
+  pageLabels?: string[]
   warnings: string[]
 }
 

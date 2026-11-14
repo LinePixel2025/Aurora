@@ -12,6 +12,9 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-11-14 | 文件预览整份 `readFile`：点 `.mov` / `.mp3` 卡死主界面（大二进制还被误判成文本） | 文件面板, 预览, readFile, 内存, 卡死, 二进制, 误判文本, shell.openPath, 超时, 坑 | [2026-11-14-file-preview-unbounded-read.md](2026-11-14-file-preview-unbounded-read.md) |
+| 2026-11-14 | 文件面板 capture 探针三坑：脱离文档的 emit、文本身份键、真拉系统程序 | capture, 探针, 文件面板, Vue, emit, 坑, 系统打开, OpenWith, OfficeCLI | [2026-11-14-capture-probe-file-panel.md](2026-11-14-capture-probe-file-panel.md) |
+| 2026-11-14 | OfficeCLI 截图分页只认 `--page`，`--start/--end` 被静默忽略 | OfficeCLI, office-worker, 版式预览, 截图, 分页, office_render, office_pdf, 文件面板, 坑 | [2026-11-14-officecli-screenshot-paging.md](2026-11-14-officecli-screenshot-paging.md) |
 | 2026-11-10 | Center 0.5.3 换装：补 `ui.dialogs` 清单校验（插件上传枚举报错的根因）               | Center, 部署, 插件, 对话框, 权限, 清单, 坑, 口径 | [2026-11-10-center-053-plugin-dialogs.md](2026-11-10-center-053-plugin-dialogs.md) |
 | 2026-11-10 | v0.6.4 双投发布（插件临时输入窗口）与本次发布链路实测                             | 发布, 打包, 更新源, Center, GitHub, 插件, 对话框, 记录, 口径 | [2026-11-10-v064-release.md](2026-11-10-v064-release.md) |
 | 2026-11-10 | 插件临时对话框（`contributes.dialogs` / `ui.dialogs`）：可键入、结算即销毁，与小组件 focusable 取舍相反 | 插件, 对话框, Electron, 窗口, IPC, webview, 探针, 坑, 口径 | [2026-11-10-plugin-temporary-dialog.md](2026-11-10-plugin-temporary-dialog.md) |

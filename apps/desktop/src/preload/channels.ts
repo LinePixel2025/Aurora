@@ -71,6 +71,10 @@ const CHANNELS = {
     // 列目录 + Agent 展示推送（show_preview 工具）：同上，双向断言兜住
     list: 'preview:list',
     show: 'preview:show',
+    // Office 版式（2026-11-12）：manifest 只带首页，其余页按 index 单取；open = 交给系统
+    render: 'preview:render',
+    renderPage: 'preview:renderPage',
+    open: 'preview:open',
   },
   // 右栏「终端」（2026-10-03）：与 shared 契约同构，编译期双向断言兜住
   browser: {

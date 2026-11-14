@@ -161,6 +161,144 @@ describe('office-worker OfficeCLI adapter', () => {
     expect(response.render?.pageCount).toBe(2)
   })
 
+  it('pageIndex 只渲染指定页，并回全部页标签（pptx 按幻灯片）', async () => {
+    const source = join(dir, 'deck.pptx')
+    await writeFile(source, 'pptx')
+    const shots: string[][] = []
+    const runner = fakeRunner({
+      run: async (args) => {
+        if (args[0] === 'view' && args[2] === 'screenshot') {
+          shots.push([...args])
+          const out = args[args.indexOf('-o') + 1]
+          if (out !== undefined) await writeFile(out, PNG)
+        }
+        return okResult()
+      },
+      json: async (args) => {
+        if (args[0] === 'view' && args[2] === 'outline') {
+          return {
+            envelope: { success: true, data: { slides: [{}, {}, {}] } },
+            run: okResult(),
+          }
+        }
+        return { envelope: { success: true, data: {} }, run: okResult() }
+      },
+    })
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'render',
+        timeoutMs: 1000,
+        sourcePath: source,
+        format: 'pptx',
+        mode: 'screenshot',
+        outputDir: join(dir, 'render'),
+        maxPages: 1,
+        pageIndex: 1,
+      },
+      { runner },
+    )
+    expect(response.ok, response.error).toBe(true)
+    expect(response.render?.files).toHaveLength(1)
+    expect(response.render?.pageCount).toBe(3)
+    expect(response.render?.pageLabels).toEqual(['幻灯片 1', '幻灯片 2', '幻灯片 3'])
+    expect(shots).toHaveLength(1)
+    // screenshot 模式只认 --page；--start/--end 会被静默忽略、每页都拍成第 1 页
+    expect(shots[0]).toContain('--page')
+    expect(shots[0]?.[shots[0].indexOf('--page') + 1]).toBe('2')
+    expect(shots[0]).not.toContain('--start')
+  })
+
+  it('pageIndex 对 xlsx 走工作表切片（该分支完全忽略 pageStart/pageEnd）', async () => {
+    const source = join(dir, 'book.xlsx')
+    await writeFile(source, 'xlsx')
+    const shots: string[][] = []
+    const runner = fakeRunner({
+      run: async (args) => {
+        if (args[0] === 'view' && args[2] === 'screenshot') {
+          shots.push([...args])
+          const out = args[args.indexOf('-o') + 1]
+          if (out !== undefined) await writeFile(out, PNG)
+        }
+        return okResult()
+      },
+      json: async (args) => {
+        if (args[0] === 'view' && args[2] === 'outline') {
+          return {
+            envelope: {
+              success: true,
+              data: {
+                sheets: [
+                  { name: '一月', rows: 2, cols: 2 },
+                  { name: '二月', rows: 3, cols: 4 },
+                ],
+              },
+            },
+            run: okResult(),
+          }
+        }
+        return { envelope: { success: true, data: {} }, run: okResult() }
+      },
+    })
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'render',
+        timeoutMs: 1000,
+        sourcePath: source,
+        format: 'xlsx',
+        mode: 'screenshot',
+        outputDir: join(dir, 'render'),
+        maxPages: 1,
+        pageIndex: 1,
+      },
+      { runner },
+    )
+    expect(response.ok, response.error).toBe(true)
+    expect(response.render?.pageCount).toBe(2)
+    expect(response.render?.pageLabels).toEqual(['一月', '二月'])
+    expect(shots[0]?.[shots[0].indexOf('--range') + 1]).toBe('二月!A1:D3')
+  })
+
+  it('不传 pageIndex 时响应形状逐字不变（没有 pageLabels）', async () => {
+    const source = join(dir, 'deck.pptx')
+    await writeFile(source, 'pptx')
+    const runner = fakeRunner({
+      run: async (args) => {
+        if (args[0] === 'view' && args[2] === 'screenshot') {
+          const out = args[args.indexOf('-o') + 1]
+          if (out !== undefined) await writeFile(out, PNG)
+        }
+        return okResult()
+      },
+      json: async (args) => {
+        if (args[0] === 'view' && args[2] === 'outline') {
+          return { envelope: { success: true, data: { slides: [{}] } }, run: okResult() }
+        }
+        return { envelope: { success: true, data: {} }, run: okResult() }
+      },
+    })
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'render',
+        timeoutMs: 1000,
+        sourcePath: source,
+        format: 'pptx',
+        mode: 'screenshot',
+        outputDir: join(dir, 'render'),
+        maxPages: 6,
+      },
+      { runner },
+    )
+    expect(response.ok, response.error).toBe(true)
+    expect(response.render).toEqual({
+      files: [join(dir, 'render', 'deck-1.png')],
+      pageCount: 1,
+      warnings: [],
+    })
+  })
+
   it('pdf 用逐页截图合成一个可重新打开的 PDF', async () => {
     const source = join(dir, 'deck.pptx')
     const output = join(dir, 'deck.pdf')

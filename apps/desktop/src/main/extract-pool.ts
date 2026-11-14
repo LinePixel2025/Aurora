@@ -24,6 +24,8 @@ export interface ExtractPoolRequest {
   extractImages?: boolean
   /** 证据文本上限；缺省为分类管线的 8KB。 */
   evidenceLimitBytes?: number
+  /** 文件面板预览：只要干净正文（`result.body`），不产证据。 */
+  bodyOnly?: boolean
 }
 
 export interface ExtractPoolResult {
@@ -34,6 +36,8 @@ export interface ExtractPoolResult {
   /** 旧调用方 / 降级夹具可省略；文件自感知按空数组处理。 */
   documentImages?: ExtractedDocumentImage[]
   sourceHash?: string
+  /** `bodyOnly` 请求的干净正文（Markdown）；降级路径没有它 */
+  body?: string
   /** 是否走了降级路径（超时 / 崩溃 / 解析器失败） */
   degraded: boolean
 }
@@ -147,6 +151,7 @@ export class ExtractPool {
           ...(request.evidenceLimitBytes === undefined
             ? {}
             : { evidenceLimitBytes: request.evidenceLimitBytes }),
+          ...(request.bodyOnly === true ? { bodyOnly: true } : {}),
         })
       } catch (error) {
         clearTimeout(timer)
@@ -204,6 +209,7 @@ export class ExtractPool {
             warnings?: string[]
             documentImages?: ExtractedDocumentImage[]
             sourceHash?: string
+            body?: string
             error?: string
           }
         | undefined
@@ -223,6 +229,7 @@ export class ExtractPool {
             ? {}
             : { documentImages: payload.documentImages }),
           ...(payload.sourceHash === undefined ? {} : { sourceHash: payload.sourceHash }),
+          ...(payload.body === undefined ? {} : { body: payload.body }),
           degraded: (payload.warnings ?? []).length > 0,
         })
         return

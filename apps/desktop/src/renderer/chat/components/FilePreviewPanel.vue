@@ -4,8 +4,13 @@
  *
  * 结构（自上而下）：
  * - 路径输入（「从消息 / 工具卡里看到路径 → 拿来预览」是主入口之一）；
- * - 工具条：面包屑（根 = 会话边界根，绑了项目就是**项目文件夹**）+ 后退 / 前进 / 上级 / 刷新；
- * - 正文：目录列表，或**同一面板内**的文件预览（markdown / 文本 / 图片）。
+ * - 工具条：面包屑（根 = 会话边界根，绑了项目就是**项目文件夹**）+ 后退 / 前进 / 上级 / 刷新
+ *   + 即时搜索 + 排序切换；
+ * - 正文：目录列表，或**同一面板内**的文件预览（markdown / 文本 / 图片 / Office 正文与版式）。
+ *
+ * 本文件只管**状态与编排**：历史栈、请求序号护栏、IPC 调用、标签标题上报。画面拆在
+ * `file-panel/`（工具条 / 列表 / 预览正文 / 类型图标）；类名与 data-field 是截图探针的
+ * 锚点，改名会让 chat-file-project 等场景直接打红。
  *
  * 导航模型（2026-10-03 补，用户点名「预览文件、进入文件夹后无法返回」）：
  * 与浏览器同构的**历史栈** —— 一个位置 = `{ dir, file? }`（file 为空即该目录的列表态）。
@@ -18,20 +23,20 @@
  * - 二进制文件返回 `unsupported`（只给原因，不渲染乱码）；列目录上限 500 条。
  */
 import { computed, ref, watch } from 'vue'
-import type { FileListEntry, FileListResult, FilePreviewResult } from '@aurora/shared'
-import {
-  ArrowLeft,
-  ArrowRight,
-  ArrowUp,
-  ChevronRight,
-  FileText,
-  FolderOpen,
-  House,
-  RotateCw,
-  formatExactCount,
-  renderMarkdown,
-} from '@aurora/shared/browser'
+import type {
+  FileLayoutManifest,
+  FileLayoutPage,
+  FileListEntry,
+  FileListResult,
+  FilePreviewResult,
+} from '@aurora/shared'
+import { renderMarkdown } from '@aurora/shared/browser'
 import '@aurora/shared/browser/markdown/md.css'
+import FilePanelToolbar from './file-panel/FilePanelToolbar.vue'
+import FilePanelList from './file-panel/FilePanelList.vue'
+import FilePreviewBody from './file-panel/FilePreviewBody.vue'
+import FileKindIcon from './file-panel/FileKindIcon.vue'
+import type { FileSortKey } from './file-panel/fileTypeMeta'
 
 const props = defineProps<{
   sessionId: string
@@ -58,7 +63,7 @@ const pathInput = ref('')
 const loading = ref(false)
 const error = ref('')
 const current = ref<FilePreviewResult | null>(null)
-/** 渲染后的 markdown html（`kind === 'markdown'` 时才有值） */
+/** 渲染后的 markdown html（markdown 与 document 正文共用） */
 const markdownHtml = ref('')
 
 // ── 目录列表（文件管理器） ──
@@ -68,6 +73,28 @@ const listError = ref('')
 const listLoading = ref(false)
 /** 视图：列表 / 预览（预览时列表让位，「返回列表」按钮负责切回） */
 const view = ref<'list' | 'preview'>('list')
+
+// ── 纯视图态（不进历史栈；排序是跨会话保留的用户偏好） ──
+
+const query = ref('')
+const sortKey = ref<FileSortKey>('name')
+const sortDir = ref<'asc' | 'desc'>('asc')
+const selectedPath = ref('')
+
+// ── Office 双视图（正文秒开，版式按需渲染） ──
+
+const layoutMode = ref<'body' | 'layout'>('body')
+const layout = ref<FileLayoutManifest | null>(null)
+const layoutPage = ref<FileLayoutPage | null>(null)
+const layoutLoading = ref(false)
+const layoutError = ref('')
+
+// ── 交给系统 ──
+
+const opening = ref(false)
+const openError = ref('')
+/** 已自动外开过的路径：防止连点同一行反复拉起系统程序 */
+let openedFor = ''
 
 // ── 历史栈（后退 / 前进） ──
 
@@ -103,10 +130,6 @@ function saveRecent(path: string): void {
   }
 }
 
-const bytesText = computed(() =>
-  current.value === null ? '' : formatExactCount(current.value.bytes),
-)
-
 /** 面包屑根标签：绑定了项目就是项目文件夹，否则是会话工作目录 */
 const rootLabel = computed(() =>
   props.projectName === undefined ? '工作目录' : `项目：${props.projectName}`,
@@ -117,6 +140,39 @@ const canGoUp = computed(() => {
   const info = listing.value
   return info !== null && relativeTo(info.root, info.dir) !== ''
 })
+
+/**
+ * 搜索 + 排序后的条目。**默认口径必须与主进程逐字一致**（目录优先 + 名称数字感知升序）：
+ * 截图探针按首行是不是目录、按行数断言，改了默认序就是自己给自己造恒红。
+ */
+const filteredEntries = computed(() => {
+  const entries = listing.value?.entries ?? []
+  const keyword = query.value.trim().toLowerCase()
+  const matched =
+    keyword === '' ? entries : entries.filter((entry) => entry.name.toLowerCase().includes(keyword))
+  const sign = sortDir.value === 'asc' ? 1 : -1
+  return [...matched].sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === 'dir' ? -1 : 1
+    let order = 0
+    if (sortKey.value === 'size') order = left.bytes - right.bytes
+    else if (sortKey.value === 'mtime') order = (left.mtimeMs ?? 0) - (right.mtimeMs ?? 0)
+    // 主键相等（含按名称排序）时一律回落到名称，同大小 / 同时间的条目顺序才稳定
+    if (order === 0) {
+      order = left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+    }
+    return order * sign
+  })
+})
+
+/** 点当前排序键 = 翻转升降序；换键时大小 / 时间默认降序（最大 / 最新在前） */
+function toggleSort(key: FileSortKey): void {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+    return
+  }
+  sortKey.value = key
+  sortDir.value = key === 'name' ? 'asc' : 'desc'
+}
 
 /** `dir` 相对 `root` 的路径（Windows / POSIX 两种分隔符都认）；同路径 / 不在根内返回空串 */
 function relativeTo(root: string, dir: string): string {
@@ -199,12 +255,15 @@ const crumbs = computed(() => {
 // ── 目录读取 / 文件读取 ──
 
 /**
- * 请求序号护栏：列表与读盘都允许并发，**只认最后一次**的结果。
+ * 请求序号护栏：列表、读盘、版式都允许并发，**只认最后一次**的结果。
  * 旧实现是「正在加载就 return」——快速连点两下目录时第二下被静默丢掉，
  * 用户看到的是「点了没反应」（与历史栈一起改掉）。
  */
 let dirRequest = 0
 let fileRequest = 0
+let layoutRequest = 0
+/** 最近一次请求的页码：与 `layoutRequest` 双判，慢的那一页回来也不许覆盖新页 */
+let wantedPage = 0
 
 /** 列目录（不传 `path` 即会话边界根）。返回是否成功 —— 历史回放据此决定要不要继续 */
 async function loadDir(path?: string): Promise<boolean> {
@@ -239,6 +298,14 @@ async function readFile(path: string): Promise<boolean> {
   const id = (fileRequest += 1)
   loading.value = true
   error.value = ''
+  // 换文件 = 上一份版式作废（序号 +1 让在途的渲染 / 取页回来时自己丢弃）
+  layoutRequest += 1
+  layoutMode.value = 'body'
+  layout.value = null
+  layoutPage.value = null
+  layoutLoading.value = false
+  layoutError.value = ''
+  openError.value = ''
   try {
     const result = await window.aurora.preview.read({ sessionId: props.sessionId, path: trimmed })
     if (id !== fileRequest) return false
@@ -251,10 +318,12 @@ async function readFile(path: string): Promise<boolean> {
       return false
     }
     current.value = result.value
+    const kind = result.value.kind
     markdownHtml.value =
-      result.value.kind === 'markdown' && result.value.content !== undefined
+      (kind === 'markdown' || kind === 'document') && result.value.content !== undefined
         ? renderMarkdown(result.value.content)
         : ''
+    selectedPath.value = result.value.path
     saveRecent(result.value.path)
     view.value = 'preview'
     return true
@@ -272,6 +341,8 @@ async function readFile(path: string): Promise<boolean> {
 
 /** 应用一个位置：先保证目录列表可用，再按需预览文件 */
 async function applyLocation(location: Location): Promise<void> {
+  // 换目录才清搜索词；同层刷新（刷新钮 / 后退回到同一层）保留用户正在敲的过滤
+  if (location.dir !== listing.value?.dir) query.value = ''
   const listed = await loadDir(location.dir)
   if (!listed) {
     // 目录打不开（越界 / 已删除）：错误行留给用户，历史停在原地不前进
@@ -316,13 +387,23 @@ function goForward(): void {
 
 // ── 列表 / 工具条的交互 ──
 
-/** 点目录：进下一层；点文件：预览（列表留在历史里，后退即回到同一层） */
-function activate(entry: FileListEntry): void {
+/**
+ * 点目录：进下一层；点文件：预览（列表留在历史里，后退即回到同一层）。
+ * 预览不了的类型**单击即交给系统默认程序** —— 用户点它就是想打开它，
+ * 不该只回一句「不支持预览」再让人自己去资源管理器里找。
+ */
+async function activate(entry: FileListEntry): Promise<void> {
   if (entry.kind === 'dir') {
     navigate({ dir: entry.path })
     return
   }
-  navigate({ dir: currentDir.value, file: entry.path })
+  const location: Location = { dir: currentDir.value, file: entry.path }
+  pushHistory(location)
+  await applyLocation(location)
+  const opened = current.value
+  if (opened === null || opened.kind !== 'unsupported' || openedFor === opened.path) return
+  openedFor = opened.path
+  await openWith('default')
 }
 
 function goUp(): void {
@@ -394,11 +475,105 @@ async function refresh(): Promise<void> {
   await applyLocation(here)
 }
 
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Enter') void previewPath(pathInput.value)
+// ── Office 版式（按需触发，失败一律回落正文） ──
+
+function setMode(mode: 'body' | 'layout'): void {
+  if (mode === 'body') {
+    layoutMode.value = 'body'
+    return
+  }
+  if (current.value?.layoutAvailable !== true) return
+  layoutMode.value = 'layout'
+  if (layout.value === null) void loadLayout()
 }
 
-/** 会话切换：列表、预览与历史全部作废（旧路径按新会话的边界解析会越界） */
+/** 渲染失败不留在空白版式页：退回正文并把原因写出来，用户至少读得到内容 */
+function fallbackToBody(message: string): void {
+  layoutMode.value = 'body'
+  layout.value = null
+  layoutPage.value = null
+  layoutError.value = `${message}，已显示正文`
+}
+
+async function loadLayout(): Promise<void> {
+  const target = current.value
+  if (target === null) return
+  const id = (layoutRequest += 1)
+  layoutLoading.value = true
+  layoutError.value = ''
+  try {
+    const result = await window.aurora.preview.render({
+      sessionId: props.sessionId,
+      path: target.path,
+    })
+    if (id !== layoutRequest) return
+    if (!result.ok) {
+      fallbackToBody(result.message)
+      return
+    }
+    layout.value = result.value
+    layoutPage.value = result.value.firstPage ?? null
+    // manifest 只带首页；首页缺失时按普通取页补一次
+    if (layoutPage.value === null) await loadPage(0, id)
+  } catch (cause) {
+    if (id !== layoutRequest) return
+    fallbackToBody(cause instanceof Error ? cause.message : String(cause))
+  } finally {
+    if (id === layoutRequest) layoutLoading.value = false
+  }
+}
+
+async function loadPage(index: number, id = layoutRequest): Promise<void> {
+  const manifest = layout.value
+  if (manifest === null || index < 0 || index >= manifest.pageCount) return
+  wantedPage = index
+  layoutLoading.value = true
+  layoutError.value = ''
+  try {
+    const result = await window.aurora.preview.renderPage({
+      sessionId: props.sessionId,
+      renderId: manifest.renderId,
+      index,
+    })
+    if (id !== layoutRequest || wantedPage !== index) return
+    if (!result.ok) {
+      layoutError.value = result.message
+      return
+    }
+    layoutPage.value = result.value
+  } catch (cause) {
+    if (id !== layoutRequest || wantedPage !== index) return
+    layoutError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    if (id === layoutRequest && wantedPage === index) layoutLoading.value = false
+  }
+}
+
+function retryLayout(): void {
+  layoutError.value = ''
+  if (current.value?.layoutAvailable !== true) return
+  layoutMode.value = 'layout'
+  void loadLayout()
+}
+
+// ── 交给系统（用户直接点击，不走工具确认闸门） ──
+
+async function openWith(mode: 'default' | 'reveal'): Promise<void> {
+  const path = current.value?.path
+  if (path === undefined || opening.value) return
+  opening.value = true
+  openError.value = ''
+  try {
+    const result = await window.aurora.preview.open({ sessionId: props.sessionId, path, mode })
+    if (!result.ok) openError.value = result.message
+  } catch (cause) {
+    openError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    opening.value = false
+  }
+}
+
+/** 会话切换：列表、预览、版式与历史全部作废（旧路径按新会话的边界解析会越界） */
 watch(
   () => props.sessionId,
   () => {
@@ -410,6 +585,16 @@ watch(
     view.value = 'list'
     trail.value = []
     cursor.value = -1
+    query.value = ''
+    selectedPath.value = ''
+    layoutRequest += 1
+    layoutMode.value = 'body'
+    layout.value = null
+    layoutPage.value = null
+    layoutLoading.value = false
+    layoutError.value = ''
+    openError.value = ''
+    openedFor = ''
     void bootstrap()
   },
   { immediate: true },
@@ -429,174 +614,80 @@ async function bootstrap(): Promise<void> {
 
 <template>
   <div class="fp" data-field="chat.file-preview">
-    <div class="fp-input-row">
-      <input
-        v-model="pathInput"
-        class="fp-input"
-        type="text"
-        placeholder="输入工作目录内的文件路径…"
-        spellcheck="false"
-        @keydown="onKeydown"
-      />
-      <button
-        type="button"
-        class="fp-go"
-        :disabled="loading || pathInput.trim() === ''"
-        @click="previewPath(pathInput)"
-      >
-        {{ loading ? '…' : '预览' }}
-      </button>
-    </div>
+    <FilePanelToolbar
+      v-model:path-input="pathInput"
+      v-model:query="query"
+      :loading="loading"
+      :busy="listLoading || loading"
+      :root-label="rootLabel"
+      :crumbs="crumbs"
+      :current-dir="currentDir"
+      :listing-dir="listing?.dir ?? ''"
+      :has-listing="listing !== null"
+      :can-go-back="canGoBack"
+      :can-go-forward="canGoForward"
+      :can-go-up="canGoUp"
+      :sort-key="sortKey"
+      :sort-dir="sortDir"
+      :show-filter="view === 'list'"
+      @preview="previewPath(pathInput)"
+      @root="goRoot"
+      @jump="jumpTo"
+      @back="goBack"
+      @forward="goForward"
+      @up="goUp"
+      @refresh="refresh"
+      @sort="toggleSort"
+    />
 
-    <!--
-      工具条：面包屑（根 + 各级目录，可点跳转）+ 导航（后退 / 前进 / 上级 / 刷新）。
-      导航按钮恒在（图标化，见 shared/browser/icons.ts），只按状态置灰 ——
-      此前这里的字形按钮在内容撑宽时会被挤出可视区，用户看到的就是「完全没有按钮」。
-    -->
-    <div class="fp-bar" data-field="chat.file-bar">
-      <div class="fp-crumbs" data-field="chat.file-crumbs" :title="listing?.dir ?? ''">
-        <button
-          type="button"
-          class="fp-crumb fp-crumb-root"
-          data-field="chat.file-root"
-          title="回到根目录"
-          :disabled="listing === null"
-          @click="goRoot"
-        >
-          <House :size="12" :stroke-width="1.7" aria-hidden="true" />
-          <span class="fp-crumb-text">{{ rootLabel }}</span>
-        </button>
-        <template v-for="crumb in crumbs" :key="crumb.path">
-          <ChevronRight class="fp-sep" :size="11" :stroke-width="2" aria-hidden="true" />
-          <button
-            type="button"
-            class="fp-crumb"
-            :class="{ current: crumb.path === currentDir }"
-            :title="crumb.path"
-            @click="jumpTo(crumb.path)"
-          >
-            <span class="fp-crumb-text">{{ crumb.name }}</span>
-          </button>
-        </template>
-      </div>
-      <div class="fp-nav">
-        <button
-          type="button"
-          class="fp-mini"
-          title="后退"
-          data-field="chat.file-back"
-          :disabled="!canGoBack"
-          @click="goBack"
-        >
-          <ArrowLeft :size="13" :stroke-width="1.8" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          class="fp-mini"
-          title="前进"
-          data-field="chat.file-forward"
-          :disabled="!canGoForward"
-          @click="goForward"
-        >
-          <ArrowRight :size="13" :stroke-width="1.8" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          class="fp-mini"
-          title="上级目录"
-          data-field="chat.file-up"
-          :disabled="!canGoUp"
-          @click="goUp"
-        >
-          <ArrowUp :size="13" :stroke-width="1.8" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          class="fp-mini"
-          title="刷新"
-          data-field="chat.file-refresh"
-          :disabled="listLoading || loading"
-          @click="refresh"
-        >
-          <RotateCw :size="12" :stroke-width="1.8" aria-hidden="true" />
-        </button>
-      </div>
-    </div>
-
-    <p v-if="listError !== ''" class="fp-error tiny" data-field="chat.file-list-error">
+    <p v-if="listError !== ''" class="fp-list-error" data-field="chat.file-list-error">
       {{ listError }}
     </p>
 
-    <!-- 列表视图：目录在前，点目录进入、点文件预览 -->
-    <div v-if="view === 'list'" class="fp-list" data-field="chat.file-list">
-      <p v-if="listLoading && listing === null" class="tiny muted">加载中…</p>
-      <p v-else-if="listing !== null && listing.entries.length === 0" class="tiny muted">空目录</p>
-      <button
-        v-for="entry in listing?.entries ?? []"
-        :key="entry.path"
-        type="button"
-        class="fp-row"
-        :class="{ dir: entry.kind === 'dir' }"
-        :title="entry.path"
-        @click="activate(entry)"
-      >
-        <FolderOpen v-if="entry.kind === 'dir'" :size="12" :stroke-width="1.7" aria-hidden="true" />
-        <FileText v-else :size="12" :stroke-width="1.7" aria-hidden="true" />
-        <span class="fp-row-name">{{ entry.name }}</span>
-        <span class="fp-row-size tiny muted">
-          {{ entry.kind === 'dir' ? '' : formatExactCount(entry.bytes) }}
-        </span>
-      </button>
-      <p v-if="listing?.truncated === true" class="tiny muted">条目过多，仅显示前 500 条</p>
-    </div>
+    <FilePanelList
+      v-if="view === 'list'"
+      :entries="filteredEntries"
+      :loading="listLoading"
+      :has-listing="listing !== null"
+      :query="query"
+      :selected-path="selectedPath"
+      :truncated="listing?.truncated === true"
+      @activate="activate"
+      @clear-query="query = ''"
+    />
 
-    <!-- 预览视图：返回按钮 + 元信息 + 正文 -->
-    <div v-else class="fp-body">
-      <div class="fp-preview-head">
-        <button type="button" class="fp-exit" data-field="chat.file-exit" @click="exitPreview">
-          <ArrowLeft :size="12" :stroke-width="1.8" aria-hidden="true" />
-          返回列表
-        </button>
-        <span v-if="current !== null" class="fp-kind tiny" :data-kind="current.kind">
-          {{ current.kind }}
-        </span>
-        <span v-if="current !== null" class="fp-path tiny muted" :title="current.path">
-          {{ current.path }}
-        </span>
-        <span v-if="current !== null" class="fp-bytes tiny muted">
-          {{ bytesText }} 字节<template v-if="current.truncated === true">（已截断）</template>
-        </span>
-      </div>
-      <p v-if="error !== ''" class="fp-error tiny" data-field="chat.file-preview-error">
-        {{ error }}
-      </p>
-      <template v-if="current !== null">
-        <img
-          v-if="current.kind === 'image' && current.dataUrl !== undefined"
-          class="fp-image"
-          :src="current.dataUrl"
-          alt="文件预览"
-        />
-        <!-- markdown 走 shared 渲染器（html:false 白名单，与消息正文同一条安全基线） -->
-        <!-- eslint-disable-next-line vue/no-v-html -- 渲染器输出已转义 + 白名单（docs/07 §5） -->
-        <div v-else-if="current.kind === 'markdown'" class="md fp-markdown" v-html="markdownHtml" />
-        <pre v-else-if="current.kind === 'text'" class="fp-text">{{ current.content }}</pre>
-        <p v-else class="tiny muted">{{ current.note ?? '该文件类型不支持预览' }}</p>
-      </template>
-    </div>
+    <FilePreviewBody
+      v-else
+      :current="current"
+      :markdown-html="markdownHtml"
+      :error="error"
+      :loading="loading"
+      :layout-mode="layoutMode"
+      :layout="layout"
+      :layout-page="layoutPage"
+      :layout-loading="layoutLoading"
+      :layout-error="layoutError"
+      :opening="opening"
+      :open-error="openError"
+      @exit="exitPreview"
+      @open="openWith"
+      @mode="setMode"
+      @page="loadPage"
+      @retry-layout="retryLayout"
+    />
 
     <div v-if="recent.length > 0 && view === 'list'" class="fp-recent">
-      <p class="tiny muted fp-recent-title">最近预览</p>
+      <p class="fp-recent-title">最近预览</p>
       <button
         v-for="item in recent"
         :key="item"
         type="button"
-        class="fp-recent-item tiny"
+        class="fp-recent-item"
         :title="item"
         @click="previewPath(item)"
       >
-        <FileText :size="12" :stroke-width="1.7" aria-hidden="true" />
-        <span class="fp-recent-name">{{ item.split(/[\\/]/).pop() }}</span>
+        <FileKindIcon :name="item" :size="13" :box="18" />
+        <span class="fp-recent-name">{{ lastSegment(item) }}</span>
       </button>
     </div>
   </div>
@@ -604,6 +695,8 @@ async function bootstrap(): Promise<void> {
 
 <style scoped>
 .fp {
+  /* 窄栏降级靠容器查询（右栏可拖到 280px），不是视口宽度 */
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -611,308 +704,86 @@ async function bootstrap(): Promise<void> {
   min-width: 0;
   height: 100%;
   padding: var(--space-2);
+  /**
+   * 文件类型色相（docs/07 §5「组件作用域语义色的唯一例外」）：只在本面板定义一次，
+   * 子组件按 `data-tone` 取用，行内不散落 hex。这些颜色表达的是**文件类型**而不是
+   * 应用状态，所以不进 theme.css 令牌表（进了就得让 Center 网页端一起背这套语义）。
+   */
+  --fp-word: #5b9dff;
+  --fp-excel: #4cc38a;
+  --fp-ppt: #ff9f45;
+  --fp-pdf: #ff6b6b;
+  --fp-image: #b58cff;
+  --fp-code: #4cc9d9;
+  --fp-archive: #e0b341;
+  --fp-media: #ff7ac6;
+  --fp-text: #9aa4b2;
 }
 
-.fp-input-row {
-  display: flex;
-  gap: var(--space-1);
+@media (prefers-color-scheme: light) {
+  .fp {
+    --fp-word: #2563eb;
+    --fp-excel: #15803d;
+    --fp-ppt: #c2410c;
+    --fp-pdf: #dc2626;
+    --fp-image: #7c3aed;
+    --fp-code: #0e7490;
+    --fp-archive: #a16207;
+    --fp-media: #be185d;
+    --fp-text: #64748b;
+  }
+}
+
+.fp :deep([data-tone='folder']) {
+  --fp-tone: var(--accent-text);
+}
+
+.fp :deep([data-tone='word']) {
+  --fp-tone: var(--fp-word);
+}
+
+.fp :deep([data-tone='excel']) {
+  --fp-tone: var(--fp-excel);
+}
+
+.fp :deep([data-tone='ppt']) {
+  --fp-tone: var(--fp-ppt);
+}
+
+.fp :deep([data-tone='pdf']) {
+  --fp-tone: var(--fp-pdf);
+}
+
+.fp :deep([data-tone='image']) {
+  --fp-tone: var(--fp-image);
+}
+
+.fp :deep([data-tone='code']) {
+  --fp-tone: var(--fp-code);
+}
+
+.fp :deep([data-tone='archive']) {
+  --fp-tone: var(--fp-archive);
+}
+
+.fp :deep([data-tone='media']) {
+  --fp-tone: var(--fp-media);
+}
+
+.fp :deep([data-tone='text']) {
+  --fp-tone: var(--fp-text);
+}
+
+.fp :deep([data-tone='unknown']) {
+  --fp-tone: var(--text-muted);
+}
+
+.fp-list-error {
   flex: 0 0 auto;
-  min-width: 0;
-}
-
-.fp-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 4px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  color: var(--text-primary);
-  font-size: var(--text-xs);
-}
-
-.fp-input:focus {
-  outline: none;
-  border-color: var(--border-strong);
-}
-
-.fp-go {
-  flex: 0 0 auto;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: var(--fill-3);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-
-.fp-go:hover:not(:disabled) {
-  background: var(--fill-2);
-  color: var(--text-primary);
-}
-
-.fp-go:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* ── 工具条：面包屑（左，可横向滚动）+ 导航按钮（右，恒在） ── */
-.fp-bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.fp-crumbs {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  /* 深路径时面包屑自己横向滚动，绝不把右侧导航按钮顶出可视区 */
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.fp-crumbs::-webkit-scrollbar {
-  display: none;
-}
-
-.fp-crumb {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 168px;
-  padding: 1px 6px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: var(--text-xs);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.fp-crumb-root {
-  background: var(--fill-2);
-}
-
-.fp-crumb:hover:not(:disabled) {
-  background: var(--fill-3);
-  color: var(--text-primary);
-}
-
-.fp-crumb.current {
-  color: var(--text-primary);
-}
-
-.fp-crumb:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.fp-crumb-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.fp-sep {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  opacity: 0.6;
-}
-
-.fp-nav {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.fp-mini {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.fp-mini:hover:not(:disabled) {
-  background: var(--fill-2);
-  color: var(--text-primary);
-}
-
-/* 置灰要「看得见但不亮」：此前用 0.35 透明度，浅色主题下几乎等于消失 */
-.fp-mini:disabled {
-  color: var(--text-muted);
-  opacity: 0.55;
-  cursor: default;
-}
-
-.fp-error {
   margin: 0;
   color: var(--status-error);
-  line-height: var(--leading-normal);
-  overflow-wrap: anywhere;
-}
-
-/* 目录列表：滚动区，行是整行可点按钮 */
-.fp-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.fp-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 3px 6px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: var(--text-xs);
-  text-align: left;
-  cursor: pointer;
-}
-
-.fp-row:hover {
-  background: var(--fill-2);
-  color: var(--text-primary);
-}
-
-.fp-row.dir {
-  color: var(--text-primary);
-}
-
-.fp-row-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fp-row-size {
-  flex: 0 0 auto;
-}
-
-.fp-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  overflow: hidden;
-}
-
-.fp-preview-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.fp-exit {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: var(--fill-3);
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-
-.fp-exit:hover {
-  background: var(--fill-2);
-  color: var(--text-primary);
-}
-
-.fp-kind {
-  flex: 0 0 auto;
-  padding: 0 6px;
-  border-radius: var(--radius-pill);
-  background: var(--fill-2);
-  color: var(--text-secondary);
-}
-
-.fp-path {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fp-bytes {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.fp-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  border-radius: var(--radius-sm);
-  align-self: center;
-}
-
-.fp-markdown {
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-  overflow: auto;
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  /**
-   * `anywhere` 是**布局护栏**而不只是排版偏好：长 URL / 长标识符会把整栏的
-   * min-content 撑大（外层 grid 轨道的下限就是它），表现为「正文被窗口右缘切断、
-   * 工具条按钮整排消失」。`anywhere` 让这些串可断行，min-content 随即塌回单字符。
-   * 代码块不受影响（`pre` 是 `white-space: pre` + `overflow-x: auto`，自己横滚）。
-   */
-  overflow-wrap: anywhere;
-}
-
-.fp-text {
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-  margin: 0;
-  overflow: auto;
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  color: var(--text-secondary);
-  font-family: var(--font-mono, monospace);
   font-size: var(--text-xs);
   line-height: var(--leading-normal);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -921,24 +792,29 @@ async function bootstrap(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 88px;
+  max-height: 96px;
   overflow: auto;
 }
 
 .fp-recent-title {
   margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
 .fp-recent-item {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
-  padding: 2px 4px;
+  height: 26px;
+  padding: 0 6px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
   text-align: left;
   cursor: pointer;
 }
@@ -949,6 +825,7 @@ async function bootstrap(): Promise<void> {
 }
 
 .fp-recent-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

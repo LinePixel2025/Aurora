@@ -251,6 +251,7 @@ export function createNodeOfficePort(options: NodeOfficePortOptions): OfficePort
         ...(request.pageStart === undefined ? {} : { pageStart: request.pageStart }),
         ...(request.pageEnd === undefined ? {} : { pageEnd: request.pageEnd }),
         ...(request.grid === undefined ? {} : { grid: request.grid }),
+        ...(request.pageIndex === undefined ? {} : { pageIndex: request.pageIndex }),
         maxPages: request.maxPages ?? 6,
       })
       if (response.render === undefined) throw new Error('Office worker 未返回渲染结果')
@@ -276,6 +277,9 @@ export function createNodeOfficePort(options: NodeOfficePortOptions): OfficePort
         ...(response.render.pageCount === undefined
           ? {}
           : { pageCount: response.render.pageCount }),
+        ...(response.render.pageLabels === undefined
+          ? {}
+          : { pageLabels: response.render.pageLabels }),
         warnings: response.render.warnings,
       }
     },

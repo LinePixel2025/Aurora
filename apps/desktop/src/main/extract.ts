@@ -127,7 +127,7 @@ interface OfficeAttachmentLike {
   altText?: string
 }
 
-interface OfficeParseResult {
+export interface OfficeParseResult {
   type?: string
   metadata?: OfficeMetadataLike
   toText(): string
@@ -319,6 +319,106 @@ async function officeTextOf(
     }
   }
   return parsed.toText()
+}
+
+/** 预览正文的表格上限：一张巨表会把渲染层撑爆，超出即截断并给告警。 */
+export const BODY_TABLE_MAX_ROWS = 200
+export const BODY_TABLE_MAX_COLS = 30
+
+export interface OfficeBody {
+  /** 干净正文（Markdown），**不含**「文件名：/ 类型：」证据 header */
+  body: string
+  warnings: string[]
+}
+
+/**
+ * 文件面板预览用的正文（2026-11-12，docs/07 §2.3）：与 `extract()` 共用同一条解析 /
+ * 降级链路，但不产证据 header、不做 8KB 截断；表格类转成 Markdown 表格直接渲染。
+ */
+export async function officeBodyOf(parsed: OfficeParseResult, ext: string): Promise<OfficeBody> {
+  const warnings: string[] = []
+  const tabular = ext === 'xlsx' || ext === 'ods'
+  const raw = normalizeWhitespace(await officeTextOf(parsed, tabular ? 'csv' : 'md'))
+  if (!tabular) return { body: raw, warnings }
+  return { body: csvToMarkdownTable(raw, warnings), warnings }
+}
+
+function csvToMarkdownTable(csv: string, warnings: string[]): string {
+  const rows = parseCsvRows(csv)
+  if (rows.length === 0) return ''
+  let width = 0
+  for (const row of rows) width = Math.max(width, row.length)
+  // 单列说明解析器退回了纯文本，套表格只会更难看
+  if (width <= 1) return csv
+  const cols = Math.min(width, BODY_TABLE_MAX_COLS)
+  const divider = `| ${Array.from({ length: cols }, () => '---').join(' | ')} |`
+  const lines: string[] = []
+  for (const [index, row] of rows.slice(0, BODY_TABLE_MAX_ROWS).entries()) {
+    const cells: string[] = []
+    for (let i = 0; i < cols; i += 1) cells.push(escapeTableCell(row[i] ?? ''))
+    lines.push(`| ${cells.join(' | ')} |`)
+    if (index === 0) lines.push(divider)
+  }
+  if (rows.length > BODY_TABLE_MAX_ROWS) warnings.push(`表格超过 ${BODY_TABLE_MAX_ROWS} 行，已截断`)
+  if (width > BODY_TABLE_MAX_COLS) warnings.push(`表格超过 ${BODY_TABLE_MAX_COLS} 列，已截断`)
+  return lines.join('\n')
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\n/g, ' ').trim()
+}
+
+/** 最小 CSV 状态机：认引号包裹、`""` 转义与引号内换行（officeparser 的 csv 产物就用这些）。 */
+function parseCsvRows(csv: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let quoted = false
+  let i = 0
+  while (i < csv.length) {
+    const ch = csv.charAt(i)
+    if (quoted) {
+      if (ch === '"') {
+        if (csv.charAt(i + 1) === '"') {
+          cell += '"'
+          i += 2
+          continue
+        }
+        quoted = false
+        i += 1
+        continue
+      }
+      cell += ch
+      i += 1
+      continue
+    }
+    if (ch === '"') {
+      quoted = true
+      i += 1
+      continue
+    }
+    if (ch === ',') {
+      row.push(cell)
+      cell = ''
+      i += 1
+      continue
+    }
+    if (ch === '\n') {
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+      i += 1
+      continue
+    }
+    cell += ch
+    i += 1
+  }
+  if (cell !== '' || row.length > 0) {
+    row.push(cell)
+    rows.push(row)
+  }
+  return rows.filter((entry) => entry.some((value) => value.trim() !== ''))
 }
 
 function renderOfficeStructure(parsed: OfficeParseResult, preferredFormat: 'md' | 'csv'): string {

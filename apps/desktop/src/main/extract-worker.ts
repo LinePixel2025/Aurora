@@ -16,7 +16,13 @@ import { createRequire } from 'node:module'
 import { promises as fs } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { extract, type EvidenceKind, type ExtractedDocumentImage } from './extract.js'
+import {
+  extract,
+  officeBodyOf,
+  type EvidenceKind,
+  type ExtractedDocumentImage,
+  type OfficeParseResult,
+} from './extract.js'
 
 /** 在 CJS 产物里解析外部依赖（officeparser 是 CJS，其内部再动态 import ESM 的 pdfjs） */
 const requireExternal = createRequire(import.meta.url)
@@ -33,6 +39,8 @@ interface ExtractRequest {
   extractImages?: boolean
   /** 自感知使用更高的结构化证据上限；分类管线保持缺省。 */
   evidenceLimitBytes?: number
+  /** 文件面板预览：只要干净正文，不产证据（2026-11-12，docs/07 §2.3）。 */
+  bodyOnly?: boolean
 }
 
 interface ExtractResponse {
@@ -44,68 +52,23 @@ interface ExtractResponse {
   warnings?: string[]
   documentImages?: ExtractedDocumentImage[]
   sourceHash?: string
+  /** `bodyOnly` 请求的干净正文（Markdown） */
+  body?: string
   error?: string
 }
 
 /** 懒加载解析器：只有真的遇到 Office / PDF 文件时才付加载成本 */
-let parserPromise:
-  | Promise<
-      | ((
-          path: string,
-          config?: { extractAttachments?: boolean; includeRawContent?: boolean },
-        ) => Promise<{
-          toText(): string
-          to?(format: 'text'): Promise<{ value: string } | string>
-          attachments?: Array<{
-            type?: string
-            mimeType?: string
-            data?: string
-            name?: string
-            extension?: string
-            altText?: string
-          }>
-        }>)
-      | undefined
-    >
-  | undefined
+type OfficeParser = (
+  path: string,
+  config?: { extractAttachments?: boolean; includeRawContent?: boolean },
+) => Promise<OfficeParseResult>
 
-async function loadParser(): Promise<
-  | ((
-      path: string,
-      config?: { extractAttachments?: boolean; includeRawContent?: boolean },
-    ) => Promise<{
-      toText(): string
-      to?(format: 'text'): Promise<{ value: string } | string>
-      attachments?: Array<{
-        type?: string
-        mimeType?: string
-        data?: string
-        name?: string
-        extension?: string
-        altText?: string
-      }>
-    }>)
-  | undefined
-> {
+let parserPromise: Promise<OfficeParser | undefined> | undefined
+
+async function loadParser(): Promise<OfficeParser | undefined> {
   parserPromise ??= (async () => {
     try {
-      const mod = requireExternal('officeparser') as {
-        parseOffice(
-          file: string,
-          config?: { extractAttachments?: boolean; includeRawContent?: boolean },
-        ): Promise<{
-          toText(): string
-          to?(format: 'text'): Promise<{ value: string } | string>
-          attachments?: Array<{
-            type?: string
-            mimeType?: string
-            data?: string
-            name?: string
-            extension?: string
-            altText?: string
-          }>
-        }>
-      }
+      const mod = requireExternal('officeparser') as { parseOffice: OfficeParser }
       return (
         file: string,
         config?: { extractAttachments?: boolean; includeRawContent?: boolean },
@@ -119,6 +82,18 @@ async function loadParser(): Promise<
 
 async function handle(request: ExtractRequest): Promise<ExtractResponse> {
   try {
+    if (request.bodyOnly === true) {
+      const parseOffice = await loadParser()
+      if (parseOffice === undefined) {
+        return { id: request.id, ok: false, error: '文档解析器不可用' }
+      }
+      const parsed = await parseOffice(request.path, {
+        extractAttachments: false,
+        includeRawContent: false,
+      })
+      const body = await officeBodyOf(parsed, request.ext)
+      return { id: request.id, ok: true, body: body.body, warnings: body.warnings }
+    }
     const sourceHash = request.hashContent === true ? await sha256File(request.path) : undefined
     const parseOffice = await loadParser()
     const result = await extract({

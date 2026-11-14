@@ -108,6 +108,8 @@ export interface OfficeRenderRequest {
   pageEnd?: number
   grid?: number
   maxPages?: number
+  /** 只渲染第 n 页（0 基）：文件面板版式预览按页单取，缺省时行为不变。 */
+  pageIndex?: number
   allowOutside?: boolean
   sessionId?: string
 }
@@ -153,6 +155,8 @@ export interface OfficeRenderResult {
   files: string[]
   images: readonly ToolImage[]
   pageCount?: number
+  /** 每页可读标签（工作表名 / 页序号）；只在 `pageIndex` 请求时回 */
+  pageLabels?: string[]
   warnings: string[]
 }
 

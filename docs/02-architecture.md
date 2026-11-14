@@ -184,6 +184,16 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
   `terminal:create / input / resize / kill` + 推送 `terminal:data / exit`
   （PTY 终端，`main/terminal-service.ts`；create 需要发起窗口的 `event.sender.id`，
   输出只推给创建窗口）。preload 白名单与 shared 双向断言同步更新。
+- **文件面板扩展通道（2026-11-12，docs/07 §2.3）**：`preview:render`（Office 版式渲染，
+  回 manifest：页数 / 页标签 / **只带首页** dataUrl）、`preview:renderPage`（按 index 单取一页，
+  避免一次推 N 张 base64）、`preview:open`（`mode:'default'` 系统默认程序打开 /
+  `'reveal'` 资源管理器定位，实现 `main/file-open.ts`）。
+  **这五条 preview 通道共用 `main/preview-path.ts` 导出的 `assertPreviewPath()`** ——
+  `resolveWithin` 自身在边界根不可用时是**放行**的，渲染层主动发起的通道必须另包一层缺根即拒。
+  **两条子进程池与后台管线分离**：正文提取另实例化一个 `ExtractPool`（12s 超时，
+  不与分类 / 自感知共用那个串行池）；版式另实例化一个 office-port
+  （产物落 `userData/office-previews/panel`，LRU + 24h sweep，**不进 Agent 工具表**），
+  引擎忙时立即回错不排队。
 - **内置浏览器 Agent 通道（v35，docs/06 §27）**：`browser_open` 等八个内置工具由主进程驱动
   右栏 chat 窗口里的 webview，四个通道的方向与语义如下（preload 白名单与 shared 双向断言同步）：
 

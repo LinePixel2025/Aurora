@@ -541,27 +541,84 @@
       护栏：`chat-right-tabs` 探针断言三键贴右缘、贴顶且**与 tab 矩形无交集**（`captionPinned`
       / `captionTabOverlap`）。
     - **「文件」tab（`FilePreviewPanel`，`chat.file-preview`）**：**小文件管理器 + 预览**
-      （2026-10-03 起）。顶部路径输入与「最近预览」（localStorage，最多 8 条）保留；
+      （2026-10-03 起；**2026-11-12 重做视觉、补 Office 正文 / 版式双视图与系统打开**）。
+      组件拆成 `renderer/chat/components/file-panel/` 下的 `FilePanelToolbar` /
+      `FilePanelList` / `FilePreviewBody` 三个子组件 + `fileTypeMeta.ts`（扩展名 → 图标 /
+      色相 / 类型名）+ `FileKindIcon`；`FilePreviewPanel.vue` **原路径原名保留**，只留历史栈、
+      请求序号护栏与数据编排。顶部路径输入与「最近预览」（localStorage，最多 8 条）保留；
       工具条（`chat.file-bar`）＝ **面包屑 + 导航**：
       - 面包屑（`chat.file-crumbs`）以根段（`chat.file-root`）起头 —— 会话绑定了项目时根就是
         **项目文件夹**（标签「项目：<名>」），未绑定时是会话空间目录（标签「工作目录」）——
         标签与 `boundaryRoot` 的回落链同源（孤儿绑定按未绑定展示）；其后逐级可点跳转，
         末段即当前目录；深路径时面包屑自己横向滚动，不挤压右侧导航按钮；
       - 导航四钮（`chat.file-back` / `chat.file-forward` / `chat.file-up` / `chat.file-refresh`）
-        是 **lucide 图标按钮**（`ArrowLeft` / `ArrowRight` / `ArrowUp` / `RotateCw`）；
+        是 **lucide 图标按钮**（`ArrowLeft` / `ArrowRight` / `ArrowUp` / `RotateCw`），26×26；
         此前用 `⟳ ⤴` 字形，又细又淡，且被上面那条撑破问题推出可视区 —— 两处都已修。
         **导航模型＝与浏览器同构的历史栈**：一个位置是 `{ dir, file? }`（`file` 为空即列表态），
         进目录 / 预览文件 / 点面包屑 / 上级 / 路径输入都是 push 一步（前进链在 push 时截断），
         后退 / 前进在栈里移动；预览态的「返回列表」（`chat.file-exit`）＝后退一步
         （历史里前一条正是同目录的列表态），没有可退的一步时退回当前目录的列表态。
-        列表（`chat.file-list`）缺省列出根目录：目录在前、同类按名称数字感知升序（上限 500 条，
-        超出标 `truncated`）；「上级」止于边界根。
-        markdown 走 shared 渲染器（与消息正文同一安全基线）、纯文本、图片（data URL）、
-        二进制/超限/越界如实给原因。读盘走 `preview:read`、列目录走 `preview:list`：
-        路径必须在**发起会话边界根之内**（复用 file-port `resolveWithin` 的 realpath 前缀校验；
-        与文件工具不同，**根不可用时直接拒绝**——渲染层主动读盘通道不退回无边界），
-        文本 2 MB 超限截断、图片 10 MB 上限、前 8 KB NUL 字节判二进制（`main/file-preview.ts`）；
-        列目录上限与排序在 `main/file-list.ts`。
+        **搜索词 / 排序 / 选中行 / 正文·版式档位都是纯视图态，一律不进历史栈**：
+        换目录清空搜索词（同层刷新保留），排序作为用户偏好跨会话保留。
+      - **筛选行（`chat.file-filter`）**：即时搜索框（`.fp-search`，子串匹配、不区分大小写）
+        + 清除钮 + 排序切换（名称 / 大小，再点同一键翻升降）。
+        **缺省仍是「目录在前 + 名称数字感知升序」**（主进程 `file-list.ts` 的排序），
+        渲染层只在用户显式切到「大小」时重排，且目录恒在前。
+      - **列表视觉（`chat.file-list`）**：行（`.fp-row`，目录带 `dir` 类）**高 32px**、
+        字号 `--text-sm`、圆角 `--radius-xs`、行间距 2px；每行一枚 **16px 类型图标**
+        裹在 20px 的 `.fp-row-icon` 底托里，底托色 = `color-mix(… 14%, transparent)`。
+        hover `--fill-2`；**选中态** `--fill-3` + `box-shadow: inset 2px 0 0 var(--accent-text)`
+        左侧强调条（不用 outline，避免撑破右栏）。大小列 `--text-xs` / `--text-muted` /
+        `tabular-nums`。首读用 8 行 shimmer 骨架（`prefers-reduced-motion` 关动画）；
+        空态分三档（空目录 / 搜索无结果带「清除搜索」/ 无边界根）。
+        **类型色**在 `.fp` 作用域集中定义 8 个色相变量（`--fp-word` 蓝 / `--fp-excel` 绿 /
+        `--fp-ppt` 橙 / `--fp-pdf` 红 / `--fp-image` 紫 / `--fp-code` 青 / `--fp-archive` 琥珀 /
+        `--fp-media` 品红）各写一次并配一套浅色覆盖，行内只用 `var(--fp-*)`，**不散落 hex**；
+        文件夹用 `--accent-text`、未知类型用 `--text-muted`，其余一律 theme 令牌。
+        **窄栏降级**：`.fp` 挂 `container-type: inline-size`，`@container (max-width: 320px)`
+        隐藏大小列、预览头的修改时间、根面包屑文字（只留 House 图标）；
+        **四导航钮与搜索框恒在**，所有轨道 `minmax(0,1fr)`、处处 `min-width: 0`。
+        列表缺省列出根目录（上限 500 条，超出标 `truncated`）；「上级」止于边界根。
+      - **预览四形态 + 双视图**：`image` 走 data URL `<img>`；`markdown` 走 shared 渲染器
+        （与消息正文同一安全基线）；`text` 走 `<pre class="fp-text">`；
+        **`document`（2026-11-12 新增）＝ Office / PDF 等结构化文档的干净正文**，
+        复用 `.fp-markdown` 容器与同一个渲染器。预览头三行：① 返回列表 + 文件名 +
+        「用默认程序打开」（`chat.file-open`，`ExternalLink`）；② 类型 pill · 大小 ·
+        修改时间 · 截断标记；③ 仅 `document` 且 `layoutAvailable` 时给
+        **「正文 | 版式」分段控件**（`chat.file-viewswitch`）。
+        **正文**由主进程 officeparser 提取（xlsx / ods 的 CSV 转 Markdown 表格），
+        **秒开、无「文件名：/ 类型：」证据头部**（那是给模型的 evidence 格式，不进面板）。
+        **版式**按需触发（`preview:render`），OfficeCLI 逐页渲 PNG，
+        **只能走 `<img src="data:image/png;base64,…">`** —— 生产 CSP 的 `object-src 'none'`
+        与 `default-src 'self'` 会挡掉 `<embed>` / `<object>` / `<iframe src="blob:">`；
+        OfficeCLI 的 html 产物**一律不 v-html**。分页**分步取**：manifest 只带首页，
+        其余页按 index 单取（`preview:renderPage`），绝不一次推 N 张 base64；
+        底部 `.fp-pager` 给上 / 下页与「第 n / N 页」（xlsx 按工作表、pptx 按幻灯片）。
+        版式失败**自动回落正文**并给一行原因，不阻塞、不弹错。
+      - **不支持预览的类型（`unsupported`）**：不再只显示一行灰字。**单击文件行即调用
+        系统默认程序打开**（`preview:open`，`mode:'default'`），同时面板内给
+        **信息卡**（`.fp-infocard`）：32px 类型大图标 + 文件名 + 类型 / 大小 / 修改时间
+        三行元信息 + 「再次打开」与「在资源管理器中显示」（`mode:'reveal'`）。
+        打开失败（系统无默认关联）把系统原文红字显示在卡内，「在资源管理器中显示」兜底。
+        这是**用户直接点击的手动操作面**，不走工具确认闸门、不暴露给 Agent。
+      - **边界与上限**：读盘 `preview:read`、列目录 `preview:list`、版式 `preview:render` /
+        `preview:renderPage`、系统打开 `preview:open` —— **五条通道共用同一个
+        `assertPreviewPath()`**（`main/preview-path.ts` 导出）：路径必须在**发起会话边界根之内**
+        （复用 file-port `resolveWithin` 的 realpath 前缀校验；与文件工具不同，
+        **根不可用时直接拒绝** —— `resolveWithin` 自身在缺根时是放行的，渲染层主动发起的
+        通道绝不能沿用那个回落）。文本 2 MB 超限截断、图片 10 MB 上限、
+        **文档 32 MiB 上限**、前 8 KB NUL 字节判二进制（`main/file-preview.ts`）；
+        **二进制嗅探只读头部 8 KB，任何大小的文件都不整份进内存**（2026-11-14 修复：
+        旧实现在这里整份 `readFile`，且 > 2 MB 的文件先走「截断当文本」分支，
+        点 `.mov` / `.mp3` 会把 2 MB 二进制垃圾塞进渲染层 `<pre>` 并拖死主进程）；
+        `.doc` / `.xls` / `.ppt` 老式二进制只给原因 + 系统打开；
+        `preview:open` 的 `shell.openPath` 带 10s 超时（无关联程序会弹系统「选取应用」
+        模态、这个 Promise 可能一直不回来），超时按失败报出，面板不会永远停在禁用态；
+        列目录上限与排序在 `main/file-list.ts`（条目回填 `mtimeMs`，不额外 stat）。
+        **两条子进程池与后台管线分离**：正文提取另实例化一个 `ExtractPool`
+        （12s 超时，不与分类 / 自感知共用那个串行池，否则预览会排在几十秒队尾）；
+        版式另实例化一个 office-port（产物落 `userData/office-previews/panel`，
+        **不进 Agent 工具表**，Agent 侧口径零变化），引擎忙时立即回错**不排队**。
     - **「终端」标签（`TerminalPanel`，`chat.terminal`）**：PTY 交互终端
       （@lydell/node-pty + xterm 6）。**每个标签一个 shell**（2026-10-03 二次修订：
       主进程按 `terminalId` 记账，每次 `terminal:create` 出**新的** PTY、不再按窗口复用；
@@ -1774,6 +1831,13 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 强调色纯色或极淡强调色填充；功能性渐变（如遮罩渐隐）允许，但必须注释说明用途。
 组件只引用语义令牌，不直接引用原始中性阶或另写颜色字面量。分层卡片用 `--fill-1`，悬停用 `--fill-2`，选中用 `--fill-3`；输入框用 1px 紧聚焦环。每屏一个主动作，其余使用次要或弱动作。玻璃材质用于悬浮面板，不铺满页面；静止卡片保持边界清楚、正文不降低透明度。
 
+**组件作用域语义色的唯一例外（2026-11-12）**：文件面板的 8 个类型色相（`--fp-word` /
+`--fp-excel` / `--fp-ppt` / `--fp-pdf` / `--fp-image` / `--fp-code` / `--fp-archive` /
+`--fp-media`，见 §2.3）是**文件类型辨识**专用，theme.css 里没有对应语义令牌。口径：
+在组件根作用域（`.fp`）**集中定义一次**并配一套浅色覆盖，行内只写 `var(--fp-*)`，
+底托用 `color-mix(in srgb, var(--fp-*) 14%, transparent)` —— **不许把 hex 散落到各行 /
+各子组件**。这类色相不进 `theme.css`（Center Web 用不到，放进去等于让两端共背一份无用导出）。
+
 **原生表单控件的主题跟随（2026-10-11）**：`<select>` 的**弹出列表由平台主题绘制**，`:root` 上的
 `color-scheme` 管不到它 —— 暗档下会得到「白底 + 从控件继承来的弱字色」（用户实测「弹出选项框没有反色」）。
 因此 `theme.css` 里显式声明 `select option { background-color: var(--bg-raised) }`（选中项
@@ -2366,8 +2430,30 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     → 点「上级」回根）、点文件在面板内预览（markdown 正文可见 + 「返回列表」按钮在）、
     点它回列表、**宽内容布局护栏**（预览 `宽内容.md` 时 `aside.scrollWidth` 与
     `.fp` 的 `scrollWidth` 都不超 `clientWidth`，且工具条五枚按钮的矩形全落在 aside 可视矩形内）、
-    宽内容预览也能退出回列表；**收尾**点回原会话行（用应用自己的行按钮，不猜标题）+
-    撤销项目登记，两条都并入 `restored`；
+    宽内容预览也能退出回列表；**视觉重做后的行规格**（2026-11-12）：每行 32px 定高、
+    每行带类型色图标、搜索框矩形落在 aside 内、「项目：截图项目」整段可读（不被 ellipsis
+    截成「项目：截…」）；**收尾**点回原会话行（按 `.nav-row` 的 `data-session-id` 定位 ——
+    整行文本含相对时间，跨分钟会失配）+ 撤销项目登记，两条都并入 `restored`；
+  - **Office 正文 + 搜索排序 + 信息卡**（`chatFileOfficeAct(root)` / `CHAT_FILE_OFFICE_CHECK`，
+    产物 `chat-file-office.png`，2026-11-12）：prepare 在项目根种出 `assets/`、`报告.docx`
+    （**动手拼的真 OOXML 包**，`capture-office-fixture.ts`；改扩展名的假文件只会验到降级分支）、
+    `表格.csv`、`二进制.bin`；act 在项目 act 之后点开 docx 停在正文（**截图在 check 之前拍**，
+    现场不摆好拍的只是目录列表）。check 断言：正文干净（有段落文字、**没有**「文件名：」证据
+    header）、`Word 文档` 类型徽章、正文 / 版式两枚切换钮（版式不可用时 title 必须写着原因）、
+    「打开」钮可点；返回列表后搜索「表格」只剩一行、清除后条目数复原；按大小排序时目录恒在
+    最前且升 / 降序的文件序列互为逆序；点 `.bin` 出信息卡（类型 / 大小 / 修改时间 + 两枚动作钮）
+    **并且这一下点击真的触发了系统打开**。`nativeCheck` 核对 `shell.*` 的调用序列
+    （`default:二进制.bin` → `reveal:二进制.bin`，docx 一次都不该有）—— prepare 里只换掉链路
+    **最后一步**的 `shell.openPath` / `showItemInFolder`，渲染层 → IPC → `assertPreviewPath` →
+    lstat → 软链拒绝 → isFile 全部照常跑；不拦的话 `.bin` 会弹出 Windows「选取应用」模态抢焦点；
+  - **Office 版式视图**（`chatFileLayoutAct(root)` / `CHAT_FILE_LAYOUT_CHECK`，产物
+    `chat-file-layout.png`，2026-11-12）：act 点开 docx → 切「版式」→ **等首页图真的解码出来**
+    再截图。check 断言页图是 `data:image/png;base64,` 的 `<img>` 且 `naturalWidth > 0`
+    （生产 CSP 的 `object-src 'none'` 会挡掉 embed / object / iframe-blob）、页码文案与页数一致、
+    多页时翻页换图（「第 2 / 3 页」且 `src` 变了 —— 这一条当场抓住过 `office-worker` 用
+    `--start/--end` 截图、被 CLI 静默忽略导致每页都拍第 1 页的 bug）、切回正文 markdown 回来、
+    右栏不横向溢出。夹具 65 段 = 3 页；本机没有 OfficeCLI / Edge 时**显式跳过**：
+    报告里留 `skipped: true` + `skipReason`（版式钮 title 里的原因），并断言「不可用时确实给了原因」——
   - **`show_preview` 推送链路的渲染层半边**（`chatFileProjectAct` + `mainAct` /
     `CHAT_PREVIEW_TOOL_CHECK`，产物 `chat-preview-tool.png`，2026-10-03）：act 同上（切到
     绑项目的会话，会话 id 必须与推送的 `sessionId` 一致才被采纳）；`mainAct` 合成一条

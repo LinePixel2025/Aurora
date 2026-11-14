@@ -451,20 +451,35 @@ export interface FilePreviewRequest {
   path: string
 }
 
+/**
+ * 预览内容形态（2026-11-12 加 `document`）：
+ * markdown 走渲染器、text 纯文本、image 走 dataUrl、
+ * **document = Office / PDF 等结构化文档的干净正文**（同样走 markdown 渲染器）、
+ * 其余一律 unsupported（渲染层给信息卡 + 系统打开）。
+ */
+export type FilePreviewKind = 'markdown' | 'text' | 'image' | 'document' | 'unsupported'
+
 export interface FilePreviewResult {
   /** 归一后的绝对路径（主进程回填，渲染层据此存「最近预览」） */
   path: string
-  /** 内容形态：markdown 走渲染器、text 纯文本、image 走 dataUrl，其余一律 unsupported */
-  kind: 'markdown' | 'text' | 'image' | 'unsupported'
-  /** `kind = 'markdown' | 'text'` 时的文本内容（超限截断，`truncated` 标记） */
+  kind: FilePreviewKind
+  /** `kind = 'markdown' | 'text' | 'document'` 时的文本内容（超限截断，`truncated` 标记） */
   content?: string
   /** `kind = 'image'` 时的 data URL（`data:image/<ext>;base64,…`） */
   dataUrl?: string
   bytes: number
+  /** 最后修改时间（毫秒时间戳）：信息卡与列表用 */
+  mtimeMs?: number
   /** 文本超出预览上限被截断 */
   truncated?: boolean
   /** kind = unsupported 时的原因说明 */
   note?: string
+  /** `kind = 'document'` 时的文档元信息（`format` 是不含点的小写扩展名） */
+  document?: { format: string; warnings: string[] }
+  /** 能否切「版式」视图：docx/xlsx/pptx 且本机 OfficeCLI 可用 */
+  layoutAvailable?: boolean
+  /** `layoutAvailable === false` 时必给，直接展示给用户（不要让用户点了才知道为什么不行） */
+  layoutUnavailableReason?: string
 }
 
 export interface FileListRequest {
@@ -481,6 +496,8 @@ export interface FileListEntry {
   kind: 'dir' | 'file'
   /** 文件字节数；目录为 0 */
   bytes: number
+  /** 最后修改时间（毫秒时间戳）；目录不额外 stat，可能缺省 */
+  mtimeMs?: number
 }
 
 export interface FileListResult {
@@ -492,6 +509,53 @@ export interface FileListResult {
   entries: FileListEntry[]
   /** 条目数超过上限被截断（只列前 N 条） */
   truncated?: boolean
+}
+
+// ─────────────────── Office 版式预览与系统打开（右栏「文件」tab，2026-11-12） ───────────────────
+
+/** 版式渲染只对这三种结构化格式可用（OfficeCLI 的 `formatOf` 口径） */
+export type FileLayoutFormat = 'docx' | 'xlsx' | 'pptx'
+
+export interface FileLayoutRequest {
+  sessionId: string
+  /** 绝对路径；与 `preview:read` 共用 `assertPreviewPath` 的边界校验 */
+  path: string
+}
+
+/**
+ * 版式清单：**只带首页图**，其余页按 index 走 `preview:renderPage` 单取。
+ * 一次把 N 张 1600px PNG 的 base64 推过 IPC 会撑爆通道，也会让首屏等最慢的那一页。
+ */
+export interface FileLayoutManifest {
+  /** 主进程侧的渲染批次 id：后续取页与缓存都按它寻址 */
+  renderId: string
+  sourcePath: string
+  format: FileLayoutFormat
+  pageCount: number
+  /** 页标签：docx「第 n 页」/ xlsx 工作表名 / pptx「第 n 张」 */
+  pages: Array<{ index: number; label: string }>
+  firstPage?: FileLayoutPage
+  warnings: string[]
+}
+
+export interface FileLayoutPageRequest {
+  sessionId: string
+  renderId: string
+  index: number
+}
+
+export interface FileLayoutPage {
+  index: number
+  /** `data:image/png;base64,…`（生产 CSP 只放行 img 的 data:，不能用 iframe / embed） */
+  dataUrl: string
+  bytes: number
+}
+
+export interface FileOpenRequest {
+  sessionId: string
+  path: string
+  /** `default` = 系统默认程序打开（要求普通文件）；`reveal` = 资源管理器定位（允许目录） */
+  mode: 'default' | 'reveal'
 }
 
 /**
@@ -2848,6 +2912,18 @@ export interface AuroraApi {
      * 「浏览器」tab 并加载目标；`sessionId` 不是当前会话时渲染层忽略。
      */
     onShow(listener: (event: PreviewShowEvent) => void): () => void
+    /**
+     * Office 版式渲染（2026-11-12）：按需触发，回 manifest（页数 / 页标签 / **只带首页**）。
+     * 引擎被 Agent 占用时立即回 `ok: false`，**不排队**；缺截图后端等失败由渲染层回落正文。
+     */
+    render(request: FileLayoutRequest): Promise<Result<FileLayoutManifest>>
+    /** 按 index 单取一页版式图（2026-11-12）；命中主进程缓存时不调 OfficeCLI。 */
+    renderPage(request: FileLayoutPageRequest): Promise<Result<FileLayoutPage>>
+    /**
+     * 交给系统（2026-11-12）：`default` = 默认程序打开、`reveal` = 资源管理器定位。
+     * 边界校验与 `read` 共用 `assertPreviewPath`；用户手动操作面，不走工具确认闸门。
+     */
+    open(request: FileOpenRequest): Promise<Result<void>>
   }
   browser: {
     /**

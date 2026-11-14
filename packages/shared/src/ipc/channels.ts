@@ -67,6 +67,18 @@ export const IPC = {
      * 并展示它 —— 成果直接出现在对话旁边，而不是把大段内容贴进消息里。
      */
     show: 'preview:show',
+    /**
+     * Office 版式渲染（2026-11-12，docs/07 §2.3）：按需触发，回 manifest（页数 / 页标签 /
+     * **只带首页** dataUrl）。其余页走 `renderPage` 单取 —— 一次推 N 张 base64 会撑爆 IPC。
+     */
+    render: 'preview:render',
+    /** 按 index 单取一页版式图（2026-11-12）；命中主进程缓存时不调 OfficeCLI */
+    renderPage: 'preview:renderPage',
+    /**
+     * 交给系统（2026-11-12）：`default` = 默认程序打开、`reveal` = 资源管理器定位。
+     * 用户直接点击的手动操作面，不走工具确认闸门、不暴露给 Agent；边界校验与 read 同源。
+     */
+    open: 'preview:open',
   },
   /**
    * 内置浏览器的**站点自开标签**（2026-10-03，主进程 → 渲染层，on/off 成对）。
