@@ -5,7 +5,7 @@
  * 这些行为只有真跑进程才验证得了，假 runner 覆盖不到。非 Windows 平台整体跳过
  * （执行器本身只面向 Windows）。
  */
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -96,11 +96,15 @@ describe.skipIf(process.platform !== 'win32')('createCommandRunner（真实 Powe
     'cwd 生效（Get-Location 返回传入的目录）',
     async () => {
       const cwd = tmpdir()
-      const expected = cwd.replace(/[\\/]+$/, '').toLowerCase()
       const result = await runner({ command: '(Get-Location).Path', cwd, timeoutMs: TIMEOUT })
 
-      expect(result.cwd.replace(/[\\/]+$/, '').toLowerCase()).toBe(expected)
-      expect(result.stdout.trim().toLowerCase()).toContain(expected)
+      // 8.3 短路径与长路径可能同时存在：`tmpdir()` 在部分机器返回 `RUNNER~1` 短路径，
+      // 而 PowerShell 的 `(Get-Location).Path` 打长路径；逐字比较会假红（CI Windows Server 实测）。
+      const canonical = (path: string) =>
+        realpathSync.native(path.replace(/[\\/]+$/, '')).toLowerCase()
+
+      expect(canonical(result.cwd)).toBe(canonical(cwd))
+      expect(canonical(result.stdout.trim())).toBe(canonical(cwd))
       expect(result.exitCode).toBe(0)
     },
     TIMEOUT,

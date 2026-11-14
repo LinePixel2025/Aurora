@@ -204,6 +204,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **样式**：给子组件写样式要么独占类名要么 `:deep()`，别指望 scoped 隔掉同名类；`.clamp-2` 不挂 `<td>`（挂内层元素）。
 - **`.vue` 模板不写多语句内联处理器**；`prettier --write` 之后**必须重跑一次构建**再进截图。
 - **改了 `packages/shared/src/**` 或 `packages/agent-core/src/**`**：先 build 该包再跑下游 typecheck；进端到端（dev / smoke / capture）前也要 build（它消费的是 `dist`）。
+  **全新克隆（没有 `dist/`）要先 `pnpm build:packages`**：工作区包经 `main` / `types` 指向 `dist`，否则
+  `pnpm typecheck` / `pnpm test` 报 `TS2307: Cannot find module '@aurora/shared'`。CI 已内置这一步（2026-11-14 实测）。
 - **`task` 子代理并行**：`task` 声明 `parallel`，同轮多个 `task` 走 `SUBAGENT_MAX_PARALLEL = 3` / 会话的内核限流，写入类子代理**整段串行**（同会话写锁）。别只改 `parallel` 不加锁：会交错读改写同一文件、并让渲染层单槽位确认卡互相覆盖。上限是内核常量（与 512 同属防失控），不要加配置项。
 - **`permission: 'write'` 只是请求**：实际授予看子表里是否真的进了 `write_file` / `edit_file`；快照 `permission` 与 UI 徽章必须按实际结果落（只读档父表根本没有写工具，不许显示「可读写」）。`subagentToolNames` 是内核预留钩子，**生产装配当前未注入**，别把它当已生效的额外闸门。
 - **改 `packages/shared/src/browser/**`（渲染器 / 令牌 / 图标）= 同时改桌面与 Center Web**：两端截图都要跑。

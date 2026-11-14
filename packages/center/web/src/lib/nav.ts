@@ -96,6 +96,10 @@ export function buildPluginNav(
       item.label = `${item.pluginName} · ${item.label}`
     }
   }
-  items.sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key))
+  // 显式 `zh-CN`：不带 locale 的 `localeCompare()` 跟随宿主默认，CI runner（en-US）
+  // 会把「甲 / 乙」按码位排成乙在前，与本机 zh-CN 的拼音序相反 —— 侧栏顺序会随机器漂移。
+  items.sort(
+    (a, b) => a.label.localeCompare(b.label, 'zh-CN') || a.key.localeCompare(b.key, 'zh-CN'),
+  )
   return items.slice(0, PLUGIN_NAV_LIMIT)
 }

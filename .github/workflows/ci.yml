@@ -38,6 +38,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # 工作区包之间靠 package.json 的 main / types 指向 dist（不是 tsconfig 路径映射），
+      # 全新 checkout 没有 dist：必须先构建 packages，否则 typecheck / test 会报
+      # TS2307: Cannot find module '@aurora/shared'。本机因残留 dist 看不到这个坑。
+      - name: Build workspace packages
+        run: pnpm build:packages
+
       - name: Format check
         run: pnpm format:check
 
