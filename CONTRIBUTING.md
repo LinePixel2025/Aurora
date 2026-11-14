@@ -58,6 +58,10 @@ pnpm format           # Prettier 写入（无分号、单引号、100 列、LF�
 跑单个测试文件用 `pnpm vitest run <文件路径>`。**不要**用 `pnpm --filter @aurora/<pkg> test`：
 根 `vitest.config.ts` 的 `include` 是根相对路径，在包目录下执行匹配不到任何用例。
 
+> **全新克隆先构建工作区包**：包之间经 `package.json` 的 `main` / `types` 指向 `dist`，
+> 没有 `dist/` 时 `pnpm typecheck` / `pnpm test` 会报 `TS2307: Cannot find module '@aurora/shared'`。
+> 先跑一次 `pnpm build:packages` 即可（CI 已内置这一步）。
+
 ---
 
 ## 提交前检查
