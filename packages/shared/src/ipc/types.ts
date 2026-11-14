@@ -692,6 +692,12 @@ export interface WindowState {
    * 由 WindowManager 在 getState 时**现算**（不进状态机），未创建 / 已销毁的窗口不出现。
    */
   maximized?: Partial<Record<WindowName, boolean>>
+  /**
+   * 全局界面缩放倍率（2026-11-14，docs/07 §1）：单一全局值（0.5–3），任一业务窗口
+   * `Ctrl +/−/0` 触发后七窗同步，落盘 `<userData>/ui-zoom.json`（不进配置 Schema）。
+   * 渲染层 ZoomBadge 据此显示；内部浮层 / 插件窗口不跟随。未缩放时为 1。
+   */
+  zoomFactor?: number
 }
 
 // ───────────────────────── 更新（docs/04 §P6、docs/09） ─────────────────────────

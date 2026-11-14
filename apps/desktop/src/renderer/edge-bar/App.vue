@@ -29,6 +29,7 @@ import type {
 } from '@aurora/shared'
 import AppButton from '../shared/components/AppButton.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
+import ZoomBadge from '../shared/components/ZoomBadge.vue'
 import PluginWidgetStrip from '../plugins/PluginWidgetStrip.vue'
 import {
   BookOpen,
@@ -550,6 +551,7 @@ onUnmounted(() => {
     @pointerenter="onPointerEnter"
     @pointerleave="onPointerLeave"
   >
+    <ZoomBadge />
     <button
       class="strip"
       type="button"

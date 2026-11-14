@@ -26,6 +26,7 @@ import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import SettingField from '../shared/components/SettingField.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
+import ZoomBadge from '../shared/components/ZoomBadge.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore } from '../shared/stores.js'
 
@@ -251,6 +252,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
 
 <template>
   <div class="onboarding glass-surface-strong anim-window">
+    <ZoomBadge />
     <!-- 标题栏：整行可拖动（窗口无系统边框），右侧是步骤圆点进度 -->
     <header class="head glass-bar" :class="dragClass">
       <div class="brand">

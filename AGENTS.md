@@ -88,10 +88,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   v41 新增 `chat-changed-files`（轮终改动卡片）与 `settings-notifications-task`（任务完成提醒）2 个场景；
   多会话并行新增 `chat-parallel-sessions`（后台状态点 / 头部汇总药丸）1 个场景；
   2026-11-12 文件面板重做新增 `chat-file-office`（Office 正文 / 搜索排序 / 信息卡 + 自动系统打开）
-  与 `chat-file-layout`（版式页图 + 翻页，无 OfficeCLI / Edge 时**显式跳过**）2 个场景）：
-  **全量 123 条 checks** ——
-  本机全量单轮 114 条（四窗 101 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
-  提醒设置页 5 + 多会话并行 1）
+  与 `chat-file-layout`（版式页图 + 翻页，无 OfficeCLI / Edge 时**显式跳过**）2 个场景；
+  2026-11-14 统一缩放新增 `settings-zoom` / `settings-zoom-reset` 2 个场景）：
+  **全量 125 条 checks** ——
+  本机全量单轮 116 条（四窗 101 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
+  提醒设置页 5 + 多会话并行 1 + 统一缩放 2）
   + onboarding 6 + memory/awareness-glow 3。
   四窗 101 含 v36 插件场景 `chat-plugin-panel` /
   `chat-plugin-page` / `settings-plugins-installed` / `settings-plugins-detail`（设置列表 + 配置入口）/
@@ -100,9 +101,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   桌面 widget 窗口不在 `WindowName` 里，走 `captureWindows` 的 `widgetWindow` 现取。
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 123 条：
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 125 条：
   `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config,banner-card,banner-glow,computer-use-overlay,computer-use-hud'`
-  （114 checks，仅
+  （116 checks，仅
   `chat-model-picker` 红；**两个 Computer Use 内部窗口必须显式列进 `AURORA_CAPTURE_WINDOWS`** ——
   按 `target.name` 精确过滤，漏了它们只会得到 109 条，看起来「少了两张」）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
@@ -110,7 +111,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **2026-11-10 新增插件临时对话框**：`plugin-dialog`（声明式，真实键入 + 确定）与
   `plugin-dialog-page`（自定义 HTML / CSS，页面内提交）2 个场景，`target.name` 都是 `dialog`；
   定向验收用 `AURORA_CAPTURE_WINDOWS=dialog AURORA_CAPTURE_ONLY=plugin-dialog`（2 条全绿）。
-  它们**不在**上面四窗默认名单里，纳入全量单轮时要把 `dialog` 加进该列表（114 → 116 条）。
+  它们**不在**上面四窗默认名单里，纳入全量单轮时要把 `dialog` 加进该列表（116 → 118 条）。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
   （只按 `pass === false` 会把纯截图场景误判成失败）。`AURORA_CAPTURE_ONLY` 是**子串**匹配
   （`'chat.png'` 连带命中 `theme-chat.png`），且**每轮必须写独立目录**（同目录会覆盖上一轮 `report.json`）。

@@ -17,6 +17,13 @@
 - **缩放**：所有自家窗口支持 `Ctrl + -` 缩小、`Ctrl + +` 放大、`Ctrl + 0` 复位；
   Windows 上 `Ctrl + +` 等价于 `Ctrl + Shift + =`，数字小键盘的 `+ / -` 同样生效。
   快捷键由主进程 `before-input-event` 显式处理，不依赖隐藏的 Electron 菜单。
+  **全局统一**（2026-11-14）：倍率是单一全局值（0.5–3、步长 0.1），任一业务窗口触发后
+  七个业务窗口（`WINDOW_NAMES`）同步 `setZoomFactor`，并随 `window:stateChanged` 广播
+  （`WindowState.zoomFactor`）；≠100% 时各窗右上角显示缩放徽标（`ZoomBadge`，
+  `data-field="window.zoom-badge"`，变化时短暂高亮）。倍率落盘 `<userData>/ui-zoom.json`
+  （**不进配置 Schema、不升 `CONFIG_VERSION`**，先例同 `plugin-widget-layout.json`）。
+  提示条几何随倍率联动（见 §2.2）；内部浮层（自感知流光 / 流光提醒 / Computer Use）、
+  插件小组件 / 对话框 / webview guest **不跟随**全局缩放（坐标算术与第三方布局独立）。
 
 ## 2. 窗口规格
 
@@ -34,6 +41,12 @@
   `position` = `right`（屏幕右缘，默认）/ `left`（屏幕左缘）。设置页「常规 → 提示条」两个下拉；
   几何推导（`computeBounds` / `setEdgeBarExpanded` / `collapseEdgeBar`）全部按该显示器的工作区
   与该侧边缘计算，窗口创建 / 显示 / 两态切换时现读配置（改完即生效，无需重启）。
+- **全局缩放联动（2026-11-14）**：提示条跟随全局缩放倍率 z（§1）：宿主请求宽
+  `round(328×z)`；原生 shape 的竖条 `round(8×z)`×`round(200×z)`、面板左圆角 `round(28×z)`、
+  竖条圆角 `round(6×z)`（`edgeBarShape(host, expanded, scale)`，纯函数 + 单测）。
+  渲染层 CSS px 经 `zoomFactor` 自动 ×z，与 shape 同口径（≤1px 舍入差不可见）。
+  高度仍跟工作区（`expandedEdgeBarHeight`），不随 z 缩放。系统显示缩放变化
+  （`display-metrics-changed`）后主进程重新贴边 + 重算 shape（见 02 §2.2）。
 - **内容（2026-10-04 自感知工作台重构；2026-10 最近理解/提醒精简）**：自感知状态总览
   （运行态 / 今日分析 / 队列 / 记忆数 / 当前文件分析进度）→ 可行动建议 → 最近理解（笔记或记录）→
   下一节课与系统摘要。
@@ -1542,10 +1555,14 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   字段行之间用**发丝线**分隔而不是每项一张小卡；静止卡片**只留 1px 描边**（`--radius-md`、
   无 `shadow-hairline` / 内高光），页面不再各自覆盖圆角与投影。
   侧栏 200 → 208px、条目标高 34px、分组标题中文不做大写字距、底部署名与内容区之间加发丝线。
-  品牌行固定为两行：标题行 `Aurora` + 发行线路小徽标 **`Line Production`**（9.5px 胶囊、
-  强调色描边 + 10% 填充，紧贴品牌名右侧、纯标识不可交互），说明行 `设置`；拆成两行是因为
-  208px 侧栏里「Aurora + 设置 + Line Production」一行放不下，两行总高约 40px，
-  仍满足拖动区 ≥ 32px 的探针下限。
+  **标题栏重设计（2026-11-14，用户反馈「窗口栏太丑」）**：品牌从侧栏上移到窗口标题栏——
+  40px 全宽拖动带，左侧品牌锁up = `.aurora-mark` 16px + `Aurora`（display 字体 13px/600）+
+  发行线路小徽标 **`Line Production`**（9.5px 胶囊、强调色描边 + 10% 填充，纯标识不可交互）+
+  1px 分隔 + 「设置」弱色小字；右侧 `WindowCaption` 三键（命中区与悬停语义不变）。
+  表面沿用 `--glass-bar` + 下缘发丝线（与主界面头部同语言，glass-off 降级自动生效）。
+  侧栏不再渲染品牌块，导航直接从分组标题开始（顶部补 `--space-3`），底部署名行保留。
+  标题栏是唯一全宽拖动区（40px ≥ 32px 探针下限），caption 自带 no-drag；
+  `settings-drag` 探针的「顶缘全宽 ≥32px + 按钮可命中」口径不变。
   空态与 `data-empty` 提示退成无框的弱色文案（不再虚线框 / 描边 —— 描边 + 填充会被读成输入框），
   顶部常驻警示条退成「浅底 + 左侧 2px 语义色」。
   会话管理页补回页头并改用 `.page` 骨架（此前是无页头的独立容器）——所有页从此共用同一骨架。
@@ -2697,6 +2714,16 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
 - 截图前会等 `WindowManager.whenLoaded()`（`ensure()` 的加载是 fire-and-forget，
   不等会截到 0 字节空图），并对空图重试；连续空图直接判失败，不产出空文件。
 - 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)` 给 URL / `loadFile` 传 query，仅截图场景使用，正常启动不带 query。
+
+- **统一缩放场景（2026-11-14，净增 2 条）**：`settings-zoom.png` / `settings-zoom-reset.png`。
+  prepare 在主进程侧经 `ensure('settings').webContents.sendInputEvent` 发真实 `Ctrl+=` / `Ctrl+0`，
+  读 settings / chat / edge-bar 三窗 `getZoomFactor()` 与提示条宿主宽，经 reload query `zoomProbe`
+  带给 check；check 断言：徽标（`data-field="window.zoom-badge"`）显隐与百分比文本跟
+  `WindowState.zoomFactor` 自洽、标题栏品牌结构（`.titlebar-brand` 含 `.aurora-mark` 与徽标、
+  侧栏旧 `.brand` 已移除）、顶缘全宽拖动区 ≥32px。mainAct 在主进程侧断言：三窗倍率一致
+  （1.1 / 1）、提示条宿主宽相对 zoom=1 基线增加 `round(328×z)−328`（透明窗口 bounds 含
+  Electron 不可见 inset，绝对宽随环境漂、差值不漂）、chat / settings 几何落在所在显示器
+  工作区内。收尾倍率归 1，不污染后续场景。全量基线 123 → **125**。
 
 #### 5.3.1 排查一条 FAIL 探针的正确顺序（2026-09-30 「跟丢」排查的教训）
 

@@ -51,6 +51,7 @@ import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
+import ZoomBadge from '../shared/components/ZoomBadge.vue'
 import ComposerAttachments from './components/ComposerAttachments.vue'
 import ComposerContextBar from './components/ComposerContextBar.vue'
 import ComposerPermissionSelect from './components/ComposerPermissionSelect.vue'
@@ -2889,6 +2890,7 @@ async function markGuideDone(): Promise<void> {
       组件内部的按钮自带 `.no-drag`，不破坏标题栏拖动区。
     -->
     <WindowCaption window="chat" class="window-caption" />
+    <ZoomBadge />
 
     <!--
       左栏动作的结果提示（「添加项目」成功 / 失败，2026-10-01）：挂在 app-shell 层而不是

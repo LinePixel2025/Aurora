@@ -3,6 +3,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { AutomationWindowRequest } from '@aurora/shared'
 import WindowCaption from '../shared/components/WindowCaption.vue'
+import ZoomBadge from '../shared/components/ZoomBadge.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useWindowStore } from '../shared/stores.js'
 import AutomationEditorView from './components/AutomationEditorView.vue'
@@ -42,6 +43,7 @@ onUnmounted(() => {
 
 <template>
   <div class="automation-window anim-window">
+    <ZoomBadge />
     <header class="titlebar-drag" :class="dragClass">
       <strong class="window-title">{{ title }}</strong>
       <WindowCaption window="automation" class="window-caption" />

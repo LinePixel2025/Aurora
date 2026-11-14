@@ -326,6 +326,9 @@
   （v4 起移除 `service-dock`、v6 起移除 `mini-chat`，两个窗口均已删除；`memory` 为记忆库
   独立窗口，`automation` 为自动化详情窗口；两者仅扩枚举不推进 `CONFIG_VERSION` ——
   旧配置没有该键时保持默认不可见）。
+- **界面缩放不进 Schema**（2026-11-14）：全局缩放倍率（`Ctrl +/−/0`，07 §1）落盘
+  `<userData>/ui-zoom.json`，与 `plugin-widget-layout.json` 同款独立文件先例 ——
+  不占 `general` / `appearance` 字段、不升 `CONFIG_VERSION`、不参与迁移链与脱敏导出。
 - `general.language` 是**未生效的死字段**（无 i18n 消费方，见 §6.1 门控矩阵），保留仅为避免再动一次配置版本。
 - `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
 - MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，

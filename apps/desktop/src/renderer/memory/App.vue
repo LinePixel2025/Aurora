@@ -19,6 +19,7 @@ import {
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
+import ZoomBadge from '../shared/components/ZoomBadge.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 
 const notes = ref<FileAwarenessNote[]>([])
@@ -426,6 +427,7 @@ onUnmounted(() => {
 
 <template>
   <div class="memory anim-window">
+    <ZoomBadge />
     <header class="memory-head glass-bar" :class="dragClass">
       <div class="head-title">
         <BookOpen :size="16" :stroke-width="1.6" aria-hidden="true" />

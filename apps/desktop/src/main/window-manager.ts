@@ -6,7 +6,8 @@
  * - 交互窗是唯一主对话窗口（shared/windowState 负责状态机，这里同步真实窗口）；
  * - 位置 / 尺寸写入 `general.windowState`，跨启动保留。
  */
-import { join } from 'node:path'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import {
   BrowserWindow,
   nativeTheme,
@@ -40,7 +41,8 @@ import {
 } from './edge-bar-geometry.js'
 import { awarenessGlowBounds, type AwarenessGlowRect } from './awareness-glow.js'
 import { BANNER_CARD, bannerCardBounds, clampBannerCardHeight } from './banner-geometry.js'
-import { zoomActionForInput } from './zoom-shortcuts.js'
+import { nextZoomFactor, zoomActionForInput } from './zoom-shortcuts.js'
+import { clampBoundsToWorkArea, fitSizeToWorkArea, relaxedMinSize } from './window-geometry.js'
 import {
   ensurePluginPageProtocol,
   isPluginPageUrl,
@@ -322,8 +324,10 @@ export class WindowManager {
   private readonly options: WindowManagerOptions
   /** 各窗口当前这次加载的 in-flight promise（`whenLoaded()` 用；窗口销毁时清理） */
   private readonly loadTasks = new Map<WindowName, Promise<void>>()
-  /** 每个 webContents 当前的缩放倍率；刷新 / 重载后重新应用。 */
-  private readonly zoomFactors = new Map<number, number>()
+  /** 全局界面缩放倍率（docs/07 §1）：七窗同步、落盘 ui-zoom.json，刷新 / 重载后重新应用。 */
+  private zoomFactor = 1
+  /** 显示配置变化监听（DPI / 插拔屏）：提示条重新贴边、其余窗口重夹。 */
+  private displayListener: (() => void) | undefined
   /** 提示条是否处于展开（面板）态；默认收起为 8px 竖条（docs/07 §2.2） */
   private edgeBarExpanded = false
   /** 提示条当前的原生 shape（窗口坐标，供自测断言可见区域）。 */
@@ -399,6 +403,8 @@ export class WindowManager {
 
   constructor(options: WindowManagerOptions) {
     this.options = options
+    this.zoomFactor = readZoomFactor(this.zoomFilePath())
+    this.installDisplayListener()
     nativeTheme.on('updated', this.syncWindowBackgrounds)
     this.edgeBarTopWatchdog = setInterval(() => {
       const win = this.windows.get('edge-bar')
@@ -439,7 +445,12 @@ export class WindowManager {
       const win = this.windows.get(name)
       if (win && !win.isDestroyed() && win.isMaximized()) maximized[name] = true
     }
-    return { visible: { ...this.state.visible }, primary: this.state.primary, maximized }
+    return {
+      visible: { ...this.state.visible },
+      primary: this.state.primary,
+      maximized,
+      zoomFactor: this.zoomFactor,
+    }
   }
 
   onStateChanged(listener: (state: WindowState) => void): () => void {
@@ -822,15 +833,26 @@ export class WindowManager {
     const spec = SPECS[name]
     const size = this.sizeFor(name)
     const saved = this.readGeometry(name)
-    const bounds = saved ?? this.computeBounds(name, { ...spec, ...size })
+    // 默认尺寸 fit 主工作区（高 DPI 小屏不建出屏窗）；恢复几何已在 readGeometry 按所在显示器夹回
+    const bounds =
+      saved ??
+      this.computeBounds(name, {
+        ...spec,
+        ...fitSizeToWorkArea(size, screen.getPrimaryDisplay().workArea),
+      })
+    const minArea = (saved ? screen.getDisplayMatching(saved) : screen.getPrimaryDisplay()).workArea
+    const minSize = relaxedMinSize(
+      { width: spec.minWidth ?? 120, height: spec.minHeight ?? 48 },
+      minArea,
+    )
 
     const win = new BrowserWindow({
       ...bounds,
       width: bounds.width ?? size.width,
       height: bounds.height ?? size.height,
       ...(this.options.iconPath === undefined ? {} : { icon: this.options.iconPath }),
-      ...(spec.minWidth === undefined ? {} : { minWidth: spec.minWidth }),
-      ...(spec.minHeight === undefined ? {} : { minHeight: spec.minHeight }),
+      ...(spec.minWidth === undefined ? {} : { minWidth: minSize.width }),
+      ...(spec.minHeight === undefined ? {} : { minHeight: minSize.height }),
       show: false,
       frame: false,
       resizable: spec.resizable,
@@ -1073,6 +1095,7 @@ export class WindowManager {
       this.hide(name)
     })
 
+    if (this.zoomFactor !== 1) win.webContents.setZoomFactor(this.zoomFactor)
     void this.trackLoad(name, win, query)
     this.installZoomShortcuts(win)
     this.windows.set(name, win)
@@ -1919,9 +1942,25 @@ export class WindowManager {
     if (win.isDestroyed()) return
     if (process.platform !== 'win32' && process.platform !== 'linux') return
     const bounds = win.getBounds()
-    const shape = edgeBarShape(bounds, this.edgeBarExpanded)
+    const shape = edgeBarShape(bounds, this.edgeBarExpanded, this.zoomFactor)
     win.setShape(shape)
     this.edgeBarShape = shape
+  }
+
+  /**
+   * 提示条几何整体刷新（全局缩放变化 / 系统显示配置变化共用）：
+   * 宿主宽 ×z、高跟工作区，重新贴边后重算 shape 并断言置顶。
+   */
+  private refreshEdgeBarGeometry(win: BrowserWindow): void {
+    if (win.isDestroyed()) return
+    const area = this.edgeBarDisplay().workArea
+    const size = {
+      width: Math.round(EDGE_BAR_WIDTHS.expanded * this.zoomFactor),
+      height: expandedEdgeBarHeight(area),
+    }
+    win.setBounds(placeEdgeBar(area, size, this.edgeBarSide()))
+    this.applyEdgeBarShape(win)
+    this.reassertEdgeBarTopmost('changed')
   }
 
   /**
@@ -2021,6 +2060,7 @@ export class WindowManager {
   /** 退出前：允许窗口真正关闭并落盘几何信息。 */
   prepareQuit(): void {
     this.disposeThemeListener()
+    this.removeDisplayListener()
     this.disposeEdgeBarTopWatchdog()
     this.quitting = true
     const glow = this.awarenessGlowWindow
@@ -2042,6 +2082,7 @@ export class WindowManager {
 
   destroyAll(): void {
     this.disposeThemeListener()
+    this.removeDisplayListener()
     this.disposeEdgeBarTopWatchdog()
     this.quitting = true
     for (const name of [...this.geometryTimers.keys()]) this.cancelGeometryTimer(name)
@@ -2122,35 +2163,85 @@ export class WindowManager {
   }
 
   /**
-   * 自家窗口的缩放快捷键。
+   * 自家窗口的缩放快捷键（docs/07 §1，2026-11-14 起全局统一）。
    *
    * Electron 默认菜单被隐藏后，`Ctrl + 加号` 在不同键盘布局下不一定走 Chromium 内置动作；
-   * 这里统一接管 `Ctrl +/-/0`，并在刷新后恢复当前倍率。
+   * 这里统一接管 `Ctrl +/-/0`：任一窗口触发 → 全部业务窗口同步同一倍率（`applyZoom`），
+   * 并在刷新 / 重载后恢复当前倍率。
    */
   private installZoomShortcuts(win: BrowserWindow): void {
     const contents = win.webContents
-    const contentsId = contents.id
     contents.on('before-input-event', (event, input) => {
       const action = zoomActionForInput(input)
       if (action === undefined) return
       event.preventDefault()
-      const current = contents.getZoomFactor()
-      const next = action === 'reset' ? 1 : clamp(current + (action === 'in' ? 0.1 : -0.1), 0.5, 3)
-      contents.setZoomFactor(next)
-      this.zoomFactors.set(contentsId, next)
-      this.options.logger.debug('窗口缩放快捷键', {
-        window: win.getTitle(),
-        action,
-        factor: next,
-      })
+      this.applyZoom(nextZoomFactor(this.zoomFactor, action), win.getTitle())
     })
     contents.on('did-finish-load', () => {
-      const factor = this.zoomFactors.get(contentsId)
-      if (factor !== undefined && factor !== 1) contents.setZoomFactor(factor)
+      if (this.zoomFactor !== 1) contents.setZoomFactor(this.zoomFactor)
     })
-    contents.once('destroyed', () => {
-      this.zoomFactors.delete(contentsId)
-    })
+  }
+
+  /** 全局缩放唯一入口：七窗同步 setZoomFactor，提示条几何联动，落盘 + 广播。 */
+  private applyZoom(next: number, source: string): void {
+    if (next === this.zoomFactor) return
+    this.zoomFactor = next
+    for (const name of WINDOW_NAMES) {
+      const win = this.windows.get(name)
+      if (!win || win.isDestroyed()) continue
+      win.webContents.setZoomFactor(next)
+      if (name === 'edge-bar') this.refreshEdgeBarGeometry(win)
+    }
+    this.persistZoom()
+    this.options.logger.debug('全局界面缩放', { source, factor: next })
+    this.emit()
+  }
+
+  /** 缩放倍率独立落盘（不进 settings，先例同 plugin-widget-layout.json）。 */
+  private zoomFilePath(): string {
+    return join(dirname(this.options.settings.path), 'ui-zoom.json')
+  }
+
+  private persistZoom(): void {
+    try {
+      writeFileSync(this.zoomFilePath(), JSON.stringify({ zoomFactor: this.zoomFactor }), 'utf8')
+    } catch (error) {
+      this.options.logger.warn('缩放倍率落盘失败', { error: String(error) })
+    }
+  }
+
+  /**
+   * 系统显示配置变化（DPI 缩放 / 分辨率 / 插拔屏）适配（2026-11-14，docs/02 §2.2）：
+   * 提示条重新贴边 + 重算 shape；其余非最大化窗口按所在显示器工作区重夹。
+   * 最大化窗口不动（还原尺寸交给系统）；几何落盘走既有 moved/resized 去抖。
+   */
+  private installDisplayListener(): void {
+    if (this.displayListener !== undefined) return
+    const onChange = (): void => {
+      const edge = this.windows.get('edge-bar')
+      if (edge !== undefined && !edge.isDestroyed()) this.refreshEdgeBarGeometry(edge)
+      for (const name of WINDOW_NAMES) {
+        if (name === 'edge-bar') continue
+        const win = this.windows.get(name)
+        if (!win || win.isDestroyed() || win.isMaximized()) continue
+        const bounds = win.getBounds()
+        const fitted = clampBoundsToWorkArea(bounds, screen.getDisplayMatching(bounds).workArea)
+        if (!sameBounds(bounds, fitted)) win.setBounds(fitted)
+      }
+    }
+    screen.on('display-added', onChange)
+    screen.on('display-removed', onChange)
+    screen.on('display-metrics-changed', onChange)
+    this.displayListener = onChange
+  }
+
+  private removeDisplayListener(): void {
+    const listener = this.displayListener
+    if (listener === undefined) return
+    screen.off('display-added', listener)
+    screen.off('display-removed', listener)
+    screen.off('display-metrics-changed', listener)
+    this.displayListener = undefined
   }
 
   /** 复位提示条折叠标记并收回原生 shape（窗口不存在时只清标记）。 */
@@ -2234,7 +2325,7 @@ export class WindowManager {
     if (name === 'edge-bar') {
       // 宿主高度跟工作区走（全高面板），两态只换 shape，所以这里始终读贴附显示器。
       return {
-        width: EDGE_BAR_WIDTHS.expanded,
+        width: Math.round(EDGE_BAR_WIDTHS.expanded * this.zoomFactor),
         height: expandedEdgeBarHeight(this.edgeBarDisplay().workArea),
       }
     }
@@ -2272,7 +2363,6 @@ export class WindowManager {
     const height = toNumber(stored['height'])
     if (x === undefined || y === undefined || width === undefined || height === undefined)
       return undefined
-    const area = screen.getPrimaryDisplay().workArea
     if (name === 'edge-bar') {
       // 提示条**完全不复用持久化几何**：它不参与用户拖动，位置与尺寸都由「工作区右缘 +
       // 垂直居中 + 当前折叠态」唯一决定（`computeBounds` 的 `edge` 分支）。
@@ -2280,14 +2370,18 @@ export class WindowManager {
       // 展开态退出时存下的是 y=24，下次启动竖条跑到屏幕顶部而不是居中。
       return undefined
     }
-    return {
-      x: clamp(x, area.x - width + 40, area.x + area.width - 40),
-      y: clamp(y, area.y, area.y + area.height - 40),
-      // 旧版本持久化的尺寸可能小于 BetaV2 的最小规格（如升级前的 chat 420×640），
-      // 这里按 spec 的 minWidth / minHeight 抬底，避免「恢复出来的窗口比最小值还小」。
-      width: Math.max(SPECS[name].minWidth ?? 120, width),
-      height: Math.max(SPECS[name].minHeight ?? 48, height),
-    }
+    // 按**保存时所在显示器**的工作区夹回（多屏混合缩放下不被主屏拽走，2026-11-14）。
+    // 旧版本持久化的尺寸可能小于 BetaV2 的最小规格（如升级前的 chat 420×640）→ 抬底
+    // （小屏时最小值放宽到工作区 −16），再 cap / clamp 到该工作区。
+    const area = screen.getDisplayMatching({ x, y, width, height }).workArea
+    const minSize = relaxedMinSize(
+      { width: SPECS[name].minWidth ?? 120, height: SPECS[name].minHeight ?? 48 },
+      area,
+    )
+    return clampBoundsToWorkArea(
+      { x, y, width: Math.max(minSize.width, width), height: Math.max(minSize.height, height) },
+      area,
+    )
   }
 
   /**
@@ -2375,6 +2469,23 @@ export class WindowManager {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
+}
+
+/** 读 ui-zoom.json；缺失 / 坏值 / 越界一律回落 1（首次运行没有文件属正常路径）。 */
+function readZoomFactor(path: string): number {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    const value =
+      typeof parsed === 'object' && parsed !== null
+        ? (parsed as { zoomFactor?: unknown }).zoomFactor
+        : undefined
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0.5 && value <= 3) {
+      return Math.round(value * 10) / 10
+    }
+  } catch {
+    // 文件不存在 / 损坏：回落默认倍率，不抛错
+  }
+  return 1
 }
 
 function toNumber(value: unknown): number | undefined {

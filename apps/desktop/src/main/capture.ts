@@ -20,7 +20,14 @@
 import { mkdir, readFile, truncate, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { nativeTheme, shell, webContents, type BrowserWindow, type WebContents } from 'electron'
+import {
+  nativeTheme,
+  screen,
+  shell,
+  webContents,
+  type BrowserWindow,
+  type WebContents,
+} from 'electron'
 import {
   createFileSnapshotPort,
   type AskUserAnswer,
@@ -12667,6 +12674,45 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
 })()`
 
 /**
+ * 统一缩放探针（2026-11-14，docs/07 §1 / §5.3，settings-zoom / settings-zoom-reset 共用）：
+ * 渲染层只断言「自洽」—— 徽标显隐与百分比文本跟 WindowState.zoomFactor 一致、
+ * 标题栏品牌结构在（.aurora-mark + Line Production，侧栏旧 .brand 已移除）、
+ * 顶缘全宽拖动区 ≥32px。期望倍率 / 三窗统一 / 提示条宽 ×z / 几何在工作区内
+ * 由同一条记录的 mainAct 在主进程侧断言（渲染层读不到别的窗口的 zoomFactor）。
+ */
+export const SETTINGS_ZOOM_CHECK = `(async () => {
+  try {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    await wait(300)
+    const stateResult = await window.aurora.window.getState()
+    const state = stateResult && stateResult.ok ? stateResult.value : null
+    const factor = state && typeof state.zoomFactor === 'number' ? state.zoomFactor : 1
+    const badge = document.querySelector('[data-field="window.zoom-badge"]')
+    const badgeText = badge ? (badge.textContent || '').trim() : ''
+    const badgeOk =
+      factor !== 1
+        ? badge !== null && badgeText === Math.round(factor * 100) + '%'
+        : badge === null
+    const brand = document.querySelector('[data-field="settings.titlebar-brand"]')
+    const brandOk =
+      brand !== null &&
+      brand.querySelector('.aurora-mark') !== null &&
+      (brand.textContent || '').includes('Line Production') &&
+      document.querySelector('.sidebar .brand') === null
+    const drag = document.querySelector('.titlebar-drag')
+    const dragRect = drag ? drag.getBoundingClientRect() : null
+    const dragOk =
+      dragRect !== null &&
+      dragRect.top <= 1 &&
+      dragRect.height >= 32 &&
+      dragRect.width >= document.documentElement.clientWidth - 1
+    return { zoomFactor: factor, badgeText, badgeOk, brandOk, dragOk, pass: badgeOk && brandOk && dragOk }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 对话窗模型选择器探针 · 前半：造本机 + Center 两个来源，依次切 Center / 用户模型。
  * 全局默认为本机时初始来源必须是 local（官方开启不再抢占，2026-10-24）。
  *
@@ -16062,6 +16108,112 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     file: 'settings-drag.png',
     query: { page: 'general' },
     check: WINDOW_DRAG_SCRIPT,
+  })
+  // 统一缩放（2026-11-14，docs/07 §1 / §5.3）：prepare 发真实 Ctrl+=（sendInputEvent 走
+  // before-input-event 原生管线），mainAct 断言三窗倍率统一 =1.1、提示条宿主宽相对 zoom=1
+  // 基线增加 round(328×1.1)−328、chat / settings 几何落在所在显示器工作区内；
+  // check 断言徽标 / 品牌标题栏 / 拖动区。下一条场景 Ctrl+0 复位收尾，不污染后续场景
+  // （userData 隔离，ui-zoom.json 亦归 1）。
+  // 基线差值口径：透明窗口的 getBounds 含 Electron 补的不可见 inset（实测 +1px），
+  // 绝对宽随环境漂、差值不漂 —— 在 zoom=1 时先量基线再断言增量。
+  let edgeBaseWidth = 0
+  let edgeZoomDelta = 0
+  plan.push({
+    name: 'settings',
+    file: 'settings-zoom.png',
+    query: { page: 'general' },
+    prepare: async () => {
+      const win = manager.ensure('settings')
+      await manager.whenLoaded('settings')
+      // 筛选跑只建 settings，这里显式补建提示条。基线与缩放后宽度必须走**同一条
+      // setBounds 路径**量取（建窗初始 inset 与 setBounds 后不同）：先 +→量→0→量→+。
+      manager.ensure('edge-bar')
+      await manager.whenLoaded('edge-bar')
+      const sendZoom = (keyCode: string): void => {
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers: ['ctrl'] })
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers: ['ctrl'] })
+      }
+      sendZoom('=')
+      await wait(250)
+      const zoomWidth = manager.getBounds('edge-bar')?.width ?? 0
+      sendZoom('0')
+      await wait(250)
+      edgeBaseWidth = manager.getBounds('edge-bar')?.width ?? 0
+      edgeZoomDelta = zoomWidth - edgeBaseWidth
+      sendZoom('=')
+      await wait(250)
+    },
+    mainAct: async () => {
+      // 新建窗口的 zoom 在 did-finish-load 才落定（导航 commit 会重置 zoom），等加载完再读
+      manager.ensure('chat')
+      manager.ensure('edge-bar')
+      await manager.whenLoaded('chat')
+      await manager.whenLoaded('edge-bar')
+      const factors = {
+        settings: manager.ensure('settings').webContents.getZoomFactor(),
+        chat: manager.ensure('chat').webContents.getZoomFactor(),
+        edge: manager.ensure('edge-bar').webContents.getZoomFactor(),
+      }
+      const edgeWidth = manager.getBounds('edge-bar')?.width ?? 0
+      const inArea = (name: 'chat' | 'settings'): boolean => {
+        const b = manager.getBounds(name)
+        if (b === undefined) return false
+        const a = screen.getDisplayMatching(b).workArea
+        return (
+          b.x >= a.x &&
+          b.y >= a.y &&
+          b.x + b.width <= a.x + a.width &&
+          b.y + b.height <= a.y + a.height
+        )
+      }
+      const unified =
+        Math.abs(factors.settings - 1.1) < 1e-6 &&
+        Math.abs(factors.chat - 1.1) < 1e-6 &&
+        Math.abs(factors.edge - 1.1) < 1e-6
+      const edgeOk =
+        edgeZoomDelta === Math.round(328 * 1.1) - 328 && edgeWidth === edgeBaseWidth + edgeZoomDelta
+      return {
+        pass: unified && edgeOk && inArea('chat') && inArea('settings'),
+        factors,
+        edgeWidth,
+        edgeBaseWidth,
+        edgeZoomDelta,
+        chatInArea: inArea('chat'),
+        settingsInArea: inArea('settings'),
+      }
+    },
+    check: SETTINGS_ZOOM_CHECK,
+  })
+  plan.push({
+    name: 'settings',
+    file: 'settings-zoom-reset.png',
+    query: { page: 'general' },
+    prepare: async () => {
+      const win = manager.ensure('settings')
+      await manager.whenLoaded('settings')
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: '0', modifiers: ['ctrl'] })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: '0', modifiers: ['ctrl'] })
+      await wait(250)
+    },
+    mainAct: async () => {
+      manager.ensure('chat')
+      manager.ensure('edge-bar')
+      await manager.whenLoaded('chat')
+      await manager.whenLoaded('edge-bar')
+      const factors = {
+        settings: manager.ensure('settings').webContents.getZoomFactor(),
+        chat: manager.ensure('chat').webContents.getZoomFactor(),
+        edge: manager.ensure('edge-bar').webContents.getZoomFactor(),
+      }
+      const edgeWidth = manager.getBounds('edge-bar')?.width ?? 0
+      const reset =
+        Math.abs(factors.settings - 1) < 1e-6 &&
+        Math.abs(factors.chat - 1) < 1e-6 &&
+        Math.abs(factors.edge - 1) < 1e-6 &&
+        edgeWidth === edgeBaseWidth
+      return { pass: reset, factors, edgeWidth, edgeBaseWidth }
+    },
+    check: SETTINGS_ZOOM_CHECK,
   })
   // 模型设置区（step-05）：点开第一行的"编辑"→"+ 手动添加"使行数恰好 +1 → 删回原状。
   // 排在 "settings-llm-params" **之前**：它只动本地 draft、不改配置，先跑能少一次配置往返。

@@ -20,6 +20,7 @@ import AppToast from '../shared/components/AppToast.vue'
 import AppTooltip from '../shared/components/AppTooltip.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
+import ZoomBadge from '../shared/components/ZoomBadge.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import PluginConfigForm from '../plugins/PluginConfigForm.vue'
 import { usePluginsStore } from '../shared/plugins-store.js'
@@ -283,6 +284,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="plugin-config-window anim-window" data-field="plugin-config.page">
+    <ZoomBadge />
     <header class="titlebar-drag" :class="dragClass">
       <strong class="window-title">插件配置</strong>
       <WindowCaption window="plugin-config" class="window-caption" />

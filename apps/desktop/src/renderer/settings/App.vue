@@ -30,6 +30,7 @@ import FileAwarenessPage from './pages/FileAwarenessPage.vue'
 import PluginsPage from './pages/PluginsPage.vue'
 import ComputerUsePage from './pages/ComputerUsePage.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
+import ZoomBadge from '../shared/components/ZoomBadge.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import {
@@ -151,7 +152,7 @@ const active = ref<PageId>(initialPage())
 const settingsStore = useSettingsStore()
 const windowStore = useWindowStore()
 const perception = usePerceptionStore()
-/** 本窗可拖（docs/07 §1 / §2.5）：拖动区见模板里的 `.titlebar-drag` / `.brand`；
+/** 本窗可拖（docs/07 §1 / §2.5）：拖动区见模板里的 `.titlebar-drag`（含品牌锁up）；
  *  WindowCaption 的按钮自带 no-drag（组件内部显式挂类），这里不再需要 noDragClass */
 const { dragClass } = useWindowDrag('settings')
 
@@ -181,21 +182,22 @@ function select(id: PageId): void {
 
 <template>
   <div class="settings anim-window">
+    <ZoomBadge />
+    <!-- 标题栏（2026-11-14 重设计，docs/07 §2.5）：品牌从侧栏上移，左品牌锁up + 右 caption；
+         整行是唯一全宽拖动区（40px ≥ 32px 探针下限），品牌锁up 不挂 no-drag（可抓着拖）。 -->
     <div class="titlebar-drag" :class="dragClass">
+      <div class="titlebar-brand" data-field="settings.titlebar-brand">
+        <span class="brand-mark aurora-mark" aria-hidden="true" />
+        <strong>Aurora</strong>
+        <!-- 发行线路小徽标：纯标识、不可交互 -->
+        <span class="brand-badge">Line Production</span>
+        <span class="titlebar-divider" aria-hidden="true" />
+        <span class="titlebar-context">设置</span>
+      </div>
       <!-- Windows 式窗口按钮：位于窗口标题带右端，按钮自身 no-drag。 -->
       <WindowCaption window="settings" class="window-caption" />
     </div>
     <aside class="sidebar glass-shell rail-surface anim-shell-left">
-      <div class="brand" :class="dragClass">
-        <div class="brand-text">
-          <div class="brand-head">
-            <strong>Aurora</strong>
-            <!-- 发行线路小徽标（2026-11）：品牌名右侧，纯标识、不可交互（品牌行整体是拖动区） -->
-            <span class="brand-badge">Line Production</span>
-          </div>
-          <p class="tiny muted">设置</p>
-        </div>
-      </div>
       <nav>
         <template v-for="group in grouped" :key="group.title">
           <p class="nav-group">{{ group.title }}</p>
@@ -250,75 +252,79 @@ function select(id: PageId): void {
 .settings {
   display: grid;
   grid-template-columns: 208px 1fr;
-  grid-template-rows: 32px minmax(0, 1fr);
+  grid-template-rows: 40px minmax(0, 1fr);
   height: 100vh;
   background: transparent;
 }
 
 /**
- * 顶部标题带：这是设置窗唯一的窗口拖动入口，始终贴在窗口最上缘且不随内容滚动。
- * `WindowCaption` 自带 no-drag，右侧三枚按钮仍可点击。
+ * 顶部标题栏（2026-11-14 重设计，docs/07 §2.5）：设置窗唯一的窗口拖动入口，
+ * 始终贴在窗口最上缘且不随内容滚动。左侧品牌锁up（可抓着拖），右侧 caption
+ * 自带 no-drag 仍可点击。表面与主界面头部同语言（--glass-bar + 发丝线）。
  */
 .titlebar-drag {
   grid-column: 1 / -1;
   grid-row: 1;
   display: flex;
-  align-items: stretch;
+  align-items: center;
   justify-content: flex-end;
+  gap: var(--space-2);
+  padding-left: var(--space-3);
   z-index: 30;
   min-width: 0;
   background: var(--glass-bar);
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* 品牌锁up：mark + Aurora + 线路徽标 + 分隔 + 「设置」；flex:1 把 caption 推到右缘 */
+.titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.titlebar-brand .brand-mark {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.titlebar-brand strong {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
+  white-space: nowrap;
+}
+
+.titlebar-divider {
+  width: 1px;
+  height: 14px;
+  flex: none;
+  background: var(--border-subtle);
+}
+
+.titlebar-context {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
 .window-caption {
   display: flex;
-  height: 100%;
+  align-self: stretch;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: 0 var(--space-3) var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-3);
   grid-column: 1;
   grid-row: 2;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  /* 拖动条高度的下限（探针要求 ≥ 32px）：两行文案本身会把品牌行撑到约 40px */
-  min-height: 40px;
-  padding: 0 var(--space-2);
-}
-
-/**
- * 品牌区两行：`Aurora` + 发行线路徽标 / `设置`。
- * 徽标必须与品牌名分到独立的一行结构 —— 208px 侧栏里「Aurora + 设置 + Line Production」
- * 一行放不下；两行总高约 40px，仍满足拖动区 ≥ 32px 的探针下限（`.brand` 本身是拖动区）。
- */
-.brand-text {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.brand-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.brand-head strong {
-  display: block;
-  font-family: var(--font-display);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-display);
 }
 
 /* 发行线路徽标：9.5px 小字 + 胶囊描边，只做标识，不与品牌名抢层级 */
@@ -334,12 +340,6 @@ function select(id: PageId): void {
   line-height: 15px;
   letter-spacing: 0.02em;
   white-space: nowrap;
-}
-
-.brand p {
-  margin: 0;
-  font-size: var(--text-xs);
-  letter-spacing: 0.04em;
 }
 
 nav {

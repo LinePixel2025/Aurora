@@ -41,7 +41,7 @@
 | 托盘 Tray            | 主进程        | 1                       | 系统托盘图标 + 菜单（打开对话 / 设置 / 切换模式 / 退出）                                                                                                |
 | 提示条 Edge Bar      | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停展开面板、点击呼出主界面；始终置顶                                                                                                |
 | 主界面（chat）       | WindowManager | 1                       | 1280×800 常驻三栏大窗（2026-10-03 二次修订）；唯一主对话窗口；标题栏右侧有 Windows 式「最小化 / 关闭」按钮，关闭 = 隐藏 |
-| 设置窗口             | WindowManager | 1                       | 单窗口分栏；无系统标题栏，侧栏顶部可拖动 + Windows 式「最小化 / 关闭」按钮（关闭 = 隐藏，Esc 等效）                                                     |
+| 设置窗口             | WindowManager | 1                       | 单窗口分栏；无系统标题栏，40px 品牌标题栏可拖动 + Windows 式「最小化 / 最大化 / 关闭」按钮（关闭 = 隐藏，Esc 等效；2026-11-14 标题栏重设计）                                                     |
 | 记忆库窗口（memory） | WindowManager | 1                       | 文件自感知知识库的独立浏览器；左侧笔记列表 + 右侧 Markdown 预览，设置页只管配置与入口（关闭 = 隐藏）                                                    |
 | 自动化窗口（automation） | WindowManager | 1                   | 自动化列表 / 独立编辑器 / 历史详情；关闭 = 隐藏                                                                                                        |
 | 首次引导窗口         | WindowManager | 1                       | 向导式                                                                                                                                                  |
@@ -58,6 +58,16 @@
 自感知状态 / 提醒队列 / 插件贡献创建，不暴露 `window:*` 操作；三者都不进 `WINDOW_NAMES`，
 提醒窗口不持久化几何，桌面小组件的布局写在独立文件里。
 
+**全局缩放与 DPI 适配（2026-11-14）**：`WindowManager` 持有单一全局缩放倍率
+（`Ctrl +/−/0`，0.5–3、步长 0.1，判定纯函数在 `main/zoom-shortcuts.ts`），七个业务窗口同步
+`setZoomFactor`，落盘 `<userData>/ui-zoom.json`（不进 settings、不升 `CONFIG_VERSION`），
+并随 `WindowState.zoomFactor` 经既有 `window:stateChanged` 广播（不新增 IPC 通道）；
+提示条宿主宽与原生 shape 随倍率 ×z（07 §2.2）。几何适配：默认尺寸 fit 主工作区
+（`main/window-geometry.ts` 纯函数 + 单测）、恢复几何按 `screen.getDisplayMatching` 所在
+显示器的工作区 clamp / cap、小屏时最小尺寸放宽到工作区 −16；`display-added / removed /
+metrics-changed` 时提示条重新贴边 + 重算 shape，其余非最大化窗口重新 clamp。
+内部浮层与插件窗口不跟随全局缩放（07 §1）。
+
 ## 3. 模块划分
 
 ### 3.1 主进程（`apps/desktop/src/main`）
@@ -65,7 +75,7 @@
 | 模块                                          | 职责                                                                                               |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `tray`                                        | 托盘图标、菜单、状态徽标                                                                           |
-| `window-manager`                              | 窗口创建 / 显隐 / 置顶 / 贴边 / 多显示器位置记忆；Computer Use 浮层与 HUD（v39）                    |
+| `window-manager`                              | 窗口创建 / 显隐 / 置顶 / 贴边 / 多显示器位置记忆；全局缩放（ui-zoom.json）与 DPI / 显示变化适配；Computer Use 浮层与 HUD（v39）                    |
 | `settings-store`                              | 配置读写、schema 校验、版本迁移、safeStorage 凭据                                                  |
 | `mode-manager`                                | 模式注册表、切换流程、引导状态（见 05）                                                            |
 | `file-watcher`                                | 智慧感知文件夹监听、稳定判定、抑制自触发（见 05 §3.1）                                             |

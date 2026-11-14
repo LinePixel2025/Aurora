@@ -133,12 +133,18 @@ function roundLeftCorners(rect: Rect, radius: number): Rect[] {
  * 为什么展开态不是「整个宿主矩形」：材质按窗口区域裁剪（见 `roundLeftCorners`），
  * 而渲染层的面板是**左圆角**的 —— 区域直接把整窗圈进去，圆角外的两个三角就会露出材质。
  * 反过来，竖条上下那两段 8px 也必须留在区域外（那里页面是透明的），否则会变成两条材质带。
+ * `scale` = 全局界面缩放倍率（docs/07 §1 / §2.2）：竖条与圆角按 ×scale 取整，缺省 1。
  */
-export function edgeBarShape(host: Size, expanded: boolean): Rect[] {
+export function edgeBarShape(host: Size, expanded: boolean, scale = 1): Rect[] {
   const hostWidth = Math.max(0, Math.round(host.width))
   const hostHeight = Math.max(0, Math.round(host.height))
-  const stripWidth = Math.min(EDGE_BAR_WIDTHS.collapsed, hostWidth)
-  const stripHeight = Math.min(EDGE_BAR_COLLAPSED_HEIGHT, hostHeight)
+  // 全局界面缩放联动（2026-11-14，docs/07 §2.2）：渲染层 CSS px 经 zoomFactor 自动 ×z，
+  // 原生 shape 必须同口径 ×z（竖条 / 圆角都 round 到整数 DIP）。scale 缺省 1 = 既有行为。
+  const z = Number.isFinite(scale) && scale > 0 ? scale : 1
+  const stripWidth = Math.min(Math.round(EDGE_BAR_WIDTHS.collapsed * z), hostWidth)
+  const stripHeight = Math.min(Math.round(EDGE_BAR_COLLAPSED_HEIGHT * z), hostHeight)
+  const stripRadius = Math.round(EDGE_BAR_STRIP_RADIUS * z)
+  const panelRadius = Math.round(EDGE_BAR_PANEL_RADIUS * z)
   const stripY = Math.max(0, Math.round((hostHeight - stripHeight) / 2))
   if (!expanded) {
     return roundLeftCorners(
@@ -148,17 +154,14 @@ export function edgeBarShape(host: Size, expanded: boolean): Rect[] {
         width: stripWidth,
         height: stripHeight,
       },
-      EDGE_BAR_STRIP_RADIUS,
+      stripRadius,
     )
   }
   const panelWidth = Math.max(0, hostWidth - stripWidth)
   const rects: Rect[] = []
   if (panelWidth > 0) {
     rects.push(
-      ...roundLeftCorners(
-        { x: 0, y: 0, width: panelWidth, height: hostHeight },
-        EDGE_BAR_PANEL_RADIUS,
-      ),
+      ...roundLeftCorners({ x: 0, y: 0, width: panelWidth, height: hostHeight }, panelRadius),
     )
   }
   if (stripWidth > 0) {
@@ -170,7 +173,7 @@ export function edgeBarShape(host: Size, expanded: boolean): Rect[] {
           width: stripWidth,
           height: stripHeight,
         },
-        EDGE_BAR_STRIP_RADIUS,
+        stripRadius,
       ),
     )
   }

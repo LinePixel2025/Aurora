@@ -130,4 +130,38 @@ describe('提示条几何（docs/07 §2.2）', () => {
     // 缺省参数 = 既有右缘行为（老调用点不动）
     expect(placeEdgeBar(WORK_AREA, collapsedSize()).x + 8).toBe(WORK_AREA.width)
   })
+
+  // ───── 2026-11-14：全局缩放联动（docs/07 §2.2，shape ×z）─────
+
+  it('scale=1.1：竖条 9×220、圆角取整，与渲染层 CSS ×zoomFactor 同口径', () => {
+    const z = 1.1
+    const host = { width: Math.round(EDGE_BAR_WIDTHS.expanded * z), height: 992 }
+    const collapsed = edgeBarShape(host, false, z)
+    const union = unionOf(collapsed)
+    const stripWidth = Math.round(8 * z) // 9
+    const stripHeight = Math.round(200 * z) // 220
+    expect(union.right).toBe(host.width)
+    expect(union.x).toBe(host.width - stripWidth)
+    expect(union.bottom - union.y).toBe(stripHeight)
+    expect(union.y).toBe(Math.round((992 - stripHeight) / 2))
+    // 中间块是完整竖条宽
+    expect(collapsed.some((r) => r.x === host.width - stripWidth && r.width === stripWidth)).toBe(
+      true,
+    )
+
+    const expanded = edgeBarShape(host, true, z)
+    const expandedUnion = unionOf(expanded)
+    expect(expandedUnion.x).toBe(0)
+    expect(expandedUnion.right).toBe(host.width)
+    // 面板主体宽 = 宿主 − 竖条；首行被 round(28×z)=31 圆角内缩
+    expect(expanded.some((r) => r.x === 0 && r.width === host.width - stripWidth)).toBe(true)
+    expect(expanded.find((r) => r.y === 0)?.x).toBeGreaterThan(0)
+  })
+
+  it('scale 缺省与非法值回落 1（老调用点行为不变）', () => {
+    const host = { width: 330, height: 992 }
+    expect(edgeBarShape(host, false)).toEqual(edgeBarShape(host, false, 1))
+    expect(edgeBarShape(host, true, 0)).toEqual(edgeBarShape(host, true, 1))
+    expect(edgeBarShape(host, true, Number.NaN)).toEqual(edgeBarShape(host, true, 1))
+  })
 })
