@@ -15,6 +15,9 @@ export * from './config/migrations.js'
 export * from './config/ports.js'
 export * from './config/store.js'
 
+// TTS 朗读文本清洗与分块（docs/06 §13.4 / §13.8）：主进程合成入口与渲染层分块共用
+export * from './tts-text.js'
+
 // 契约
 export * from './ipc/channels.js'
 export * from './ipc/types.js'

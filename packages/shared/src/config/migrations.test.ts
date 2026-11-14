@@ -644,7 +644,12 @@ describe('配置迁移链', () => {
       expect(tts['active']).toBe('sf')
       expect(tts['autoRead']).toBe(true)
       expect(tts['maxChars']).toBe(800)
-      expect((tts['providers'] as Record<string, unknown>)['sf']).toEqual(provider)
+      // 用户已写的字段逐字保留；instructions / language 是后续 v42 → v43 补的默认值
+      expect((tts['providers'] as Record<string, unknown>)['sf']).toEqual({
+        ...provider,
+        instructions: '',
+        language: 'auto',
+      })
     })
 
     it('重复执行结果一致（幂等）', () => {
@@ -1123,6 +1128,7 @@ describe('配置迁移链', () => {
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
+        'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1177,6 +1183,7 @@ describe('配置迁移链', () => {
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
+        'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1611,6 +1618,7 @@ describe('配置迁移链', () => {
         'v39 → v40：v39 → v40：notifications 补智慧提醒（免打扰时段 / 上课期间 / Agent 总结）',
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
+        'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2283,6 +2291,99 @@ describe('配置迁移链', () => {
           JSON.stringify(parsed.error.issues),
         ).toBe(true)
       }
+    })
+  })
+
+  describe('v42 → v43（tts.providers 补 instructions / language，docs/06 §13.1）', () => {
+    /** 造一条 v42 形状的 TTS provider（没有新字段）。 */
+    const legacyProvider = {
+      type: 'dashscope',
+      baseUrl: 'https://maas.qianwenaiapi.com/api/v1',
+      apiKeyEnc: 'cipher',
+      model: 'qwen3-tts-flash',
+      voice: 'Cherry',
+      speed: 1,
+      format: 'mp3',
+    }
+
+    it('为每个已有 provider 补 instructions 空串 / language auto，其余字段原样保留', () => {
+      const outcome = migrate({
+        version: 42,
+        tts: {
+          enabled: true,
+          active: 'Qwen',
+          autoRead: false,
+          maxChars: 2000,
+          providers: { Qwen: legacyProvider },
+        },
+      })
+      expect(outcome.applied[0]).toContain('v42 → v43')
+      const tts = outcome.data['tts'] as Record<string, unknown>
+      const providers = tts['providers'] as Record<string, Record<string, unknown>>
+      expect(providers['Qwen']).toEqual({
+        ...legacyProvider,
+        instructions: '',
+        language: 'auto',
+      })
+      // 顶层字段不动
+      expect(tts['active']).toBe('Qwen')
+      expect(tts['maxChars']).toBe(2000)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      // 补出来的默认值 = 「不发送」，迁移结果能过 Schema
+      expect(
+        SettingsSchema.safeParse({ ...createDefaultSettings(), ...outcome.data }).success,
+      ).toBe(true)
+    })
+
+    it('用户已写的 instructions / language 不被覆盖（幂等）', () => {
+      const once = migrate({
+        version: 42,
+        tts: {
+          providers: {
+            Qwen: { ...legacyProvider, instructions: '用温柔的语气朗读', language: 'zh' },
+          },
+        },
+      })
+      const providers = (once.data['tts'] as Record<string, unknown>)['providers'] as Record<
+        string,
+        Record<string, unknown>
+      >
+      expect(providers['Qwen']).toMatchObject({ instructions: '用温柔的语气朗读', language: 'zh' })
+      const twice = migrate({ ...once.data, version: 42 })
+      expect(twice.data['tts']).toEqual(once.data['tts'])
+    })
+
+    it('非法值归一：未知语言短码 → auto，非字符串 / 超长 instructions → 空串', () => {
+      const outcome = migrate({
+        version: 42,
+        tts: {
+          providers: {
+            a: { ...legacyProvider, language: 'klingon', instructions: 42 },
+            b: { ...legacyProvider, instructions: 'x'.repeat(1001) },
+            c: { ...legacyProvider, language: 'en' },
+          },
+        },
+      })
+      const providers = (outcome.data['tts'] as Record<string, unknown>)['providers'] as Record<
+        string,
+        Record<string, unknown>
+      >
+      expect(providers['a']).toMatchObject({ language: 'auto', instructions: '' })
+      expect(providers['b']).toMatchObject({ instructions: '' })
+      expect(providers['c']).toMatchObject({ language: 'en' })
+    })
+
+    it('tts 组 / providers 缺失时不凭空造对象；非对象条目原样保留', () => {
+      const noTts = migrate({ version: 42 })
+      expect(noTts.data['tts']).toBeUndefined()
+      const noProviders = migrate({ version: 42, tts: { enabled: false } })
+      expect((noProviders.data['tts'] as Record<string, unknown>)['providers']).toBeUndefined()
+      const odd = migrate({ version: 42, tts: { providers: { ghost: 'not-an-object' } } })
+      const providers = (odd.data['tts'] as Record<string, unknown>)['providers'] as Record<
+        string,
+        unknown
+      >
+      expect(providers['ghost']).toBe('not-an-object')
     })
   })
 })

@@ -46,6 +46,10 @@ export * from './browser/composables/useComposerFlyoutLeft.js'
 export * from './browser/composables/deltaBuffer.js'
 // 请求级工作分组（桌面与 Center 共用同一份边界语义）。
 export * from './browser/agentTurns.js'
+// TTS 朗读：文本清洗 / 分块（docs/06 §13.4）与分块管线（§13.8）——
+// 桌面 useTts 与 Center Web 朗读共用同一份，纯逻辑、零 Node / DOM 依赖。
+export * from './tts-text.js'
+export * from './browser/ttsPipeline.js'
 // 输入卡浮层的横向定位（2026-10-18）：桌面与 Center Web 共用同一份夹取算法。
 export * from './browser/composerFlyout.js'
 

@@ -670,6 +670,8 @@ function seedTtsProvider(store: SettingsStore, id: string): void {
       voice: 'alex',
       speed: 1,
       format: 'mp3',
+      instructions: '',
+      language: 'auto',
     }
   })
 }

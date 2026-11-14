@@ -478,6 +478,8 @@ describe('SettingsSchema / defaults 一致性', () => {
       voice: 'alex',
       speed: 1,
       format: 'mp3',
+      instructions: '',
+      language: 'auto',
     }
     expect(SettingsSchema.safeParse(settings).success).toBe(true)
   })
@@ -491,6 +493,8 @@ describe('SettingsSchema / defaults 一致性', () => {
       voice: 'alex',
       speed: 1,
       format: 'mp3' as const,
+      instructions: '',
+      language: 'auto',
     }
 
     const charTooSmall = createDefaultSettings()

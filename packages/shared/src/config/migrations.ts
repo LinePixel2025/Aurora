@@ -10,6 +10,8 @@ import {
   REASONING_EFFORT_LEVELS,
   SETTINGS_READONLY_PREFIXES,
   SttProviderTypes,
+  TTS_INSTRUCTIONS_MAX_CHARS,
+  TTS_LANGUAGES,
 } from './schema.js'
 import {
   DEFAULT_AGENT_BROWSER,
@@ -1394,6 +1396,56 @@ const migrateV41ToV42: Migration = {
   },
 }
 
+/**
+ * v42 → v43：`tts.providers` 各条目补语气指令与合成语言（docs/06 §13.1、docs/08 §1）。
+ *
+ * 与 v23 → v24 同款：只在 `tts.providers` 已存在时逐条目处理，`tts` 分组整个缺失时
+ * 留给默认配置兜底，不凭空造半截对象。**只补缺失 / 非法值，不改正值**：
+ * `instructions` 缺失 / 非字符串 / 超长 → `''`，`language` 缺失 / 不是已知短码 → `'auto'`。
+ * 补出来的两个默认值都 = 「不发送」，旧配置升级后请求体逐字不变。
+ * 同批新增的 `dashscope-audio` 接口类型是纯增量枚举，旧 type 值天然合法，不需要归一。
+ */
+const migrateV42ToV43: Migration = {
+  from: 42,
+  to: 43,
+  describe: 'v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const tts = asRecord(raw['tts'])
+    if (tts !== undefined) {
+      const providers = asRecord(tts['providers'])
+      if (providers !== undefined) {
+        const nextProviders: Record<string, unknown> = {}
+        for (const [id, provider] of Object.entries(providers)) {
+          const entry = asRecord(provider)
+          if (entry === undefined) {
+            nextProviders[id] = provider
+            continue
+          }
+          const patched: Record<string, unknown> = { ...entry }
+          const instructions = patched['instructions']
+          if (
+            typeof instructions !== 'string' ||
+            instructions.length > TTS_INSTRUCTIONS_MAX_CHARS
+          ) {
+            patched['instructions'] = ''
+          }
+          const language = patched['language']
+          if (typeof language !== 'string' || !(TTS_LANGUAGES as readonly string[]).includes(language)) {
+            patched['language'] = 'auto'
+          }
+          nextProviders[id] = patched
+        }
+        next['tts'] = { ...tts, providers: nextProviders }
+      }
+    }
+
+    next['version'] = 43
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1437,6 +1489,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV39ToV40,
   migrateV40ToV41,
   migrateV41ToV42,
+  migrateV42ToV43,
 ]
 
 export interface MigrationOutcome {

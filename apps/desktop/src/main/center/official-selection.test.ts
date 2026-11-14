@@ -99,6 +99,8 @@ describe('withOfficial* 覆写', () => {
       voice: 'alloy',
       speed: 1,
       format: 'mp3',
+      instructions: '',
+      language: 'auto',
     } as const
     const next = withOfficialTtsModel(provider, {
       id: 'new',
@@ -119,6 +121,8 @@ describe('withOfficial* 覆写', () => {
       voice: 'alloy',
       speed: 2,
       format: 'wav',
+      instructions: '',
+      language: 'auto',
     } as const
     const next = withOfficialTtsModel(provider, { id: 'new' })
     expect(next).toMatchObject({ voice: '', speed: 1, format: 'mp3' })

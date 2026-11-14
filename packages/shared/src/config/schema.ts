@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 42 as const
+export const CONFIG_VERSION = 43 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -388,13 +388,56 @@ export const TTS_FORMATS = ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'] as const
 export type TtsFormat = (typeof TTS_FORMATS)[number]
 
 /**
- * TTS provider 的接口协议类型（docs/06 §13.1 / §13.6）：
+ * TTS provider 的接口协议类型（docs/06 §13.1 / §13.6 / §13.7）：
  * - `openai-compat`：OpenAI 兼容 `POST <baseUrl>/audio/speech`；
- * - `dashscope`：DashScope 原生非实时合成协议（百炼 / 千问AI平台等网关）。
+ * - `dashscope`：DashScope 原生非实时合成协议（百炼 / 千问AI平台等网关，qwen3-tts 系列）；
+ * - `dashscope-audio`：Qwen-Audio-TTS 非实时 HTTP 协议（千问AI平台
+ *   `/services/audio/tts/SpeechSynthesizer`，支持语气指令与复刻音色）。
  * 纯增量枚举，旧配置天然合法，无需版本迁移。
  */
-export const TTS_PROVIDER_TYPES = ['openai-compat', 'dashscope'] as const
+export const TTS_PROVIDER_TYPES = ['openai-compat', 'dashscope', 'dashscope-audio'] as const
 export type TtsProviderType = (typeof TTS_PROVIDER_TYPES)[number]
+
+/**
+ * TTS 合成语言短码（v43，docs/06 §13.1）：`auto` = 不发送、交给服务端自动判定。
+ * 下发位置随协议类型变：`dashscope` → `input.language_type`（映射成 Chinese / English 等全称），
+ * `dashscope-audio` → `input.language_hints: [短码]`，`openai-compat` 无语言参数、永不发送。
+ */
+export const TTS_LANGUAGES = [
+  'auto',
+  'zh',
+  'en',
+  'ja',
+  'ko',
+  'fr',
+  'de',
+  'es',
+  'it',
+  'pt',
+  'ru',
+] as const
+export type TtsLanguage = (typeof TTS_LANGUAGES)[number]
+
+/**
+ * 合成语言的展示文案（**唯一来源**：设置页「语音」页 TTS 编辑卡的「语言」下拉）。
+ * 与 `STT_PROVIDER_TYPE_LABELS` 同款：新增取值时这个 Record 强制补文案。
+ */
+export const TTS_LANGUAGE_LABELS: Record<TtsLanguage, string> = {
+  auto: '自动（服务端判定）',
+  zh: '中文',
+  en: '英语',
+  ja: '日语',
+  ko: '韩语',
+  fr: '法语',
+  de: '德语',
+  es: '西班牙语',
+  it: '意大利语',
+  pt: '葡萄牙语',
+  ru: '俄语',
+}
+
+/** 语气指令的最大长度（字符；服务端按 Token 计，1000 字符留足余量）。 */
+export const TTS_INSTRUCTIONS_MAX_CHARS = 1000
 
 /**
  * TTS provider（docs/06 §13、docs/08 §1）。
@@ -413,6 +456,19 @@ export const TtsProviderSchema = z.object({
   /** 语速倍率。 */
   speed: z.number().min(0.25).max(4),
   format: z.enum(TTS_FORMATS),
+  /**
+   * 语气指令（v43，docs/06 §13.1）：自然语言描述语气 / 情感 / 说话方式。
+   * 空串 = 不发送（旧配置请求体逐字不变）；效果取决于模型是否支持指令控制。
+   * `.default('')` 与 stt.language 同理：providers 是 z.record，字段级回退管不到它的子树，
+   * 手改配置漏了该字段时由 parse 直接补齐，不让整份配置被判损坏。
+   */
+  instructions: z.string().max(TTS_INSTRUCTIONS_MAX_CHARS).default(''),
+  /**
+   * 合成语言（v43）：TTS_LANGUAGES 短码，`auto` = 不发送。与 stt.language 同款用
+   * 自由字符串 + 长度上限（不用 enum）：手改配置写了未知短码时由迁移 / 主进程归一为
+   * auto，不让整份配置被判损坏。下发位置随 type 变（docs/06 §13.1）。
+   */
+  language: z.string().max(32).default('auto'),
 })
 export type TtsProviderConfig = z.infer<typeof TtsProviderSchema>
 

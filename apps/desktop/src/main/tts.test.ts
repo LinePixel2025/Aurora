@@ -17,6 +17,8 @@ interface FakeSettingsOptions {
     voice: string
     speed: number
     format: TtsFormat
+    instructions: string
+    language: string
   }>
   /** true 时完全不放 provider 条目（模拟「模型不存在」） */
   omitProvider?: boolean
@@ -33,6 +35,8 @@ function fakeSettings(options: FakeSettingsOptions = {}): SettingsStoreLike {
     voice: 'alex',
     speed: 1,
     format: 'mp3' as TtsFormat,
+    instructions: '',
+    language: 'auto',
     ...options.provider,
   }
   const active = options.active ?? 'sf'
