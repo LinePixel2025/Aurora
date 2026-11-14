@@ -700,7 +700,7 @@ describe('TtsSynthesizer · dashscope（docs/06 §13.6）', () => {
     expect(requests).toHaveLength(2)
     expect(error.message).toContain('配置的模型「qwen-tts」不可用（HTTP 404')
     expect(error.message).toContain('备用模型 qwen3-tts-flash 也失败')
-    expect(error.message).toContain('WebSocket 实时专用')
+    expect(error.message).toContain('不走当前 HTTP 合成端点')
   })
 
   it('非模型级失败（401 / 429 / 5xx）不触发备用模型重试', async () => {
@@ -729,7 +729,7 @@ describe('TtsSynthesizer · dashscope（docs/06 §13.6）', () => {
         }),
         fetchImpl,
       ).synthesize({ text: 'hi' }),
-    ).rejects.toThrow(/WebSocket 实时专用/)
+    ).rejects.toThrow(/不走当前 HTTP 合成端点/)
     expect(requests).toHaveLength(1)
   })
 
@@ -1131,5 +1131,334 @@ describe('TtsSynthesizer · 出网路径', () => {
     } finally {
       globalThis.fetch = original
     }
+  })
+})
+
+// ───────────────────────── v43：语气指令 / 合成语言 / 新协议 / 清洗与缓存 ─────────────────────────
+
+/**
+ * 每次请求**现造**响应（Response body 只能读一次，缓存 / 多段用例会在同一个桩上
+ * 发多次请求，回放同一个对象会炸「Body has already been read」）。
+ */
+function freshFetch(makeResponse: () => Response): {
+  fetchImpl: typeof fetch
+  requests: CapturedRequest[]
+} {
+  const requests: CapturedRequest[] = []
+  const fetchImpl = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    requests.push({ url: String(input), init: init ?? {} })
+    return Promise.resolve(makeResponse())
+  }) as typeof fetch
+  return { fetchImpl, requests }
+}
+
+/**
+ * 循环回放多个响应（两段请求 × 多次合成用）：第 n 次请求取第 n % len 个。
+ * 每次请求返回 `clone()`：Response body 只能读一次，缓存 / 多段用例会在同一个桩上
+ * 发多次请求，直接回放同一个对象会炸「Body has already been read」。
+ */
+function sequenceFetch(responses: Response[]): {
+  fetchImpl: typeof fetch
+  requests: CapturedRequest[]
+} {
+  const requests: CapturedRequest[] = []
+  const fetchImpl = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const index = requests.length
+    requests.push({ url: String(input), init: init ?? {} })
+    return Promise.resolve(responses[index % responses.length]!.clone())
+  }) as typeof fetch
+  return { fetchImpl, requests }
+}
+
+/** DashScope 系合成响应（2xx JSON，音频在 output.audio.url）。 */
+function dashJsonResponse(url: string): Response {
+  return new Response(
+    JSON.stringify({ output: { audio: { url, expires_at: 0 }, finish_reason: 'stop' } }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+describe('TtsSynthesizer · 语气指令与合成语言（v43，docs/06 §13.1）', () => {
+  it('openai-compat：instructions 非空走顶层字段；空串不发送；language 永不发送', async () => {
+    const { fetchImpl, requests } = freshFetch(() => audioResponse([0]))
+    const tts = make(
+      fakeSettings({ provider: { instructions: '用温柔的语气朗读', language: 'zh' } }),
+      fetchImpl,
+    )
+    await tts.synthesize({ text: '你好' })
+    const body = JSON.parse(String(requests[0]!.init.body)) as Record<string, unknown>
+    expect(body['instructions']).toBe('用温柔的语气朗读')
+    expect(body['language']).toBeUndefined()
+    expect(body['language_type']).toBeUndefined()
+
+    const plain = make(fakeSettings(), fetchImpl)
+    await plain.synthesize({ text: '你好' })
+    const plainBody = JSON.parse(String(requests[1]!.init.body)) as Record<string, unknown>
+    expect(plainBody['instructions']).toBeUndefined()
+  })
+
+  it('dashscope：language zh → input.language_type Chinese；instructions 走 input；auto 不发送语言', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      audioResponse([0]),
+    ])
+    const tts = make(
+      fakeSettings({
+        provider: { type: 'dashscope', language: 'zh', instructions: '语速稍慢，温柔一些' },
+      }),
+      fetchImpl,
+    )
+    await tts.synthesize({ text: '你好' })
+    const body = JSON.parse(String(requests[0]!.init.body)) as {
+      input: { language_type?: string; instructions?: string }
+    }
+    expect(body.input.language_type).toBe('Chinese')
+    expect(body.input.instructions).toBe('语速稍慢，温柔一些')
+
+    const auto = make(fakeSettings({ provider: { type: 'dashscope' } }), fetchImpl)
+    await auto.synthesize({ text: '你好' })
+    const autoBody = JSON.parse(String(requests[2]!.init.body)) as {
+      input: { language_type?: string; instructions?: string }
+    }
+    expect(autoBody.input.language_type).toBeUndefined()
+    expect(autoBody.input.instructions).toBeUndefined()
+  })
+
+  it('未知语言短码归一为 auto（不发送），不让手改配置的笔误变成请求参数', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      audioResponse([0]),
+    ])
+    const tts = make(fakeSettings({ provider: { type: 'dashscope', language: 'klingon' } }), fetchImpl)
+    await tts.synthesize({ text: '你好' })
+    const body = JSON.parse(String(requests[0]!.init.body)) as { input: { language_type?: string } }
+    expect(body.input.language_type).toBeUndefined()
+  })
+
+  it('test()：草稿 instructions / language 优先于已保存配置', async () => {
+    const { fetchImpl, requests } = freshFetch(() => audioResponse([0]))
+    const tts = make(fakeSettings({ provider: { instructions: '已保存的语气' } }), fetchImpl)
+    await tts.test({ instructions: '草稿的语气', language: 'en' })
+    const body = JSON.parse(String(requests[0]!.init.body)) as Record<string, unknown>
+    expect(body['instructions']).toBe('草稿的语气')
+  })
+})
+
+describe('TtsSynthesizer · dashscope-audio（v43，docs/06 §13.7）', () => {
+  const DASH_BASE = 'https://maas.qianwenaiapi.com/api/v1'
+  const AUDIO_TAIL = '/services/audio/tts/SpeechSynthesizer'
+  const GENERATION_TAIL = '/services/aigc/multimodal-generation/generation'
+
+  /** 借 synthesize 捕获第一跳 URL（端点函数是模块内私有，从行为断言）。 */
+  async function audioEndpointOf(baseUrl: string): Promise<string> {
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      audioResponse([0]),
+    ])
+    const tts = make(fakeSettings({ provider: { type: 'dashscope-audio', baseUrl } }), fetchImpl)
+    await tts.synthesize({ text: 'hi' })
+    return requests[0]!.url
+  }
+
+  it('端点规整：裸域名 / api/v1 / compatible-mode / Center base 各形态', async () => {
+    expect(await audioEndpointOf('https://maas.qianwenaiapi.com')).toBe(
+      `https://maas.qianwenaiapi.com/api/v1${AUDIO_TAIL}`,
+    )
+    expect(await audioEndpointOf(DASH_BASE)).toBe(`${DASH_BASE}${AUDIO_TAIL}`)
+    expect(await audioEndpointOf('https://maas.qianwenaiapi.com/compatible-mode/v1')).toBe(
+      `https://maas.qianwenaiapi.com/api/v1${AUDIO_TAIL}`,
+    )
+    expect(await audioEndpointOf('http://127.0.0.1:8787/api/model-gateway/tts')).toBe(
+      `http://127.0.0.1:8787/api/model-gateway/tts/api/v1${AUDIO_TAIL}`,
+    )
+  })
+
+  it('端点规整：已以新端点结尾不重复拼；粘着旧生成端点（只改类型不改地址）整段替换', async () => {
+    const full = `${DASH_BASE}${AUDIO_TAIL}`
+    expect(await audioEndpointOf(`${full}/`)).toBe(full)
+    expect(await audioEndpointOf(`${DASH_BASE}${GENERATION_TAIL}`)).toBe(`${DASH_BASE}${AUDIO_TAIL}`)
+  })
+
+  it('请求体：input.format / instruction（单数）/ language_hints；rate 夹取到 0.5–2 且 ≠1 才发', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      audioResponse([0]),
+    ])
+    const tts = make(
+      fakeSettings({
+        provider: {
+          type: 'dashscope-audio',
+          baseUrl: DASH_BASE,
+          model: 'qwen-audio-3.1-tts-flash',
+          voice: 'loongstella',
+          format: 'mp3',
+          speed: 3,
+          instructions: '用活泼明快的语气朗读',
+          language: 'zh',
+        },
+      }),
+      fetchImpl,
+    )
+    await tts.synthesize({ text: '你好' })
+    const post = requests[0]!
+    expect(post.url).toBe(`${DASH_BASE}${AUDIO_TAIL}`)
+    const body = JSON.parse(String(post.init.body)) as {
+      model: string
+      input: {
+        text: string
+        voice: string
+        format?: string
+        rate?: number
+        instruction?: string
+        instructions?: string
+        language_hints?: string[]
+        language_type?: string
+      }
+      audio?: unknown
+    }
+    expect(body.model).toBe('qwen-audio-3.1-tts-flash')
+    expect(body.input.text).toBe('你好')
+    expect(body.input.voice).toBe('loongstella')
+    expect(body.input.format).toBe('mp3')
+    expect(body.input.rate).toBe(2) // speed 3 夹到协议上限 2
+    expect(body.input.instruction).toBe('用活泼明快的语气朗读')
+    expect(body.input.instructions).toBeUndefined() // 不是 dashscope 的复数字段
+    expect(body.input.language_hints).toEqual(['zh'])
+    expect(body.input.language_type).toBeUndefined() // 不是 dashscope 的全称字段
+    expect(body.audio).toBeUndefined() // 格式在 input 里，不在顶层 audio
+
+    // GET 下载不带 Authorization（与 dashscope 同口径）
+    const download = requests[1]!
+    expect(download.init.method).toBe('GET')
+    expect((download.init.headers as Record<string, string>)['Authorization']).toBeUndefined()
+  })
+
+  it('speed=1 不发 rate；aac 不发 format；auto 不发 language_hints；空指令不发 instruction', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      audioResponse([0]),
+    ])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope-audio', format: 'aac', speed: 1 } }),
+      fetchImpl,
+    )
+    await tts.synthesize({ text: 'hi' })
+    const body = JSON.parse(String(requests[0]!.init.body)) as { input: Record<string, unknown> }
+    expect(body.input['rate']).toBeUndefined()
+    expect(body.input['format']).toBeUndefined()
+    expect(body.input['language_hints']).toBeUndefined()
+    expect(body.input['instruction']).toBeUndefined()
+  })
+
+  it('模型级失效自动回退到 qwen-audio-3.1-tts-flash 并写回设置', async () => {
+    const store = fakeSettings({
+      provider: { type: 'dashscope-audio', baseUrl: DASH_BASE, model: 'qwen-audio-3.0-tts-flash' },
+    })
+    const mutations: Array<(draft: Settings) => void> = []
+    const settings: SettingsStoreLike = {
+      ...store,
+      mutate: (mutator: (draft: Settings) => void) => {
+        mutations.push(mutator)
+        return store.get()
+      },
+    } as SettingsStoreLike
+    const { fetchImpl, requests } = sequenceFetch([
+      errorResponse(404, JSON.stringify({ code: 'Model not exist', message: 'Model not exist' })),
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      audioResponse([7]),
+    ])
+    const tts = make(settings, fetchImpl)
+    const result = await tts.synthesize({ text: '你好' })
+    expect(result.bytes).toBe(1)
+    expect(requests).toHaveLength(3)
+    const retryBody = JSON.parse(String(requests[1]!.init.body)) as { model: string }
+    expect(retryBody.model).toBe('qwen-audio-3.1-tts-flash')
+    // 写回：只改目标 provider 的 model
+    expect(mutations).toHaveLength(1)
+    const draft = {
+      tts: { providers: { sf: { model: 'qwen-audio-3.0-tts-flash' } } },
+    } as unknown as Settings
+    mutations[0]!(draft)
+    expect(draft.tts.providers['sf']!.model).toBe('qwen-audio-3.1-tts-flash')
+  })
+
+  it('listModels：与 dashscope 共用原生 /models 规整与翻页', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      new Response(JSON.stringify({ data: [{ id: 'qwen-audio-3.1-tts-flash' }] }), { status: 200 }),
+    ])
+    const result = await make(
+      fakeSettings({
+        provider: { type: 'dashscope-audio', baseUrl: 'https://maas.qianwenaiapi.com/compatible-mode' },
+      }),
+      fetchImpl,
+    ).listModels({})
+    expect(requests[0]!.url).toBe(
+      'https://maas.qianwenaiapi.com/api/v1/models?page_no=1&page_size=100',
+    )
+    expect(result).toEqual({ ok: true, models: ['qwen-audio-3.1-tts-flash'] })
+  })
+})
+
+describe('TtsSynthesizer · 清洗与缓存（v43，docs/06 §13.4 / §13.8）', () => {
+  it('synthesize 入口清洗 Markdown：代码块 / 强调标记不出网', async () => {
+    const { fetchImpl, requests } = freshFetch(() => audioResponse([0]))
+    const tts = make(fakeSettings(), fetchImpl)
+    await tts.synthesize({ text: '这是**重点**。\n```ts\nconst a = 1\n```\n完毕。' })
+    const body = JSON.parse(String(requests[0]!.init.body)) as { input: string }
+    expect(body.input).toBe('这是重点。 完毕。')
+  })
+
+  it('清洗后为空（纯代码块）抛出「没有可朗读的文本」', async () => {
+    const tts = make(fakeSettings(), freshFetch(() => audioResponse([0])).fetchImpl)
+    await expect(tts.synthesize({ text: '```ts\nconst a = 1\n```' })).rejects.toThrow(
+      '没有可朗读的文本',
+    )
+  })
+
+  it('缓存命中：同参数同文本第二次合成不再出网', async () => {
+    const { fetchImpl, requests } = freshFetch(() => audioResponse([1, 2, 3]))
+    const tts = make(fakeSettings(), fetchImpl)
+    const first = await tts.synthesize({ text: '你好，世界' })
+    const second = await tts.synthesize({ text: '你好，世界' })
+    expect(requests).toHaveLength(1)
+    expect(second.audioBase64).toBe(first.audioBase64)
+    expect(second.bytes).toBe(3)
+  })
+
+  it('缓存 key 含全部合成参数：同一实例上改音色 / 语气都 miss', async () => {
+    const { fetchImpl, requests } = freshFetch(() => audioResponse([0]))
+    const store = fakeSettings()
+    const tts = make(store, fetchImpl)
+    await tts.synthesize({ text: '你好' })
+    await tts.synthesize({ text: '你好' }) // 命中
+    expect(requests).toHaveLength(1)
+    // fakeSettings.get 返回同一引用：改音色模拟设置变更，key 必须 miss
+    store.get().tts.providers['sf']!.voice = 'ben'
+    await tts.synthesize({ text: '你好' })
+    expect(requests).toHaveLength(2)
+    store.get().tts.providers['sf']!.instructions = '温柔一些'
+    await tts.synthesize({ text: '你好' })
+    expect(requests).toHaveLength(3)
+  })
+
+  it('缓存逐出：超过 16 条后最旧访问的条目被逐出（再读要重新合成）', async () => {
+    const { fetchImpl, requests } = freshFetch(() => audioResponse([0]))
+    const tts = make(fakeSettings(), fetchImpl)
+    for (let i = 0; i < 17; i += 1) await tts.synthesize({ text: `文本编号${i}` })
+    expect(requests).toHaveLength(17)
+    // 第 0 条已被逐出 → 重新合成；第 16 条仍在缓存 → 不出网
+    await tts.synthesize({ text: '文本编号0' })
+    expect(requests).toHaveLength(18)
+    await tts.synthesize({ text: '文本编号16' })
+    expect(requests).toHaveLength(18)
+  })
+
+  it('test() 也走清洗（样例句带 Markdown 时同样剥掉）', async () => {
+    const { fetchImpl, requests } = freshFetch(() => audioResponse([0]))
+    const tts = make(fakeSettings(), fetchImpl)
+    const result = await tts.test({ text: '**你好**，我是 Aurora。' })
+    expect(result.ok).toBe(true)
+    const body = JSON.parse(String(requests[0]!.init.body)) as { input: string }
+    expect(body.input).toBe('你好，我是 Aurora。')
   })
 })
