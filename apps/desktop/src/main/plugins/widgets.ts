@@ -558,9 +558,18 @@ export class WidgetManager {
       .attach(hwnd)
       .then((ok) => {
         if (record.win.isDestroyed()) return
-        // 切换层级与 PowerShell 落定存在竞争：已经离开 desktop 就立刻解掉，别把 owner 留脏
+        // 切换层级与 PowerShell 落定存在竞争：已经离开 desktop 就立刻解掉，别把 owner 留脏。
+        // owner 写入（SetWindowLongPtr GWLP_HWNDPARENT）会让 Windows 重排窗口带区、
+        // 剥掉 WS_EX_TOPMOST —— 迟到的 attach 落在 floating 期会把刚设好的置顶清掉，
+        // 因此先按当前层级重申置顶，清完 owner 再重申一次（detach 同样会剥）。
         if (record.windowLevel !== 'desktop') {
-          if (ok) void this.desktopLayer.detach(hwnd)
+          this.reassertFloatingTopmost(record)
+          if (ok) {
+            void this.desktopLayer
+              .detach(hwnd)
+              .then(() => this.reassertFloatingTopmost(record))
+              .catch(() => this.reassertFloatingTopmost(record))
+          }
           return
         }
         record.desktopOwner = ok
@@ -585,13 +594,37 @@ export class WidgetManager {
     record.desktopOwner = false
     const hwnd = nativeHandleToNumber(record.win.getNativeWindowHandle())
     if (hwnd === undefined) return
-    void this.desktopLayer.detach(hwnd).catch((error: unknown) => {
-      this.options.logger.debug('解除小组件桌面 owner 失败', {
+    void this.desktopLayer
+      .detach(hwnd)
+      .then(() => this.reassertFloatingTopmost(record))
+      .catch((error: unknown) => {
+        this.options.logger.debug('解除小组件桌面 owner 失败', {
+          pluginId: record.info.pluginId,
+          widgetId: record.info.id,
+          error: String(error),
+        })
+        this.reassertFloatingTopmost(record)
+      })
+  }
+
+  /**
+   * 按当前层级重申置顶（幂等）。desktop 层的 owner 操作是异步 PowerShell（冷启动可达秒级），
+   * 落定时窗口可能已切回 floating；而 owner 写入会剥掉 WS_EX_TOPMOST（Win32 重排带区），
+   * 不在每次 owner 操作落定后重申，清单置顶就会被迟到操作静默清掉。
+   * 注意：全屏游戏运行期间系统本身会压制其它窗口置顶，冒烟置顶断言在玩游戏时恒红
+   * 属环境因素（2026-11-15 实测），与本加固无关，验收需在无游戏时跑。
+   */
+  private reassertFloatingTopmost(record: WidgetRecord): void {
+    if (this.disposed || record.win.isDestroyed() || record.windowLevel !== 'floating') return
+    try {
+      record.win.setAlwaysOnTop(true, 'floating')
+    } catch (error) {
+      this.options.logger.warn('小组件置顶重申失败', {
         pluginId: record.info.pluginId,
         widgetId: record.info.id,
         error: String(error),
       })
-    })
+    }
   }
 
   /**
