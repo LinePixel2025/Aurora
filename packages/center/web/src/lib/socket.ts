@@ -118,7 +118,8 @@ export function nextRequestId(): string {
  * 等待是**有界**的：超过上限仍按错误返回，不把明显离线的情况伪装成"正在重试"。
  */
 export function command<T>(
-  message: CenterWebMessage,
+  // 只接受带 requestId 的命令帧：web.hello（连接标识，docs/12 §15.4）无回执，不走这条管道
+  message: Extract<CenterWebMessage, { requestId: string }>,
   timeoutMs = 30_000,
   waitForOpenMs = 8_000,
 ): Promise<T> {

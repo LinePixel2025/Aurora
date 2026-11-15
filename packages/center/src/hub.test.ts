@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Hub, type ClientConn, type WebConn } from './hub.js'
+import type { PushNotification } from './push.js'
 import { ClientRegistry } from './clients.js'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -2099,5 +2100,257 @@ describe('Hub · 插件侧栏面板中继（docs/12 §6.5）', () => {
     client.sent.length = 0
     harness.hub.removeWeb(owner.id)
     expect(client.sent.at(-1)).toMatchObject({ cmd: { kind: 'plugin.unsubscribe' } })
+  })
+})
+
+/**
+ * 鸿蒙遥控台接入（docs/12 §15）：web.hello 连接标识、待办快照、推送钩子路由、
+ * REST 快捷批复通道。推送断言用假 notify 收集（偏好 / 限速在 PushService 单测里）。
+ */
+describe('Hub · 鸿蒙遥控台接入（docs/12 §15）', () => {
+  interface PushHarness {
+    hub: Hub
+    clients: ClientRegistry
+    pushed: Array<{ userIds: string[]; notification: PushNotification }>
+    connectClient(clientId: string): { sent: unknown[]; conn: ClientConn }
+    connectWeb(user: { id: string; username: string; role: 'admin' | 'user' }): {
+      id: string
+      sent: unknown[]
+      conn: WebConn
+    }
+  }
+
+  let pushWebSeq = 0
+
+  async function makePushHub(): Promise<PushHarness> {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-hub-push-'))
+    const clients = new ClientRegistry({ dataDir: dir })
+    await clients.init()
+    const pushed: Array<{ userIds: string[]; notification: PushNotification }> = []
+    const hub = new Hub({
+      clients,
+      usernameOf: (id) => id,
+      serverVersion: () => '0.0.0-test',
+      push: { notify: (userIds, notification) => pushed.push({ userIds, notification }) },
+      pushRecipients: (clientId) => {
+        const owner = clients.get(clientId)?.ownerUserId
+        return owner === undefined ? ['u-admin'] : [owner, 'u-admin']
+      },
+    })
+    return {
+      hub,
+      clients,
+      pushed,
+      connectClient(clientId) {
+        const sent: unknown[] = []
+        const conn: ClientConn = { clientId, send: (m) => sent.push(m), close: () => {} }
+        hub.registerClient(conn, STATUS)
+        return { sent, conn }
+      },
+      connectWeb(user) {
+        pushWebSeq += 1
+        const sent: unknown[] = []
+        const conn: WebConn = { id: `pw-${pushWebSeq}`, user, send: (m) => sent.push(m) }
+        hub.registerWeb(conn)
+        return { id: conn.id, sent, conn }
+      },
+    }
+  }
+
+  const CONFIRM_REQUEST = {
+    confirmId: 'cf-1',
+    sessionId: 'center-s1',
+    toolName: 'run_command',
+    input: { command: 'echo hi' },
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  }
+
+  const ASK_REQUEST = {
+    requestId: 'ask-1',
+    sessionId: 'center-s1',
+    question: '选哪个目录？',
+    multiSelect: false,
+    expiresAt: Date.now() + 180_000,
+  }
+
+  it('web.hello 把连接标成 harmony；未知取值忽略', async () => {
+    const h = await makePushHub()
+    const web = h.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    expect(web.conn.clientKind).toBeUndefined()
+    h.hub.handleWebMessage(web.conn, { type: 'web.hello', client: 'harmony', appVersion: '1.0.0' })
+    expect(web.conn.clientKind).toBe('harmony')
+    h.hub.handleWebMessage(web.conn, { type: 'web.hello', client: 'bogus' as 'harmony' })
+    expect(web.conn.clientKind).toBe('harmony')
+  })
+
+  it('待办快照：属主 / 管理员可见，陌生人空；clientId 过滤与越权拒绝', async () => {
+    const h = await makePushHub()
+    await seedClient(h, 'c1', 'u1')
+    h.connectClient('c1')
+    h.hub.handleClientMessage('c1', { type: 'confirm.request', request: CONFIRM_REQUEST })
+    h.hub.handleClientMessage('c1', { type: 'ask.request', request: ASK_REQUEST })
+
+    const owner = h.hub.pendingSnapshot({ id: 'u1', role: 'user' })
+    expect(owner.ok).toBe(true)
+    if (owner.ok) {
+      expect(owner.snapshot.confirms).toHaveLength(1)
+      expect(owner.snapshot.confirms[0]?.request.confirmId).toBe('cf-1')
+      expect(owner.snapshot.asks).toHaveLength(1)
+    }
+    const admin = h.hub.pendingSnapshot({ id: 'u-admin', role: 'admin' })
+    expect(admin.ok && admin.snapshot.confirms.length === 1).toBe(true)
+    const stranger = h.hub.pendingSnapshot({ id: 'u2', role: 'user' })
+    expect(stranger.ok && stranger.snapshot.confirms.length === 0).toBe(true)
+    expect(h.hub.pendingSnapshot({ id: 'u2', role: 'user' }, 'c1')).toMatchObject({
+      ok: false,
+      error: 'E_FORBIDDEN',
+    })
+    expect(h.hub.pendingSnapshot({ id: 'u1', role: 'user' }, 'nope')).toMatchObject({
+      ok: false,
+      error: 'E_CLIENT_NOT_FOUND',
+    })
+    const filtered = h.hub.pendingSnapshot({ id: 'u1', role: 'user' }, 'c1')
+    expect(filtered.ok && filtered.snapshot.asks.length === 1).toBe(true)
+  })
+
+  it('确认卡批复后从快照摘除；过期项清扫；客户端断开清空', async () => {
+    const h = await makePushHub()
+    await seedClient(h, 'c1', 'u1')
+    const client = h.connectClient('c1')
+    const owner = h.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    h.hub.handleClientMessage('c1', { type: 'confirm.request', request: CONFIRM_REQUEST })
+    h.hub.handleWebMessage(owner.conn, {
+      type: 'confirm.resolve',
+      requestId: 'r1',
+      clientId: 'c1',
+      confirmId: 'cf-1',
+      approved: true,
+    })
+    const after = h.hub.pendingSnapshot({ id: 'u1', role: 'user' })
+    expect(after.ok && after.snapshot.confirms.length === 0).toBe(true)
+    // 过期确认卡不进快照
+    h.hub.handleClientMessage('c1', {
+      type: 'confirm.request',
+      request: {
+        ...CONFIRM_REQUEST,
+        confirmId: 'cf-old',
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+      },
+    })
+    const expired = h.hub.pendingSnapshot({ id: 'u1', role: 'user' })
+    expect(expired.ok && expired.snapshot.confirms.length === 0).toBe(true)
+    // 客户端断开 → 快照清空（与 pendingAsks 同款）
+    h.hub.handleClientMessage('c1', {
+      type: 'confirm.request',
+      request: { ...CONFIRM_REQUEST, confirmId: 'cf-2' },
+    })
+    h.hub.removeClient('c1', client.conn)
+    h.hub.dropClientSessions('c1')
+    const dropped = h.hub.pendingSnapshot({ id: 'u1', role: 'user' })
+    expect(dropped.ok && dropped.snapshot.confirms.length === 0).toBe(true)
+  })
+
+  it('推送钩子：确认 / 提问 / 文件发属主 + 管理员；harmony 在线抑制；done 仅会话创建者', async () => {
+    const h = await makePushHub()
+    await seedClient(h, 'c1', 'u1')
+    h.connectClient('c1')
+    const owner = h.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+
+    h.hub.handleClientMessage('c1', { type: 'confirm.request', request: CONFIRM_REQUEST })
+    expect(h.pushed.at(-1)?.userIds).toEqual(['u1', 'u-admin'])
+    expect(h.pushed.at(-1)?.notification.kind).toBe('confirm')
+    expect(h.pushed.at(-1)?.notification.data['confirmId']).toBe('cf-1')
+    // 载荷最小化：不带工具入参
+    expect(JSON.stringify(h.pushed.at(-1)?.notification)).not.toContain('echo hi')
+
+    h.hub.handleClientMessage('c1', { type: 'ask.request', request: ASK_REQUEST })
+    expect(h.pushed.at(-1)?.notification.kind).toBe('ask')
+    expect(h.pushed.at(-1)?.notification.data['requestId']).toBe('ask-1')
+
+    h.hub.broadcastFileReceived(
+      { fileId: 'f1', clientId: 'c1', name: '报告.docx', size: 10, at: new Date().toISOString() },
+      'u1',
+    )
+    expect(h.pushed.at(-1)?.notification.kind).toBe('file')
+
+    // done 事件：仅会话创建者收（u1 创建会话；管理员不收回执推送）。
+    // 放在 harmony 在线抑制之前：手机上线后同一用户的推送会被正确抑制。
+    h.hub.handleWebMessage(owner.conn, { type: 'session.create', requestId: 'sc', clientId: 'c1' })
+    const created = owner.sent.at(-1) as { data: { sessionId: string } }
+    h.pushed.length = 0
+    h.hub.handleClientMessage('c1', {
+      type: 'session.event',
+      sessionId: created.data.sessionId,
+      event: { type: 'done' } as never,
+    })
+    expect(h.pushed).toHaveLength(1)
+    expect(h.pushed[0]?.userIds).toEqual(['u1'])
+    expect(h.pushed[0]?.notification.kind).toBe('done')
+    // 未记账会话的 done 不推
+    h.hub.handleClientMessage('c1', {
+      type: 'session.event',
+      sessionId: 'center-unknown',
+      event: { type: 'done' } as never,
+    })
+    expect(h.pushed).toHaveLength(1)
+
+    // owner 的手机上线（web.hello）→ 确认推送只发管理员
+    h.hub.handleWebMessage(owner.conn, { type: 'web.hello', client: 'harmony' })
+    h.hub.handleClientMessage('c1', {
+      type: 'confirm.request',
+      request: { ...CONFIRM_REQUEST, confirmId: 'cf-3' },
+    })
+    expect(h.pushed.at(-1)?.userIds).toEqual(['u-admin'])
+  })
+
+  it('runRestCommand：复用既有管道（成功 / 离线 / 越权），临时连接不留痕', async () => {
+    const h = await makePushHub()
+    await seedClient(h, 'c1', 'u1')
+    const client = h.connectClient('c1')
+    // 假客户端：收到 confirm.resolve 命令即回 ok
+    const originalSend = client.conn.send
+    client.conn.send = (m) => {
+      originalSend(m)
+      const msg = m as { type: string; cmd?: { kind: string; requestId: string } }
+      if (msg.type === 'cmd' && msg.cmd?.kind === 'confirm.resolve') {
+        h.hub.handleClientMessage('c1', { type: 'result', requestId: msg.cmd.requestId, ok: true })
+      }
+    }
+    const ok = await h.hub.runRestCommand(
+      { id: 'u1', username: 'u1', role: 'user' },
+      {
+        type: 'confirm.resolve',
+        requestId: 'rest-1',
+        clientId: 'c1',
+        confirmId: 'cf-1',
+        approved: true,
+      },
+    )
+    expect(ok).toMatchObject({ type: 'result', ok: true })
+
+    const offline = await h.hub.runRestCommand(
+      { id: 'u1', username: 'u1', role: 'user' },
+      {
+        type: 'confirm.resolve',
+        requestId: 'rest-2',
+        clientId: 'c-off',
+        confirmId: 'x',
+        approved: true,
+      },
+    )
+    expect(offline).toMatchObject({ ok: false, error: 'E_CLIENT_NOT_FOUND' })
+
+    const forbidden = await h.hub.runRestCommand(
+      { id: 'u2', username: 'u2', role: 'user' },
+      {
+        type: 'confirm.resolve',
+        requestId: 'rest-3',
+        clientId: 'c1',
+        confirmId: 'x',
+        approved: true,
+      },
+    )
+    expect(forbidden).toMatchObject({ ok: false, error: 'E_FORBIDDEN' })
   })
 })

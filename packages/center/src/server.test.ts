@@ -1606,3 +1606,447 @@ describe('Aurora Center · 公开更新目录', () => {
     expect(body.current.files.some((file) => file.kind === 'installer')).toBe(true)
   })
 })
+
+/**
+ * 鸿蒙遥控台接入（docs/12 §15）：独立服务器实例（注入假推送发送器 + 临时主密钥），
+ * 覆盖持久会话 / 推送登记与偏好 / 待办快照 / REST 快捷批复 / web.hello 在线抑制 /
+ * 管理端会话与推送配置。推送断言等待 fire-and-forget 落定（50ms 足够微任务排队）。
+ */
+describe('Aurora Center · 鸿蒙遥控台接入（docs/12 §15）', () => {
+  let hServer: RunningCenterServer
+  let hBase = ''
+  let hPort = 0
+  let prevSecret: string | undefined
+  const pushed: Array<{ tokens: string[]; kind: string }> = []
+  const fakeSender = {
+    async send(tokens: string[], notification: { kind: string }) {
+      pushed.push({ tokens: [...tokens], kind: notification.kind })
+      return { invalidTokens: [] }
+    },
+  }
+
+  async function hLogin(body: Record<string, unknown>): Promise<{
+    token: string
+    user: { id: string; role: string }
+    expiresAt?: string
+    persistent?: boolean
+  }> {
+    const res = await fetch(`${hBase}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    expect(res.status).toBe(200)
+    return (await res.json()) as { token: string; user: { id: string; role: string } }
+  }
+
+  function hJson(token: string, _body?: unknown): Record<string, string> {
+    return { ...authed(token), 'Content-Type': 'application/json' }
+  }
+
+  /** 假 Aurora 客户端：自动应答 confirm.resolve（ok）/ ask.resolve（settled:false）/ ping */
+  function hConnectAutoClient(token: string, clientId: string): Promise<WebSocket> {
+    return new Promise((resolveOpen, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${hPort}/api/client`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as {
+          type: string
+          cmd?: { kind: string; requestId: string }
+        }
+        if (msg.type === 'welcome') {
+          resolveOpen(ws)
+          return
+        }
+        if (msg.type === 'ping') ws.send(JSON.stringify({ type: 'pong' }))
+        if (msg.type === 'cmd' && msg.cmd?.kind === 'confirm.resolve') {
+          ws.send(JSON.stringify({ type: 'result', requestId: msg.cmd.requestId, ok: true }))
+        }
+        if (msg.type === 'cmd' && msg.cmd?.kind === 'ask.resolve') {
+          ws.send(
+            JSON.stringify({
+              type: 'result',
+              requestId: msg.cmd.requestId,
+              ok: true,
+              data: { settled: false },
+            }),
+          )
+        }
+      })
+      ws.on('open', () => {
+        ws.send(
+          JSON.stringify({
+            type: 'hello',
+            hello: {
+              clientId,
+              name: clientId,
+              version: '0.7.0',
+              platform: 'win32',
+              mode: 'work',
+              capabilities: { session: true, remoteConfig: true, fileTransfer: true },
+            },
+          }),
+        )
+      })
+      ws.on('error', reject)
+      ws.on('close', () => reject(new Error('客户端连接被拒')))
+    })
+  }
+
+  async function hClientToken(
+    username: string,
+    password: string,
+    clientId: string,
+  ): Promise<string> {
+    const res = await fetch(`${hBase}/api/client/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, clientId }),
+    })
+    expect(res.status).toBe(200)
+    return ((await res.json()) as { token: string }).token
+  }
+
+  const settle = (ms = 50): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+  beforeAll(async () => {
+    prevSecret = process.env['AURORA_CENTER_SECRET']
+    process.env['AURORA_CENTER_SECRET'] = 'harmony-test-secret'
+    const dataDir = await mkdtemp(join(tmpdir(), 'aurora-center-harmony-'))
+    const { AuthStore } = await import('./auth.js')
+    const boot = new AuthStore({ dataDir })
+    await boot.init()
+    await boot.createUser({ ...ADMIN, role: 'admin' })
+    await boot.createUser({ ...USER, role: 'user' })
+    hServer = createCenterServer({ dataDir, pushSender: fakeSender })
+    const { port: actual } = await hServer.listen(0, '127.0.0.1')
+    hPort = actual
+    hBase = `http://127.0.0.1:${actual}`
+    // 启用推送通道（注入发送器后不需要 AGC 私钥）
+    const admin = await hLogin(ADMIN)
+    const enabled = await fetch(`${hBase}/api/admin/push`, {
+      method: 'PUT',
+      headers: hJson(admin.token, { enabled: true }),
+      body: JSON.stringify({ enabled: true }),
+    })
+    expect(enabled.status).toBe(200)
+  }, 20_000)
+
+  afterAll(async () => {
+    await hServer.close()
+    if (prevSecret === undefined) delete process.env['AURORA_CENTER_SECRET']
+    else process.env['AURORA_CENTER_SECRET'] = prevSecret
+  })
+
+  it('持久登录 → refresh 轮换（旧令牌失效）→ logout 级联', async () => {
+    const session = await hLogin({
+      ...USER,
+      persistent: true,
+      deviceName: '我的手机',
+      client: 'harmony',
+    })
+    expect(session.persistent).toBe(true)
+    expect(session.expiresAt).toBeDefined()
+    const me = await fetch(`${hBase}/api/me`, { headers: authed(session.token) })
+    expect(me.status).toBe(200)
+
+    const refreshed = await fetch(`${hBase}/api/auth/refresh`, {
+      method: 'POST',
+      headers: authed(session.token),
+    })
+    expect(refreshed.status).toBe(200)
+    const fresh = (await refreshed.json()) as { token: string; persistent: boolean }
+    expect(fresh.persistent).toBe(true)
+    expect(fresh.token).not.toBe(session.token)
+    // 旧令牌立即失效
+    expect((await fetch(`${hBase}/api/me`, { headers: authed(session.token) })).status).toBe(401)
+    expect((await fetch(`${hBase}/api/me`, { headers: authed(fresh.token) })).status).toBe(200)
+    // 临时会话不能 refresh
+    const ephemeral = await hLogin(USER)
+    const badRefresh = await fetch(`${hBase}/api/auth/refresh`, {
+      method: 'POST',
+      headers: authed(ephemeral.token),
+    })
+    expect(badRefresh.status).toBe(400)
+
+    const logout = await fetch(`${hBase}/api/auth/logout`, {
+      method: 'POST',
+      headers: authed(fresh.token),
+    })
+    expect(logout.status).toBe(200)
+    expect((await fetch(`${hBase}/api/me`, { headers: authed(fresh.token) })).status).toBe(401)
+  })
+
+  it('推送登记 upsert / 偏好 / 参数校验；未配置通道回 503', async () => {
+    const session = await hLogin({ ...USER, persistent: true, client: 'harmony' })
+    const first = await fetch(`${hBase}/api/push/register`, {
+      method: 'POST',
+      headers: hJson(session.token, {
+        platform: 'harmony',
+        token: 'tok-upsert',
+        deviceName: '手机',
+      }),
+      body: JSON.stringify({ platform: 'harmony', token: 'tok-upsert', deviceName: '手机' }),
+    })
+    expect(first.status).toBe(200)
+    const firstId = ((await first.json()) as { id: string }).id
+    const second = await fetch(`${hBase}/api/push/register`, {
+      method: 'POST',
+      headers: hJson(session.token, {}),
+      body: JSON.stringify({ platform: 'harmony', token: 'tok-upsert' }),
+    })
+    expect(((await second.json()) as { id: string }).id).toBe(firstId)
+    const bad = await fetch(`${hBase}/api/push/register`, {
+      method: 'POST',
+      headers: hJson(session.token, {}),
+      body: JSON.stringify({ platform: 'android', token: 'x' }),
+    })
+    expect(bad.status).toBe(400)
+
+    const prefs = await fetch(`${hBase}/api/me/notification-prefs`, {
+      headers: authed(session.token),
+    })
+    expect(await prefs.json()).toEqual({ confirm: true, ask: true, file: true, sessionDone: false })
+    const updated = await fetch(`${hBase}/api/me/notification-prefs`, {
+      method: 'PUT',
+      headers: hJson(session.token, {}),
+      body: JSON.stringify({ sessionDone: true }),
+    })
+    expect(await updated.json()).toEqual({
+      confirm: true,
+      ask: true,
+      file: true,
+      sessionDone: true,
+    })
+
+    // 主测试服务器未配置推送通道 → 503（降级口径）
+    const mainSession = await login(USER)
+    const unavailable = await fetch(`${base}/api/push/register`, {
+      method: 'POST',
+      headers: hJson(mainSession.token, {}),
+      body: JSON.stringify({ platform: 'harmony', token: 'tok-x' }),
+    })
+    expect(unavailable.status).toBe(503)
+    expect(((await unavailable.json()) as { error: string }).error).toBe('E_PUSH_UNAVAILABLE')
+  })
+
+  it('待办快照 + REST 快捷批复 + 推送投递（含 ask 已结算 409）', async () => {
+    const session = await hLogin({ ...USER, persistent: true, client: 'harmony' })
+    await fetch(`${hBase}/api/push/register`, {
+      method: 'POST',
+      headers: hJson(session.token, {}),
+      body: JSON.stringify({ platform: 'harmony', token: 'tok-flow' }),
+    })
+    const clientToken = await hClientToken(USER.username, USER.password, 'h-c1')
+    const client = await hConnectAutoClient(clientToken, 'h-c1')
+    const confirmId = 'cf-flow-1'
+    client.send(
+      JSON.stringify({
+        type: 'confirm.request',
+        request: {
+          confirmId,
+          sessionId: 'center-flow',
+          toolName: 'run_command',
+          input: { command: 'echo hi' },
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      }),
+    )
+    await settle()
+    // 推送已投递（载荷只有路由字段，不含工具入参）
+    const confirmPush = pushed.find(
+      (entry) => entry.kind === 'confirm' && entry.tokens.includes('tok-flow'),
+    )
+    expect(confirmPush).toBeDefined()
+
+    const pending = await fetch(`${hBase}/api/pending`, { headers: authed(session.token) })
+    const snapshot = (await pending.json()) as {
+      confirms: Array<{ request: { confirmId: string } }>
+    }
+    expect(snapshot.confirms.some((entry) => entry.request.confirmId === confirmId)).toBe(true)
+
+    // REST 批复：假客户端回 ok → 200；快照摘除
+    const resolved = await fetch(`${hBase}/api/confirm/resolve`, {
+      method: 'POST',
+      headers: hJson(session.token, {}),
+      body: JSON.stringify({ clientId: 'h-c1', confirmId, approved: true }),
+    })
+    expect(resolved.status).toBe(200)
+    const after = (await (
+      await fetch(`${hBase}/api/pending`, { headers: authed(session.token) })
+    ).json()) as {
+      confirms: Array<{ request: { confirmId: string } }>
+    }
+    expect(after.confirms.some((entry) => entry.request.confirmId === confirmId)).toBe(false)
+
+    // 不存在的客户端 → 404；越权 → 403（管理员建个陌生人）
+    const admin = await hLogin(ADMIN)
+    const strangerRes = await fetch(`${hBase}/api/admin/users`, {
+      method: 'POST',
+      headers: hJson(admin.token, {}),
+      body: JSON.stringify({ username: 'stranger', password: 'stranger-pass-1', role: 'user' }),
+    })
+    expect(strangerRes.status).toBe(200)
+    const stranger = await hLogin({ username: 'stranger', password: 'stranger-pass-1' })
+    expect(
+      (
+        await fetch(`${hBase}/api/confirm/resolve`, {
+          method: 'POST',
+          headers: hJson(session.token, {}),
+          body: JSON.stringify({ clientId: 'h-c-off', confirmId: 'x', approved: true }),
+        })
+      ).status,
+    ).toBe(404)
+    expect(
+      (
+        await fetch(`${hBase}/api/confirm/resolve`, {
+          method: 'POST',
+          headers: hJson(stranger.token, {}),
+          body: JSON.stringify({ clientId: 'h-c1', confirmId: 'x', approved: true }),
+        })
+      ).status,
+    ).toBe(403)
+    expect(
+      (await fetch(`${hBase}/api/pending?clientId=h-c1`, { headers: authed(stranger.token) }))
+        .status,
+    ).toBe(403)
+
+    // ask 已结算（假客户端回 settled:false）→ 409 E_ALREADY_SETTLED
+    client.send(
+      JSON.stringify({
+        type: 'ask.request',
+        request: {
+          requestId: 'ask-flow-1',
+          sessionId: 'center-flow',
+          question: '选哪个？',
+          multiSelect: false,
+          expiresAt: Date.now() + 180_000,
+        },
+      }),
+    )
+    await settle()
+    const askResolved = await fetch(`${hBase}/api/ask/resolve`, {
+      method: 'POST',
+      headers: hJson(session.token, {}),
+      body: JSON.stringify({
+        clientId: 'h-c1',
+        sessionId: 'center-flow',
+        requestId: 'ask-flow-1',
+        answers: ['A'],
+      }),
+    })
+    expect(askResolved.status).toBe(409)
+    expect(((await askResolved.json()) as { error: string }).error).toBe('E_ALREADY_SETTLED')
+    client.close()
+  })
+
+  it('web.hello 在线抑制：手机在线不推送，下线后恢复推送', async () => {
+    const session = await hLogin({ ...USER, persistent: true, client: 'harmony' })
+    await fetch(`${hBase}/api/push/register`, {
+      method: 'POST',
+      headers: hJson(session.token, {}),
+      body: JSON.stringify({ platform: 'harmony', token: 'tok-suppress' }),
+    })
+    const clientToken = await hClientToken(USER.username, USER.password, 'h-c2')
+    const client = await hConnectAutoClient(clientToken, 'h-c2')
+
+    const app = new WebSocket(`ws://127.0.0.1:${hPort}/api/ws?token=${session.token}`)
+    await new Promise<void>((resolveOpen, reject) => {
+      app.on('open', () => resolveOpen())
+      app.on('error', reject)
+    })
+    app.send(JSON.stringify({ type: 'web.hello', client: 'harmony', appVersion: '1.0.0' }))
+    await settle()
+
+    const before = pushed.length
+    client.send(
+      JSON.stringify({
+        type: 'confirm.request',
+        request: {
+          confirmId: 'cf-suppress',
+          sessionId: 'center-s2',
+          toolName: 'run_command',
+          input: {},
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      }),
+    )
+    await settle()
+    // tok-suppress 的手机在线 → 不应收到推送（管理员也没有登记设备，pushed 不增长）
+    expect(pushed.slice(before).some((entry) => entry.tokens.includes('tok-suppress'))).toBe(false)
+
+    app.close()
+    await settle()
+    client.send(
+      JSON.stringify({
+        type: 'confirm.request',
+        request: {
+          confirmId: 'cf-after',
+          sessionId: 'center-s2',
+          toolName: 'run_command',
+          input: {},
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      }),
+    )
+    await settle()
+    expect(
+      pushed.some((entry) => entry.kind === 'confirm' && entry.tokens.includes('tok-suppress')),
+    ).toBe(true)
+    client.close()
+  })
+
+  it('管理端：会话列表 / 吊销级联；推送配置私钥只写不回显', async () => {
+    const admin = await hLogin(ADMIN)
+    const session = await hLogin({
+      ...USER,
+      persistent: true,
+      deviceName: '待吊销',
+      client: 'harmony',
+    })
+    await fetch(`${hBase}/api/push/register`, {
+      method: 'POST',
+      headers: hJson(session.token, {}),
+      body: JSON.stringify({ platform: 'harmony', token: 'tok-revoke' }),
+    })
+    const list = await fetch(`${hBase}/api/admin/sessions`, { headers: authed(admin.token) })
+    const sessions = ((await list.json()) as { sessions: Array<{ id: string; label: string }> })
+      .sessions
+    const target = sessions.find((entry) => entry.label === '待吊销')
+    expect(target).toBeDefined()
+    expect(JSON.stringify(sessions)).not.toContain(session.token)
+
+    const revoked = await fetch(`${hBase}/api/admin/sessions/${target?.id}`, {
+      method: 'DELETE',
+      headers: authed(admin.token),
+    })
+    expect(revoked.status).toBe(200)
+    expect((await fetch(`${hBase}/api/me`, { headers: authed(session.token) })).status).toBe(401)
+
+    // 推送配置：私钥只写不回显
+    const pem = '-----BEGIN PRIVATE KEY-----harmony-test-----END PRIVATE KEY-----'
+    const put = await fetch(`${hBase}/api/admin/push`, {
+      method: 'PUT',
+      headers: hJson(admin.token, {}),
+      body: JSON.stringify({ projectId: 'p1', keyId: 'k1', subAccount: 's1', privateKey: pem }),
+    })
+    expect(put.status).toBe(200)
+    const view = (await put.json()) as { keySet: boolean }
+    expect(view.keySet).toBe(true)
+    expect(JSON.stringify(view)).not.toContain('harmony-test')
+    const get = await fetch(`${hBase}/api/admin/push`, { headers: authed(admin.token) })
+    expect(JSON.stringify(await get.json())).not.toContain('harmony-test')
+    // 非管理员 403
+    const user = await hLogin(USER)
+    expect((await fetch(`${hBase}/api/admin/push`, { headers: authed(user.token) })).status).toBe(
+      403,
+    )
+    expect(
+      (await fetch(`${hBase}/api/admin/sessions`, { headers: authed(user.token) })).status,
+    ).toBe(403)
+  })
+})

@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto'
 import {
   CENTER_INPUT_ATTACHMENT_LIMIT,
   CENTER_INPUT_IMAGE_MAX_BYTES,
+  CENTER_PENDING_SNAPSHOT_LIMIT,
   CENTER_PLUGIN_CALL_MAX_BYTES,
   CENTER_PLUGIN_CALL_PER_SECOND,
   CENTER_PLUGIN_EVENT_MAX_BYTES,
@@ -23,15 +24,18 @@ import {
   type AskUserRequestPayload,
   type CenterClientMessage,
   type CenterCommand,
+  type CenterPendingSnapshot,
   type CenterServerMessage,
   type CenterWebMessage,
   type CenterWebServerMessage,
   type ClientInfo,
   type ClientStatus,
+  type ConfirmRequestPayload,
 } from '@aurora/shared'
 import type { UserRecord } from './auth.js'
 import type { ClientRegistry } from './clients.js'
 import type { Logger } from '@aurora/shared'
+import type { PushNotification } from './push.js'
 
 export interface ClientConn {
   clientId: string
@@ -43,6 +47,11 @@ export interface WebConn {
   id: string
   user: Pick<UserRecord, 'id' | 'username' | 'role'>
   send(message: CenterWebServerMessage): void
+  /**
+   * 连接标识（鸿蒙遥控台接入，docs/12 §15.4）：`web.hello` 首帧把手机连接标成
+   * `'harmony'`；缺省 / 旧网页 = `'web'`。推送在线抑制只看 harmony 连接。
+   */
+  clientKind?: 'web' | 'harmony'
 }
 
 export interface HubDeps {
@@ -50,6 +59,16 @@ export interface HubDeps {
   usernameOf(userId: string): string
   serverVersion(): string
   logger?: Logger
+  /**
+   * 推送投递（docs/12 §15.3）：收方集合由 hub 按既有路由算好并做 harmony 在线抑制，
+   * 偏好 / 限速 / 设备解析在 PushService 内。未注入 = 无推送（老装配器兼容）。
+   */
+  push?: { notify(userIds: string[], notification: PushNotification): void }
+  /**
+   * 某客户端的推送收方（属主 + 全部管理员，**含离线的**——WS 路由只发在线连接，
+   * 推送恰恰要发给不在线的人）。未注入 = 无推送。
+   */
+  pushRecipients?: (clientId: string) => string[]
   /**
    * 查暂存文件（`file.send` 与 `session.input` 的附件校验共用，docs/12 §5）：
    * 服务器据此在转发前补齐 `name` / `size`，并校验附件归属与大小。
@@ -221,6 +240,18 @@ export class Hub {
     { clientId: string; sessionId: string; request: AskUserRequestPayload }
   >()
   /**
+   * confirmId → 未过期的确认卡（鸿蒙遥控台接入，docs/12 §15.4）。
+   *
+   * 与 pendingAsks 同款只存内存，但**不向网页端回放**（确认卡 60s 窗口短，
+   * 「网页刷新不回放」是既有行为，保持不变）——只供 `GET /api/pending` 给 App
+   * 冷启动对账：推送唤醒时进程是冷的，WS 回放之外还需要一次 REST 拉齐。
+   * 客户端本地结算不上行（确认卡无 settled 通道），按 expiresAt 自然过期清扫。
+   */
+  private readonly pendingConfirms = new Map<
+    string,
+    { clientId: string; sessionId: string; request: ConfirmRequestPayload; expiresAtMs: number }
+  >()
+  /**
    * 插件面板订阅（docs/12 §6.5）：网页连接 → 订阅键集合；订阅键 → 引用计数 + 目标。
    * 引用计数跨页签共享 —— 只在第一个页签订阅时向客户端下发 `plugin.subscribe`，
    * 最后一个退订 / 断线时才下发 `plugin.unsubscribe`。
@@ -312,6 +343,11 @@ export class Hub {
 
   handleWebMessage(conn: WebConn, message: CenterWebMessage): void {
     switch (message.type) {
+      case 'web.hello':
+        // 连接标识（docs/12 §15.4）：只允许把连接标成 harmony（手机 App 首帧）；
+        // 畸形 / 未知取值忽略，缺省仍是 web。无回执（标识类消息，不是命令）。
+        if (message.client === 'harmony') conn.clientKind = 'harmony'
+        break
       case 'session.create':
         this.handleSessionCreate(conn, message.clientId, message.requestId)
         break
@@ -354,6 +390,8 @@ export class Hub {
       case 'confirm.resolve':
         // 确认卡批复：授权与离线判定同其他命令；客户端的 result 回执走通用 pending
         // 通道转回网页端（网页端 requestId 保持不变）。
+        // 批复即从待办快照摘除（docs/12 §15.4；客户端本地结算不上行，靠过期清扫兜底）。
+        this.pendingConfirms.delete(message.confirmId)
         this.forwardCommand(conn, message.clientId, {
           kind: 'confirm.resolve',
           requestId: message.requestId,
@@ -976,6 +1014,23 @@ export class Hub {
             event: message.event,
           })
         }
+        // 任务完成 / 出错推送（docs/12 §15.3）：**仅会话创建者**（sessionOwners 记账），
+        // 不发给全体管理员（避免spam）；偏好 sessionDone 默认关。未记账的会话不推。
+        const eventType = (message.event as { type?: unknown } | undefined)?.type
+        if (eventType === 'done' || eventType === 'error') {
+          const creator = this.sessionOwners.get(message.sessionId)?.userId
+          if (creator !== undefined) {
+            const clientName = this.deps.clients.get(clientId)?.name ?? clientId
+            this.pushNotify([creator], {
+              kind: eventType,
+              title: eventType === 'done' ? '任务完成' : '任务出错',
+              body: `${clientName}：远程会话已${eventType === 'done' ? '完成' : '出错'}`,
+              collapseKey: `aurora-${eventType}-${message.sessionId}`,
+              ttlMs: 3600_000,
+              data: { kind: eventType, clientId, sessionId: message.sessionId },
+            })
+          }
+        }
         break
       }
       case 'confirm.request': {
@@ -989,6 +1044,21 @@ export class Hub {
         if (!isRecord(message.request)) return
         const record = this.deps.clients.get(clientId)
         if (record === undefined) return
+        const confirmRequest = message.request as unknown as ConfirmRequestPayload
+        // 待办快照登记（docs/12 §15.4）：只供 App 冷启动对账，不向网页回放
+        const confirmExpiresMs = Date.parse(confirmRequest.expiresAt)
+        if (
+          typeof confirmRequest.confirmId === 'string' &&
+          Number.isFinite(confirmExpiresMs) &&
+          confirmExpiresMs > Date.now()
+        ) {
+          this.pendingConfirms.set(confirmRequest.confirmId, {
+            clientId,
+            sessionId: typeof confirmRequest.sessionId === 'string' ? confirmRequest.sessionId : '',
+            request: confirmRequest,
+            expiresAtMs: confirmExpiresMs,
+          })
+        }
         for (const web of this.webConns.values()) {
           if (web.user.role !== 'admin' && web.user.id !== record.ownerUserId) continue
           web.send({
@@ -998,6 +1068,23 @@ export class Hub {
             request: message.request,
           })
         }
+        // 推送（docs/12 §15.3）：TTL 对齐 60s 窗口剩余，离线缓存过期即丢
+        this.pushNotify(this.recipientsOf(clientId), {
+          kind: 'confirm',
+          title: 'Aurora 请求确认',
+          body: `${record.name}：敏感操作待批准`,
+          collapseKey: `aurora-confirm-${String(confirmRequest.confirmId ?? '')}`,
+          ttlMs: Number.isFinite(confirmExpiresMs)
+            ? Math.max(1000, confirmExpiresMs - Date.now())
+            : 60_000,
+          data: {
+            kind: 'confirm',
+            clientId,
+            sessionId: typeof confirmRequest.sessionId === 'string' ? confirmRequest.sessionId : '',
+            confirmId: String(confirmRequest.confirmId ?? ''),
+            expiresAt: String(confirmRequest.expiresAt ?? ''),
+          },
+        })
         break
       }
       case 'ask.request': {
@@ -1021,6 +1108,21 @@ export class Hub {
             request,
           })
         }
+        // 推送（docs/12 §15.3）：TTL 对齐 180s 窗口剩余（expiresAt 是毫秒时间戳）
+        this.pushNotify(this.recipientsOf(clientId), {
+          kind: 'ask',
+          title: 'Aurora 向你提问',
+          body: `${record.name}：等待你的回答`,
+          collapseKey: `aurora-ask-${request.requestId}`,
+          ttlMs: Math.max(1000, request.expiresAt - Date.now()),
+          data: {
+            kind: 'ask',
+            clientId,
+            sessionId,
+            requestId: request.requestId,
+            expiresAt: String(request.expiresAt),
+          },
+        })
         break
       }
       case 'ask.settled': {
@@ -1127,6 +1229,143 @@ export class Hub {
         at: record.at,
       })
     }
+    // 推送（docs/12 §15.3）：文件名进正文（用户自己的数据，属主可见面不变）
+    const clientName = this.deps.clients.get(record.clientId)?.name ?? record.clientId
+    this.pushNotify(this.recipientsOf(record.clientId), {
+      kind: 'file',
+      title: '收到文件',
+      body: `${clientName}：${record.name}`,
+      collapseKey: `aurora-file-${record.fileId}`,
+      ttlMs: 3600_000,
+      data: { kind: 'file', clientId: record.clientId, fileId: record.fileId },
+    })
+  }
+
+  // ─────────────── 鸿蒙遥控台接入（docs/12 §15）───────────────
+
+  /** 推送收方：属主 + 全部管理员（含离线）；依赖未注入 = 空集（无推送） */
+  private recipientsOf(clientId: string): string[] {
+    return this.deps.pushRecipients?.(clientId) ?? []
+  }
+
+  /**
+   * 推送投递的统一入口：**harmony 在线抑制**（收方此刻有手机活连接 → WS 已直投，
+   * 不再发系统推送；PC 网页在线不抑制）+ 异常兜底（推送绝不影响 WS 主链路）。
+   */
+  private pushNotify(userIds: string[], notification: PushNotification): void {
+    if (this.deps.push === undefined || userIds.length === 0) return
+    try {
+      const harmonyOnline = new Set<string>()
+      for (const web of this.webConns.values()) {
+        if (web.clientKind === 'harmony') harmonyOnline.add(web.user.id)
+      }
+      const targets = userIds.filter((userId) => !harmonyOnline.has(userId))
+      if (targets.length === 0) return
+      this.deps.push.notify(targets, notification)
+    } catch (error) {
+      this.deps.logger?.warn('推送钩子失败', { kind: notification.kind, error: String(error) })
+    }
+  }
+
+  /**
+   * 待办快照（GET /api/pending，docs/12 §15.4）：未过期的确认卡 + 提问卡，
+   * 属主 + 管理员口径同 buildClientInfos；供 App 冷启动对账（网页端行为不变）。
+   * 带 clientId 时先校验可见性；总量上限 CENTER_PENDING_SNAPSHOT_LIMIT。
+   */
+  pendingSnapshot(
+    user: Pick<UserRecord, 'id' | 'role'>,
+    clientId?: string,
+  ): { ok: true; snapshot: CenterPendingSnapshot } | { ok: false; error: string } {
+    if (clientId !== undefined && clientId !== '') {
+      const record = this.deps.clients.get(clientId)
+      if (record === undefined) return { ok: false, error: 'E_CLIENT_NOT_FOUND' }
+      if (user.role !== 'admin' && record.ownerUserId !== user.id) {
+        return { ok: false, error: 'E_FORBIDDEN' }
+      }
+    }
+    const now = Date.now()
+    const visible = (ownerClientId: string): boolean => {
+      if (clientId !== undefined && clientId !== '' && ownerClientId !== clientId) return false
+      const record = this.deps.clients.get(ownerClientId)
+      if (record === undefined) return false
+      return user.role === 'admin' || record.ownerUserId === user.id
+    }
+    const snapshot: CenterPendingSnapshot = { confirms: [], asks: [] }
+    let total = 0
+    for (const [confirmId, entry] of [...this.pendingConfirms]) {
+      if (entry.expiresAtMs <= now) {
+        this.pendingConfirms.delete(confirmId)
+        continue
+      }
+      if (!visible(entry.clientId) || total >= CENTER_PENDING_SNAPSHOT_LIMIT) continue
+      snapshot.confirms.push({
+        clientId: entry.clientId,
+        sessionId: entry.sessionId,
+        request: entry.request,
+      })
+      total += 1
+    }
+    for (const [requestId, entry] of [...this.pendingAsks]) {
+      if (this.isExpired(entry.request.expiresAt)) {
+        this.pendingAsks.delete(requestId)
+        continue
+      }
+      if (!visible(entry.clientId) || total >= CENTER_PENDING_SNAPSHOT_LIMIT) continue
+      snapshot.asks.push({
+        clientId: entry.clientId,
+        sessionId: entry.sessionId,
+        request: entry.request,
+      })
+      total += 1
+    }
+    return { ok: true, snapshot }
+  }
+
+  /**
+   * REST 快捷批复通道（POST /api/confirm/resolve、/api/ask/resolve，docs/12 §15.5）：
+   * 挂一条**临时网页连接**走 handleWebMessage 既有管道（授权 / 离线 / 超时 / pending
+   * 配对全部复用，不另写一套），捕获 result 回执后立即摘除。
+   *
+   * 20s 兜底超时（正常路径由 forwardCommand 的 15s 定时器先回 E_CLIENT_TIMEOUT）；
+   * 临时连接不参与 registerWeb 的快照回放，也不登记插件订阅。
+   */
+  runRestCommand(
+    user: WebConn['user'],
+    message: CenterWebMessage,
+  ): Promise<CenterWebServerMessage> {
+    const id = `rest-${randomBytes(6).toString('hex')}`
+    const requestId = (message as { requestId?: unknown }).requestId
+    const fallbackId = typeof requestId === 'string' ? requestId : ''
+    return new Promise((resolve) => {
+      let settled = false
+      const cleanup = (): void => {
+        clearTimeout(timer)
+        this.webConns.delete(id)
+      }
+      const finish = (result: CenterWebServerMessage): void => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(result)
+      }
+      const timer = setTimeout(() => {
+        finish({ type: 'result', requestId: fallbackId, ok: false, error: 'E_CLIENT_TIMEOUT' })
+      }, 20_000)
+      const conn: WebConn = {
+        id,
+        user,
+        send: (m) => {
+          if (m.type === 'result') finish(m)
+        },
+      }
+      this.webConns.set(id, conn)
+      try {
+        this.handleWebMessage(conn, message)
+      } catch (error) {
+        this.deps.logger?.warn('REST 命令处理失败', { error: String(error) })
+        finish({ type: 'result', requestId: fallbackId, ok: false, error: 'E_INTERNAL' })
+      }
+    })
   }
 
   /** 网页端可见的客户端全量快照（在线状态 = 此刻有连接；属主或管理员可见）。 */
@@ -1198,6 +1437,10 @@ export class Hub {
     //（且客户端重连后是**新的** requestId，那条永远不会被对上）。
     for (const [requestId, entry] of this.pendingAsks) {
       if (entry.clientId === clientId) this.pendingAsks.delete(requestId)
+    }
+    // 待办快照同款清理（docs/12 §15.4）：客户端已断开，确认卡不会再有本地结算
+    for (const [confirmId, entry] of this.pendingConfirms) {
+      if (entry.clientId === clientId) this.pendingConfirms.delete(confirmId)
     }
   }
 }

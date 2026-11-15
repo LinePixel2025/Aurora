@@ -17,7 +17,12 @@ export interface SecretBox {
   decrypt(value: string): string
 }
 
-export function createSecretBox(secret: string | undefined): SecretBox {
+/**
+ * 主密钥派生。`purpose` 区分密钥用途（缺省 = 官方模型上游 API Key，历史口径不变）；
+ * 推送（docs/12 §15）用 `'push'` 另开 salt/info —— 同一主密钥、不同派生密钥，
+ * 一类密文泄露不牵连另一类。
+ */
+export function createSecretBox(secret: string | undefined, purpose?: 'push'): SecretBox {
   const master = (secret ?? '').trim()
   if (master === '') {
     return {
@@ -30,8 +35,10 @@ export function createSecretBox(secret: string | undefined): SecretBox {
       },
     }
   }
+  const salt = purpose === 'push' ? 'aurora-center:push:v1' : HKDF_SALT
+  const info = purpose === 'push' ? 'aurora-center:push-secret' : HKDF_INFO
   const key = Buffer.from(
-    hkdfSync('sha256', Buffer.from(master, 'utf8'), Buffer.from(HKDF_SALT), HKDF_INFO, 32),
+    hkdfSync('sha256', Buffer.from(master, 'utf8'), Buffer.from(salt), info, 32),
   )
   return {
     available: true,

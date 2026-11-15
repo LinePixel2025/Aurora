@@ -10,12 +10,14 @@
  * `401 {"error":...}`；WS 在升级期 / hello 期直接关闭。
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { randomBytes } from 'node:crypto'
 import { createReadStream, promises as fs } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type {
   CenterServerMessage,
   CenterOfficialCapability,
+  CenterWebServerMessage,
   ClientStatus,
   FileEntryInfo,
   Logger,
@@ -32,6 +34,7 @@ import { ModelServicesStore } from './model-services.js'
 import { ReleaseStore } from './releases.js'
 import { PluginStore } from './plugins.js'
 import { injectPluginPageBridge, pluginPageCsp, sanitizeRequestHost } from './plugin-page.js'
+import { PushError, PushService, type PushSender } from './push.js'
 import { createSecretBox } from './secrets.js'
 import { UsageStore } from './usage.js'
 import { serverVersion } from './version.js'
@@ -43,6 +46,8 @@ export interface CenterServerOptions {
   /** 单个上传文件上限（字节，默认 512 MB；客户端配置另有更小的 `center.maxFileMb`） */
   maxFileBytes?: number
   logger?: Logger
+  /** 推送发送器注入（单测用假实现；缺省按 push-config.json 构造 AGC 发送器，docs/12 §15） */
+  pushSender?: PushSender
 }
 
 export interface RunningCenterServer {
@@ -96,6 +101,8 @@ export const AUTH_RATE_LIMITS = {
   register: { max: 10, windowMs: 60_000 },
   /** 设备授权 start（无需登录，防刷挑战表） */
   deviceStart: { max: 30, windowMs: 60_000 },
+  /** 持久会话轮换（docs/12 §15.1）：不校验密码，单独一把；成功与失败都算一次 */
+  refresh: { max: 60, windowMs: 60_000 },
 } as const
 
 /** 限速超限的回执（HTTP 429；WS 侧不涉及） */
@@ -224,6 +231,14 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
   })
   const device = new DeviceAuthStore({ logger })
   const secretBox = createSecretBox(process.env['AURORA_CENTER_SECRET'])
+  // 鸿蒙遥控台推送（docs/12 §15）：与官方模型共用主密钥、另开派生用途；
+  // 主密钥缺失 / 未配置 AGC 时 available=false，服务器照常运行（降级口径同官方模型）
+  const push = new PushService({
+    dataDir: options.dataDir,
+    secrets: createSecretBox(process.env['AURORA_CENTER_SECRET'], 'push'),
+    logger,
+    ...(options.pushSender === undefined ? {} : { sender: options.pushSender }),
+  })
   const modelServices = new ModelServicesStore({
     dataDir: options.dataDir,
     secrets: secretBox,
@@ -252,6 +267,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     login: new SlidingWindowLimiter(AUTH_RATE_LIMITS.login),
     register: new SlidingWindowLimiter(AUTH_RATE_LIMITS.register),
     deviceStart: new SlidingWindowLimiter(AUTH_RATE_LIMITS.deviceStart),
+    refresh: new SlidingWindowLimiter(AUTH_RATE_LIMITS.refresh),
   }
   const hub = new Hub({
     clients,
@@ -264,6 +280,17 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       return record === undefined
         ? undefined
         : { clientId: record.clientId, name: record.name, size: record.size }
+    },
+    // 推送（docs/12 §15.3）：收方 = 属主 + 全部管理员（含离线）；hub 再做 harmony 在线抑制
+    push,
+    pushRecipients: (clientId) => {
+      const ids = new Set<string>()
+      const owner = clients.get(clientId)?.ownerUserId
+      if (owner !== undefined) ids.add(owner)
+      for (const account of auth.listUsers()) {
+        if (account.role === 'admin') ids.add(account.id)
+      }
+      return [...ids]
     },
   })
 
@@ -507,6 +534,8 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       id: `w-${webConnSeq}`,
       user: { id: user.id, username: user.username, role: user.role },
       send: (message) => ws.send(JSON.stringify(message)),
+      // 缺省 web；鸿蒙 App 连上后发 web.hello 首帧把自己标成 harmony（docs/12 §15.4）
+      clientKind: 'web',
     }
     hub.registerWeb(conn)
     watchSocketErrors(ws, () => ({ webConnId: conn.id, userId: conn.user.id }))
@@ -556,6 +585,20 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         sendJson(res, 401, { error: '用户名或密码不正确' })
         return
       }
+      // 持久会话（docs/12 §15.1，鸿蒙 App）：additive 扩展，不带 persistent = 行为不变
+      if (body['persistent'] === true) {
+        const session = await auth.createPersistentSession(user.id, {
+          label: typeof body['deviceName'] === 'string' ? body['deviceName'] : '',
+          clientKind: body['client'] === 'harmony' ? 'harmony' : 'web',
+        })
+        sendJson(res, 200, {
+          token: session.token,
+          user: { id: user.id, username: user.username, role: user.role },
+          expiresAt: session.expiresAt,
+          persistent: true,
+        })
+        return
+      }
       sendJson(res, 200, {
         token: auth.createWebSession(user.id),
         user: { id: user.id, username: user.username, role: user.role },
@@ -583,6 +626,20 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
           String(body['username'] ?? ''),
           String(body['password'] ?? ''),
         )
+        // 注册即登录同样支持持久会话（docs/12 §15.1；App 可在注册页直接勾选）
+        if (body['persistent'] === true) {
+          const session = await auth.createPersistentSession(user.id, {
+            label: typeof body['deviceName'] === 'string' ? body['deviceName'] : '',
+            clientKind: body['client'] === 'harmony' ? 'harmony' : 'web',
+          })
+          sendJson(res, 200, {
+            token: session.token,
+            user: { id: user.id, username: user.username, role: user.role },
+            expiresAt: session.expiresAt,
+            persistent: true,
+          })
+          return
+        }
         sendJson(res, 200, {
           token: auth.createWebSession(user.id),
           user: { id: user.id, username: user.username, role: user.role },
@@ -868,6 +925,165 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       sendJson(res, 200, { id: user.id, username: user.username, role: user.role })
       return
     }
+
+    // ── 鸿蒙遥控台接入（docs/12 §15）：持久会话 / 推送 / 待办快照 / 快捷批复 ──
+
+    // 持久会话轮换（§15.1）：旧令牌立即失效、TTL 重置；临时会话回 400
+    if (path === '/api/auth/refresh' && req.method === 'POST') {
+      const rateKey = sourceKeyOf(req)
+      if (limiters.refresh.exceeded(rateKey)) {
+        sendJson(res, 429, { error: RATE_LIMITED_ERROR })
+        return
+      }
+      limiters.refresh.record(rateKey)
+      const rawToken = bearerOf(req) || url.searchParams.get('token') || ''
+      const refreshed = await auth.refreshPersistentSession(rawToken)
+      if (refreshed === undefined) {
+        sendJson(res, 400, { error: 'E_NOT_PERSISTENT' })
+        return
+      }
+      sendJson(res, 200, {
+        token: refreshed.token,
+        user: { id: user.id, username: user.username, role: user.role },
+        expiresAt: refreshed.expiresAt,
+        persistent: true,
+      })
+      return
+    }
+
+    // 登出（§15.1）：服务端删会话 + 级联清该会话的推送登记（网页端原先只清 localStorage）
+    if (path === '/api/auth/logout' && req.method === 'POST') {
+      const rawToken = bearerOf(req) || url.searchParams.get('token') || ''
+      auth.dropWebSession(rawToken)
+      const sessionId = await auth.dropPersistentSessionByToken(rawToken)
+      if (sessionId !== undefined) await push.unregisterSession(sessionId)
+      sendJson(res, 200, { ok: true })
+      return
+    }
+
+    // 推送登记（§15.2）：按 (userId, token) upsert；绑定当前会话 id 供登出级联
+    if (path === '/api/push/register' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const rawToken = bearerOf(req) || url.searchParams.get('token') || ''
+      const sessionId = auth.persistentSessionOf(rawToken)?.id ?? ''
+      try {
+        const registered = await push.register(user.id, sessionId, {
+          platform: body['platform'] === 'harmony' ? 'harmony' : ('' as 'harmony'),
+          token: typeof body['token'] === 'string' ? body['token'] : '',
+          ...(typeof body['deviceName'] === 'string' ? { deviceName: body['deviceName'] } : {}),
+          ...(typeof body['appVersion'] === 'string' ? { appVersion: body['appVersion'] } : {}),
+        })
+        sendJson(res, 200, { ok: true, id: registered.id })
+      } catch (error) {
+        sendPushError(res, error)
+      }
+      return
+    }
+    if (path === '/api/push/unregister' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      await push.unregister(user.id, typeof body['token'] === 'string' ? body['token'] : '')
+      sendJson(res, 200, { ok: true })
+      return
+    }
+
+    // 通知偏好（§15.2）
+    if (path === '/api/me/notification-prefs' && req.method === 'GET') {
+      sendJson(res, 200, push.prefsOf(user.id))
+      return
+    }
+    if (path === '/api/me/notification-prefs' && req.method === 'PUT') {
+      const body = await readJsonBody(req)
+      try {
+        const prefs = await push.setPrefs(user.id, {
+          ...(body['confirm'] === undefined ? {} : { confirm: body['confirm'] as boolean }),
+          ...(body['ask'] === undefined ? {} : { ask: body['ask'] as boolean }),
+          ...(body['file'] === undefined ? {} : { file: body['file'] as boolean }),
+          ...(body['sessionDone'] === undefined
+            ? {}
+            : { sessionDone: body['sessionDone'] as boolean }),
+        })
+        sendJson(res, 200, prefs)
+      } catch (error) {
+        sendPushError(res, error)
+      }
+      return
+    }
+
+    // 待办快照（§15.4）：App 冷启动对账；网页端「确认卡不回放」行为不变
+    if (path === '/api/pending' && req.method === 'GET') {
+      const clientId = url.searchParams.get('clientId') ?? undefined
+      const result = hub.pendingSnapshot(user, clientId)
+      if (!result.ok) {
+        sendJson(res, result.error === 'E_CLIENT_NOT_FOUND' ? 404 : 403, { error: result.error })
+        return
+      }
+      sendJson(res, 200, result.snapshot)
+      return
+    }
+
+    // REST 快捷批复（§15.5）：通知栏动作直达，与 WS 同授权 / 同转发 / 先到先得
+    if (path === '/api/confirm/resolve' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const clientId = typeof body['clientId'] === 'string' ? body['clientId'] : ''
+      const confirmId = typeof body['confirmId'] === 'string' ? body['confirmId'] : ''
+      if (clientId === '' || confirmId === '') {
+        sendJson(res, 400, { error: 'E_INVALID_ARGUMENT' })
+        return
+      }
+      const result = await hub.runRestCommand(user, {
+        type: 'confirm.resolve',
+        requestId: `rest-${randomBytes(6).toString('hex')}`,
+        clientId,
+        confirmId,
+        approved: body['approved'] === true,
+      })
+      sendRestResult(res, result)
+      return
+    }
+    if (path === '/api/ask/resolve' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const clientId = typeof body['clientId'] === 'string' ? body['clientId'] : ''
+      const sessionId = typeof body['sessionId'] === 'string' ? body['sessionId'] : ''
+      const requestId = typeof body['requestId'] === 'string' ? body['requestId'] : ''
+      if (clientId === '' || requestId === '') {
+        sendJson(res, 400, { error: 'E_INVALID_ARGUMENT' })
+        return
+      }
+      const answersRaw = body['answers']
+      const answers =
+        Array.isArray(answersRaw) && answersRaw.every((item) => typeof item === 'string')
+          ? (answersRaw as string[])
+          : []
+      const matrixRaw = body['answersByQuestion']
+      const answersByQuestion =
+        Array.isArray(matrixRaw) &&
+        matrixRaw.every(
+          (group) => Array.isArray(group) && group.every((item) => typeof item === 'string'),
+        )
+          ? (matrixRaw as string[][])
+          : undefined
+      const result = await hub.runRestCommand(user, {
+        type: 'ask.resolve',
+        requestId,
+        clientId,
+        sessionId,
+        answers,
+        ...(answersByQuestion === undefined ? {} : { answersByQuestion }),
+        ...(body['skipped'] === true ? { skipped: true } : {}),
+      })
+      // 客户端已结算（先到先得）→ 409，通知栏动作据此提示「已失效」
+      if (
+        result.type === 'result' &&
+        result.ok &&
+        (result.data as { settled?: unknown } | undefined)?.settled === false
+      ) {
+        sendJson(res, 409, { error: 'E_ALREADY_SETTLED' })
+        return
+      }
+      sendRestResult(res, result)
+      return
+    }
+
     if (path === '/api/clients' && req.method === 'GET') {
       sendJson(res, 200, { clients: hub.buildClientInfos(user) })
       return
@@ -1148,6 +1364,57 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       }
       return
     }
+    // 持久会话管理（docs/12 §15.1）：查看 / 吊销（级联清推送登记）
+    if (path === '/api/admin/sessions' && req.method === 'GET') {
+      const userId = url.searchParams.get('userId') ?? undefined
+      sendJson(res, 200, { sessions: auth.listPersistentSessions(userId) })
+      return
+    }
+    const revokeSession = /^\/api\/admin\/sessions\/([^/]+)$/.exec(path)
+    if (revokeSession && req.method === 'DELETE') {
+      const revoked = await auth.revokePersistentSession(revokeSession[1] as string)
+      if (revoked === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      await push.unregisterSession(revoked.id)
+      sendJson(res, 200, { ok: true })
+      return
+    }
+
+    // 推送通道配置（docs/12 §15.6）：私钥只写不回显（keySet 标记，同官方模型 apiKeySet）
+    if (path === '/api/admin/push' && req.method === 'GET') {
+      sendJson(res, 200, push.adminConfig())
+      return
+    }
+    if (path === '/api/admin/push' && req.method === 'PUT') {
+      const body = await readJsonBody(req)
+      try {
+        const view = await push.updateConfig({
+          ...(body['enabled'] === undefined ? {} : { enabled: body['enabled'] as boolean }),
+          ...(typeof body['projectId'] === 'string' ? { projectId: body['projectId'] } : {}),
+          ...(typeof body['keyId'] === 'string' ? { keyId: body['keyId'] } : {}),
+          ...(typeof body['subAccount'] === 'string' ? { subAccount: body['subAccount'] } : {}),
+          ...(typeof body['category'] === 'string' ? { category: body['category'] } : {}),
+          ...(body['algorithm'] === 'RS256' || body['algorithm'] === 'PS256'
+            ? { algorithm: body['algorithm'] }
+            : {}),
+          ...(body['testMessage'] === undefined
+            ? {}
+            : { testMessage: body['testMessage'] as boolean }),
+          ...(body['privateKey'] === null
+            ? { privateKey: null }
+            : typeof body['privateKey'] === 'string'
+              ? { privateKey: body['privateKey'] }
+              : {}),
+        })
+        sendJson(res, 200, view)
+      } catch (error) {
+        sendPushError(res, error)
+      }
+      return
+    }
+
     if (path === '/api/admin/users' && req.method === 'GET') {
       sendJson(res, 200, { users: auth.listUsers() })
       return
@@ -1182,6 +1449,9 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       try {
         await auth.deleteUser(deleteUser[1] as string, user)
         await clients.removeByOwner(deleteUser[1] as string)
+        // 级联清理持久会话与推送登记（docs/12 §15.1）
+        await auth.dropPersistentSessionsByUser(deleteUser[1] as string)
+        await push.unregisterUser(deleteUser[1] as string)
         sendJson(res, 200, { ok: true })
       } catch (error) {
         sendAuthError(res, error)
@@ -1428,6 +1698,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     await usage.init()
     await releases.init()
     await plugins.init()
+    await push.init()
     allowRegistration = await readAllowRegistration(options.dataDir)
     // 启动清一次过期文件，之后每 15 分钟一轮（unref：不拦进程退出）
     await files.pruneExpired().catch((error) => {
@@ -1741,4 +2012,41 @@ function sendAuthError(res: ServerResponse, error: unknown): void {
         : 400
       : 500
   sendJson(res, status, { error: error instanceof Error ? error.message : String(error) })
+}
+
+/** 推送相关错误映射（docs/12 §15）：通道未配置 503 / 主密钥缺失 503 / 参数非法 400 */
+function sendPushError(res: ServerResponse, error: unknown): void {
+  if (error instanceof PushError) {
+    const status = error.code === 'E_INVALID_ARGUMENT' ? 400 : 503
+    sendJson(res, status, { error: error.code })
+    return
+  }
+  sendJson(res, 500, { error: 'E_INTERNAL' })
+}
+
+/**
+ * REST 快捷批复的回执映射（docs/12 §15.5）：hub.runRestCommand 捕获的 result
+ * 按错误码映射 HTTP 状态；成功回 200（data 原样带上，ask 的 settled 已在路由里先判）。
+ */
+function sendRestResult(res: ServerResponse, result: CenterWebServerMessage): void {
+  if (result.type !== 'result') {
+    sendJson(res, 502, { error: 'E_INTERNAL' })
+    return
+  }
+  if (result.ok) {
+    sendJson(res, 200, { ok: true, ...(result.data === undefined ? {} : { data: result.data }) })
+    return
+  }
+  const error = result.error ?? 'E_INTERNAL'
+  const status =
+    error === 'E_FORBIDDEN'
+      ? 403
+      : error === 'E_CLIENT_NOT_FOUND'
+        ? 404
+        : error === 'E_CLIENT_OFFLINE'
+          ? 503
+          : error === 'E_CLIENT_TIMEOUT'
+            ? 504
+            : 502
+  sendJson(res, status, { error })
 }

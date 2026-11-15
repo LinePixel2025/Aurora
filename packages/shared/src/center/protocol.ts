@@ -773,6 +773,12 @@ export type CenterWebMessage =
       pluginId: string
       panelId: string
     }
+  /**
+   * 网页端连接标识（鸿蒙遥控台接入，docs/12 §15.4）：连接后**可选**的第一帧。
+   * 旧网页不发 = 缺省 `'web'`；服务器据此区分手机 / 网页连接，做推送的在线抑制
+   * （用户有 harmony 活连接时不再发系统推送）。未知 type 忽略 = 旧服务器自然降级。
+   */
+  | { type: 'web.hello'; client: 'web' | 'harmony'; appVersion?: string }
 
 /** 服务器 → 网页 */
 export type CenterWebServerMessage =
@@ -905,3 +911,119 @@ export const CENTER_REMOTE_CONFIG_PREFIXES = [
   'agent.tools.open.enabled',
   'agent.tools.terminal.enabled',
 ] as const
+
+// ─────────────── 鸿蒙遥控台接入（docs/12 §15）───────────────
+// App 承担网页端角色：消费 §4.2 的网页协议面 + 下列移动运行环境适配接口。
+// 设备侧协议（CenterClientMessage / CenterCommand）零改动。
+
+/**
+ * 持久网页会话有效期（90 天）。App 每次启动且剩余 < 7 天时调 `POST /api/auth/refresh`
+ * 轮换续期；临时网页会话仍是内存 7 天（AuthStore.SESSION_TTL_MS），两者互不影响。
+ */
+export const CENTER_APP_SESSION_TTL_MS = 90 * 24 * 3600 * 1000
+
+/** 每用户持久会话上限（超限淘汰最旧，同 MAX_WEB_SESSIONS 思路） */
+export const CENTER_APP_SESSIONS_PER_USER = 10
+
+/** 每用户推送设备登记上限 */
+export const CENTER_PUSH_DEVICES_PER_USER = 10
+
+/** 待办快照（GET /api/pending）的总条数上限 */
+export const CENTER_PENDING_SNAPSHOT_LIMIT = 100
+
+/** 持久会话视图（管理端 / 登出级联用；**绝不含哈希**） */
+export interface CenterAppSessionView {
+  id: string
+  userId: string
+  label: string
+  clientKind: 'web' | 'harmony'
+  createdAt: string
+  expiresAt: string
+}
+
+/** 每用户通知偏好（缺省 confirm/ask/file 开、sessionDone 关） */
+export interface CenterNotificationPrefs {
+  /** 敏感工具确认卡（60s 窗口） */
+  confirm: boolean
+  /** 提问卡（180s 窗口） */
+  ask: boolean
+  /** 客户端上传文件到达 */
+  file: boolean
+  /** 远程会话完成 / 出错（仅会话创建者收） */
+  sessionDone: boolean
+}
+
+/** 推送设备登记请求（POST /api/push/register） */
+export interface CenterPushRegisterRequest {
+  platform: 'harmony'
+  /** pushService.getToken() 取得的 Push Token（长度会变化，不得固定判断） */
+  token: string
+  deviceName?: string
+  appVersion?: string
+}
+
+/** 待办快照条目：确认卡（request 为 ConfirmRequestPayload 原文） */
+export interface CenterPendingConfirm {
+  clientId: string
+  sessionId: string
+  request: ConfirmRequestPayload
+}
+
+/** 待办快照条目：提问卡（request 为 AskUserRequestPayload 原文） */
+export interface CenterPendingAsk {
+  clientId: string
+  sessionId: string
+  request: AskUserRequestPayload
+}
+
+/** GET /api/pending 的回包：只含未过期项，供 App 冷启动对账 */
+export interface CenterPendingSnapshot {
+  confirms: CenterPendingConfirm[]
+  asks: CenterPendingAsk[]
+}
+
+/** REST 快捷批复（通知栏动作，POST /api/confirm/resolve） */
+export interface CenterConfirmResolveRequest {
+  clientId: string
+  confirmId: string
+  approved: boolean
+}
+
+/** REST 快捷作答（POST /api/ask/resolve）；requestId 是**提问卡自身的 id**（同 WS 口径） */
+export interface CenterAskResolveRequest {
+  clientId: string
+  sessionId: string
+  requestId: string
+  answers?: string[]
+  answersByQuestion?: string[][]
+  skipped?: boolean
+}
+
+/** 管理端推送通道配置视图（私钥只写不回显，keySet 标记，同官方模型 apiKeySet 口径） */
+export interface CenterPushConfigView {
+  enabled: boolean
+  projectId: string
+  keyId: string
+  subAccount: string
+  /** 华为消息分类（需 AGC 自分类权益，否则按营销消息限流） */
+  category: string
+  /** 服务账号 JWT 签名算法（官方文档与社区实测口径不一，联调定案） */
+  algorithm: 'RS256' | 'PS256'
+  /** 联调用测试消息（单项目 1000 条上限、每次 ≤ 10 token） */
+  testMessage: boolean
+  keySet: boolean
+  /** 能力不可用原因（主密钥缺失 / 解密失败等），管理页如实展示 */
+  error?: string
+}
+
+/** 管理端推送配置更新（PUT /api/admin/push）；privateKey null=清除、空串/缺省=不动 */
+export interface CenterPushConfigUpdate {
+  enabled?: boolean
+  projectId?: string
+  keyId?: string
+  subAccount?: string
+  category?: string
+  algorithm?: 'RS256' | 'PS256'
+  testMessage?: boolean
+  privateKey?: string | null
+}

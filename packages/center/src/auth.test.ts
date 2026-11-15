@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { CENTER_APP_SESSIONS_PER_USER, CENTER_APP_SESSION_TTL_MS } from '@aurora/shared'
 import { AuthError, AuthStore, hashToken } from './auth.js'
 
 async function makeAuth(): Promise<{ auth: AuthStore; dir: string }> {
@@ -283,5 +284,94 @@ describe('AuthStore · 会话表清扫与上限（P2-12）', () => {
     expect(auth.verifyWebSession(tokens[0] as string)).toBeUndefined()
     expect(auth.verifyWebSession(tokens[2] as string)?.id).toBe(user.id)
     expect(auth.verifyWebSession(newest)?.id).toBe(user.id)
+  })
+})
+
+/**
+ * 持久网页会话（鸿蒙遥控台接入，docs/12 §15.1）：App 登录落盘、重启存活、
+ * 轮换即吊销旧令牌、每用户上限、管理端吊销。临时会话路径必须零影响。
+ */
+describe('AuthStore · 持久会话（docs/12 §15.1）', () => {
+  it('createPersistentSession → verifyWebSession 往返；只存哈希；90 天 TTL', async () => {
+    const { auth, dir } = await makeAuth()
+    const user = await auth.createUser({ username: 'app', password: 'secret-123', role: 'user' })
+    const { token, expiresAt, id } = await auth.createPersistentSession(user.id, {
+      label: '我的手机',
+      clientKind: 'harmony',
+    })
+    expect(auth.verifyWebSession(token)?.id).toBe(user.id)
+    expect(Date.parse(expiresAt) - Date.now()).toBeGreaterThan(CENTER_APP_SESSION_TTL_MS - 60_000)
+    const view = auth.listPersistentSessions(user.id)
+    expect(view).toHaveLength(1)
+    expect(view[0]).toMatchObject({ id, label: '我的手机', clientKind: 'harmony' })
+    expect(JSON.stringify(view)).not.toContain(token)
+    // 落盘内容只有哈希
+    const { readFile } = await import('node:fs/promises')
+    const raw = await readFile(join(dir, 'sessions.json'), 'utf8')
+    expect(raw).not.toContain(token)
+    expect(raw).toContain(hashToken(token))
+  })
+
+  it('服务器重启后持久会话仍有效（临时会话不受影响仍失效）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-app-session-'))
+    const first = new AuthStore({ dataDir: dir })
+    await first.init()
+    const user = await first.createUser({ username: 'root', password: 'secret-123', role: 'admin' })
+    const persistent = await first.createPersistentSession(user.id, { clientKind: 'harmony' })
+    const ephemeral = first.createWebSession(user.id)
+
+    const second = new AuthStore({ dataDir: dir })
+    await second.init()
+    expect(second.verifyWebSession(persistent.token)?.id).toBe(user.id)
+    expect(second.verifyWebSession(ephemeral)).toBeUndefined()
+  })
+
+  it('refresh 轮换：旧令牌立即失效、会话 id 不变（推送登记不丢）', async () => {
+    const { auth } = await makeAuth()
+    const user = await auth.createUser({ username: 'rot', password: 'secret-123', role: 'user' })
+    const first = await auth.createPersistentSession(user.id)
+    const refreshed = await auth.refreshPersistentSession(first.token)
+    expect(refreshed).toBeDefined()
+    expect(refreshed?.token).not.toBe(first.token)
+    expect(auth.verifyWebSession(first.token)).toBeUndefined()
+    expect(auth.verifyWebSession(refreshed?.token ?? '')?.id).toBe(user.id)
+    expect(auth.listPersistentSessions(user.id)[0]?.id).toBe(first.id)
+    // 临时会话不能 refresh
+    const ephemeral = auth.createWebSession(user.id)
+    expect(await auth.refreshPersistentSession(ephemeral)).toBeUndefined()
+  })
+
+  it('drop / revoke / 删户级联：令牌失效且返回会话 id', async () => {
+    const { auth } = await makeAuth()
+    const user = await auth.createUser({ username: 'bye', password: 'secret-123', role: 'user' })
+    const a = await auth.createPersistentSession(user.id)
+    const b = await auth.createPersistentSession(user.id)
+    expect(await auth.dropPersistentSessionByToken(a.token)).toBe(a.id)
+    expect(auth.verifyWebSession(a.token)).toBeUndefined()
+    const revoked = await auth.revokePersistentSession(b.id)
+    expect(revoked?.id).toBe(b.id)
+    expect(auth.verifyWebSession(b.token)).toBeUndefined()
+    expect(await auth.revokePersistentSession('nope')).toBeUndefined()
+    const c = await auth.createPersistentSession(user.id)
+    await auth.dropPersistentSessionsByUser(user.id)
+    expect(auth.verifyWebSession(c.token)).toBeUndefined()
+    expect(auth.listPersistentSessions()).toHaveLength(0)
+  })
+
+  it('每用户上限淘汰最旧；过期会话验证拒绝', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-app-cap-'))
+    let current = 1_700_000_000_000
+    const auth = new AuthStore({ dataDir: dir, now: () => current })
+    await auth.init()
+    const user = await auth.createUser({ username: 'many', password: 'secret-123', role: 'user' })
+    const tokens: string[] = []
+    for (let i = 0; i < CENTER_APP_SESSIONS_PER_USER + 1; i += 1) {
+      tokens.push((await auth.createPersistentSession(user.id)).token)
+    }
+    expect(auth.listPersistentSessions(user.id)).toHaveLength(CENTER_APP_SESSIONS_PER_USER)
+    expect(auth.verifyWebSession(tokens[0] as string)).toBeUndefined()
+    expect(auth.verifyWebSession(tokens.at(-1) as string)?.id).toBe(user.id)
+    current += CENTER_APP_SESSION_TTL_MS + 1
+    expect(auth.verifyWebSession(tokens.at(-1) as string)).toBeUndefined()
   })
 })

@@ -4,8 +4,10 @@
 v0.3.3：§4/§5 追加 `ask.request` / `ask.resolve`（提问中转）、§6.1 补语音能力位的重连语义、
 §10 整节按三栏控制台重写并补验证 harness；2026-10-07：§10 改为官网入口 + 登录后工作台，
 公开更新目录提供官网下载信息；2026-10：插件市场（Center 0.5.0）、插件侧栏面板镜像（0.5.1）、
-页面型面板参数直传与断流修复（0.5.2）、插件临时对话框清单校验 `ui.dialogs`（0.5.3）。
-当前 Center 服务器为 **0.5.3**。）
+页面型面板参数直传与断流修复（0.5.2）、插件临时对话框清单校验 `ui.dialogs`（0.5.3）；
+2026-11-15：鸿蒙遥控台接入（§15：持久会话与令牌轮换、推送登记 / 偏好 / AGC 通道、
+待办快照、`web.hello` 连接标识、REST 快捷批复、管理端会话与推送配置）。
+当前 Center 服务器为 **0.7.0**。）
 
 Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控制台**：
 
@@ -61,6 +63,10 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 | `clients.json` | 已登记客户端：`{ clientId, name, ownerUserId, version, platform, firstSeenAt, lastSeenAt, lastMode, revokedAt? }` |
 | `files/<fileId>-<name>` + `files/index.json` | 客户端上传文件的暂存与索引；**每条带 `expiresAt`（上传 + 24h），过期自动清理**（启动清一次 + 每 15 分钟一轮） |
 | `server.lock` | **服务器运行标记**（v0.2.9）：`{ pid, startedAt }`，`start` / `listen` 成功后创建、`close()` 删除、每 15s 刷 mtime —— CLI 的 `users` 写命令据它拒绝与运行中服务器并发写 `users.json`（§9）；mtime 超过 60s 未刷新视为崩溃残留（当作无服务器） |
+| `sessions.json` | **持久网页会话**（§15，鸿蒙 App 登录）：`{ id, userId, tokenHash, label, clientKind, createdAt, expiresAt }`；只存哈希，TTL 90 天，每用户 ≤ 10 条；临时网页会话仍只在内存 |
+| `push-devices.json` | 推送设备登记（§15）：`{ id, userId, sessionId, platform, tokenHash, tokenEnc, deviceName?, appVersion?, createdAt, lastSeenAt }`；push token 经 SecretBox 加密，每用户 ≤ 10 台 |
+| `notification-prefs.json` | 每用户通知偏好（§15）：`{ confirm, ask, file, sessionDone }`，缺省 `confirm/ask/file` 开、`sessionDone` 关 |
+| `push-config.json` | AGC 推送通道配置（§15）：`{ enabled, projectId, keyId, subAccount, privateKeyEnc, category, algorithm, testMessage }`；私钥经 SecretBox 加密，主密钥缺失时推送视为未配置 |
 
 所有 JSON 落盘沿用仓库约定：**原子写（临时文件 + rename）**，读损坏备份后重建。
 
@@ -986,3 +992,140 @@ aurora-center plugins unpublish --server <url> --user <名> --id <插件 id> --v
 **与 Center 面板镜像的关系**（§6.5）：声明式面板由网页端直接渲染（内容经客户端中继），
 不依赖市场包；**页面型面板的静态资源只从市场包取** —— 桌面本机的插件文件不能给网页用，
 所以该版本必须**已发布到本 Center**，否则面板明确提示「该版本未发布到本 Center」。
+
+## 15. 鸿蒙遥控台接入（0.7.0）
+
+鸿蒙原生 App 承担**网页端角色**：在手机上遥控 PC 上的 Aurora。它消费的是 §4.2 的
+「网页 ⇄ 服务器」协议面（REST + `/api/ws`），**设备侧协议（§4.1）与 Windows 客户端零改动**。
+远程会话 / 确认提问 / 文件 / 语音中转 / 自动化 / 插件面板全部复用既有命令与事件，
+本节只定义「移动运行环境适配层」的新增接口。设计提案见 `docs/proposals/harmony-center-client.md`。
+
+### 15.1 持久会话与令牌轮换
+
+网页会话原先只存内存（7 天 TTL，重启全失效）——浏览器可接受，App 不可接受。
+登录接口 **additive** 扩展（不带新字段 = 行为完全不变）：
+
+```
+POST /api/auth/login   { username, password, persistent?: true, deviceName?, client?: 'harmony' }
+  → { token, user, expiresAt?, persistent? }     persistent=true 时落 sessions.json，TTL 90 天
+POST /api/auth/refresh （Bearer，仅持久会话）{}
+  → { token, user, expiresAt, persistent: true } 轮换：旧令牌立即失效、TTL 重置；
+    临时会话调用回 400 E_NOT_PERSISTENT；限速 60 次/分钟/IP（AUTH_RATE_LIMITS.refresh）
+POST /api/auth/logout  （Bearer）{}
+  → { ok: true }                                 服务端删会话（内存或持久）+ 级联删除该会话的推送登记
+```
+
+- 持久会话只存 SHA-256 哈希（同客户端令牌口径），明文只在 login / refresh 响应出现一次；
+  每用户上限 **10** 条，超限淘汰最旧；`verifyWebSession` 先查内存再查持久缓存。
+- App 每次启动且剩余有效期 < 7 天时调 refresh；**服务器重启后持久会话仍有效**。
+- 管理端：`GET /api/admin/sessions?userId=`（回包不含哈希）、`DELETE /api/admin/sessions/:id`
+  （吊销并级联清推送登记）。删除用户（既有 `DELETE /api/users/:id`）同样级联清其推送登记。
+
+### 15.2 推送登记与通知偏好
+
+```
+POST /api/push/register     （网页会话）{ platform: 'harmony', token, deviceName?, appVersion? }
+  → { ok: true, id }        按 (userId, token) upsert；绑定登记时的会话 id（refresh 不丢登记）；
+                            push token 加密落盘；每用户 ≤ 10 台；通道未配置回 503 E_PUSH_UNAVAILABLE
+POST /api/push/unregister   （网页会话）{ token } → { ok: true }（幂等）
+GET  /api/me/notification-prefs （网页会话）→ { confirm, ask, file, sessionDone }
+PUT  /api/me/notification-prefs （网页会话，部分字段）→ 合并后的完整偏好
+```
+
+App 每次启动调 `pushService.getToken()` 并比对上报（token 在卸载重装 / 恢复出厂后会变，
+华为官方口径）；登出走 logout 级联，无需单独 unregister。
+
+### 15.3 推送投递（服务器内部行为）
+
+通道 = 华为 Push Kit **v3**（HarmonyOS NEXT 只认 v3；v1/v2 推不到 NEXT 设备）：
+`POST https://push-api.cloud.huawei.com/v3/{projectId}/messages:send`，请求头
+`push-type: 0` + **服务账号 JWT 直接作 Bearer**（NEXT 不支持 OAuth2 client_credentials；
+claims `kid/iss/aud/exp`，aud 固定 `https://oauth-login.cloud.huawei.com/oauth2/v3/token`，
+有效期 ≤ 1h 缓存复用；签名算法 RS256/PS256 可配，官方文档与社区实测口径不一，联调定案）。
+
+**触发点与路由**（hub 内 additive 钩子，收方集合与既有 WS 路由同款）：
+
+| 触发 | 偏好键 | 收方 | TTL（pushOptions.ttl） | collapseKey 分组 |
+|---|---|---|---|---|
+| `confirm.request` | `confirm` | 属主 + 管理员 | 60s 窗口剩余 | 1 |
+| `ask.request` | `ask` | 属主 + 管理员 | 180s 窗口剩余 | 2 |
+| `file.received` | `file` | 属主 + 管理员 | 1h | 3 |
+| `session.event` 的 `done` | `sessionDone`（默认关） | **仅会话创建者** | 1h | 4 |
+| `session.event` 的 `error` | `sessionDone`（默认关） | **仅会话创建者** | 1h | 5 |
+
+规则：
+- **在线抑制**：收方用户此刻有 `clientKind='harmony'` 的活 WS 连接 → 不发推送（WS 已直投）；
+  PC 网页在线**不抑制**手机推送。每用户每事件至多一条；每用户推送限速 30 条/分钟（超出丢弃记 warn）。
+- **载荷最小化**：`clickAction: { actionType: 0, data }`，data 只带路由字段
+  （`kind / clientId / sessionId / requestId|confirmId|fileId / expiresAt`，≤ 1024 字节，
+  经 Want.parameters 透传给 App）；**绝不带**会话正文、工具入参、提问选项、文件内容。
+  标题 / 正文是固定文案 + 设备名。
+- 回执 `code=80300007`（token 无效）→ 按 `msg.illegalTokens` 剔除登记；其余错误只记日志
+  （`userId / kind / code`，不记 token 全文）。发送失败不重试、不影响 WS 主链路。
+- **通道未配置**（`push-config.json` 缺 / `enabled=false` / 主密钥缺失解不开私钥）→
+  服务器照常运行，register 回 503，notify 静默 no-op —— 与官方模型能力同一降级口径。
+- `pushOptions.testMessage=true`（配置项）用于联调：单项目 1000 条上限、每次 ≤ 10 token。
+
+**产品约束（如实）**：Push Kit 发送凭据绑定 App 的 AGC 项目 —— 官方 App 的服务账号密钥
+不能分发给自托管 Center。推送默认只在**官方 Center** 开箱即用；自托管要推送需自有 AGC
+项目 + 自签 App 变体，否则 App 自动降级为「前台实时、后台无通知」。
+
+### 15.4 待办快照与连接标识
+
+```
+GET /api/pending?clientId=<可选> （网页会话）
+  → { confirms: [{ clientId, sessionId, request }], asks: [{ clientId, sessionId, request }] }
+```
+
+- 只回未过期项（确认卡 60s / 提问卡 180s），属主 + 管理员口径同 `buildClientInfos`；
+  带 `clientId` 时校验可见性（不存在 404 / 非本人 403）；总量上限 100 条。
+- hub 新增 `pendingConfirms` 登记（`confirm.request` 入表、按 `expiresAt` 清扫）；
+  **网页端「确认卡不回放」的既有行为不变** —— 快照只供 App 冷启动对账（推送唤醒时进程是冷的）。
+- 提问直接读既有 `pendingAsks`。
+
+WS 协议 additive 首帧（连接后可选发送；旧网页不发 = 缺省 `'web'`，旧服务器按未知 type 忽略）：
+
+```
+{ type: 'web.hello', client: 'harmony', appVersion?: string }
+```
+
+hub 据此把该连接标记为 `clientKind='harmony'`，供 §15.3 的在线抑制判定。
+
+### 15.5 REST 快捷批复（通知栏动作）
+
+与 WS `confirm.resolve` / `ask.resolve` **同授权、同转发链、同回执超时**（15s），
+客户端本地确认链先到先得（`proactive.resolve` / `AskUserService.resolve` 幂等）：
+
+```
+POST /api/confirm/resolve （网页会话）{ clientId, confirmId, approved }
+POST /api/ask/resolve     （网页会话）{ clientId, sessionId, requestId, answers?, skipped?, answersByQuestion? }
+  → 200 { ok: true, data? }
+  错误映射：E_FORBIDDEN→403 / E_CLIENT_NOT_FOUND→404 / E_CLIENT_OFFLINE→503 /
+           E_CLIENT_TIMEOUT→504 / ask 已结算（data.settled=false）→409 E_ALREADY_SETTLED /
+           其余→502
+```
+
+实现上 hub 暴露 `runRestCommand`：挂一条**临时网页连接**走 `handleWebMessage` 既有管道，
+回执捕获后立即摘除 —— 授权 / 离线 / 超时 / pending 配对全部复用，不另写一套。
+
+### 15.6 管理端推送配置
+
+```
+GET /api/admin/push （管理员）→ { enabled, projectId, keyId, subAccount, category, algorithm,
+                                 testMessage, keySet, error? }
+PUT /api/admin/push （管理员）{ enabled?, projectId?, keyId?, subAccount?, category?,
+                               algorithm?, testMessage?, privateKey?: string|null }
+  → 同上视图；privateKey null=清除、空串/缺省=不动（同官方模型 apiKey 口径）；非法整条拒绝
+```
+
+`category` 必填（华为消息分类，需在 AGC 申请**自分类权益**，否则按营销消息限流）；
+`keySet` 只标记不回显；主密钥缺失 / 轮换解不开时 `error` 如实返回。
+
+### 15.7 安全边界（与 §11 对齐）
+
+- 持久会话是新的长效凭据面：只存哈希、轮换即吊销旧令牌、每用户上限、管理员可吊销、
+  登出 / 删户级联清推送 —— 护栏不低于客户端令牌。
+- 推送不扩大数据可见面：载荷只有路由字段；内容仍走既有属主 / 管理员鉴权的 WS / REST。
+- REST 快捷批复不绕过任何闸门；`center.allow*` 客户端本地闸门照常生效。
+- 公网部署必须 TLS（App 发布包按应用市场审核口径强制 HTTPS；内网明文直连只进调试包）。
+- 鸿蒙 NEXT 推送数据处理地固定为中国（华为官方口径），海外用户需知情。

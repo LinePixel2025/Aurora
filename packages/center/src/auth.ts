@@ -7,7 +7,12 @@
  */
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
-import type { Logger } from '@aurora/shared'
+import {
+  CENTER_APP_SESSIONS_PER_USER,
+  CENTER_APP_SESSION_TTL_MS,
+  type CenterAppSessionView,
+  type Logger,
+} from '@aurora/shared'
 import { JsonStore } from './store.js'
 
 export type UserRole = 'admin' | 'user'
@@ -41,6 +46,22 @@ export interface ClientTokenView {
   clientId: string
   createdAt: string
   revokedAt?: string
+}
+
+/**
+ * 持久网页会话（鸿蒙遥控台接入，docs/12 §15.1）：App 登录落盘、重启存活、可轮换。
+ * 与临时网页会话（内存 Map、7 天）是两条存储路径，`verifyWebSession` 先内存后持久。
+ * 只存 SHA-256 哈希 —— 泄露数据库不等于泄露凭据（同客户端令牌口径）。
+ */
+export interface PersistentSessionRecord {
+  id: string
+  userId: string
+  tokenHash: string
+  /** 设备名（登录时的 deviceName，仅展示） */
+  label: string
+  clientKind: 'web' | 'harmony'
+  createdAt: string
+  expiresAt: string
 }
 
 const SCRYPT_KEYLEN = 64
@@ -98,8 +119,11 @@ export class AuthError extends Error {
 export class AuthStore {
   readonly users: JsonStore<UserRecord[]>
   readonly tokens: JsonStore<ClientTokenRecord[]>
+  /** 持久网页会话（docs/12 §15.1）：sessions.json，只存哈希 */
+  readonly appSessions: JsonStore<PersistentSessionRecord[]>
   private userCache: UserRecord[] = []
   private tokenCache: ClientTokenRecord[] = []
+  private appSessionCache: PersistentSessionRecord[] = []
   /** 网页会话令牌：token → { userId, expiresAt }（内存持有，重启即全失效） */
   private readonly sessions = new Map<string, { userId: string; expiresAt: number }>()
   private readonly logger?: Logger
@@ -126,11 +150,17 @@ export class AuthStore {
       () => [],
       this.logger,
     )
+    this.appSessions = new JsonStore<PersistentSessionRecord[]>(
+      `${options.dataDir}/sessions.json`,
+      () => [],
+      this.logger,
+    )
   }
 
   async init(): Promise<void> {
     this.userCache = await this.users.load()
     this.tokenCache = await this.tokens.load()
+    this.appSessionCache = await this.appSessions.load()
   }
 
   // ─────────────── 用户 ───────────────
@@ -257,19 +287,142 @@ export class AuthStore {
     return this.sessions.size
   }
 
-  /** 返回会话对应的用户；过期 / 不存在 → undefined（并顺手清理过期项）。 */
+  /**
+   * 返回会话对应的用户；过期 / 不存在 → undefined（并顺手清理过期项）。
+   * 先查临时会话（内存），再查持久会话（docs/12 §15.1，鸿蒙 App）——
+   * 两条路径的令牌空间不重叠（都是随机 32B hex，哈希查表互不干扰）。
+   */
   verifyWebSession(token: string): UserRecord | undefined {
     const entry = this.sessions.get(token)
-    if (entry === undefined) return undefined
-    if (this.now() > entry.expiresAt) {
-      this.sessions.delete(token)
-      return undefined
+    if (entry !== undefined) {
+      if (this.now() > entry.expiresAt) {
+        this.sessions.delete(token)
+        return undefined
+      }
+      return this.userCache.find((user) => user.id === entry.userId)
     }
-    return this.userCache.find((user) => user.id === entry.userId)
+    const persistent = this.persistentSessionOf(token)
+    if (persistent === undefined) return undefined
+    return this.userCache.find((user) => user.id === persistent.userId)
   }
 
   dropWebSession(token: string): void {
     this.sessions.delete(token)
+  }
+
+  // ─────────────── 持久网页会话（docs/12 §15.1）───────────────
+
+  /**
+   * 颁发持久会话（App 登录）：落 sessions.json、TTL 90 天、每用户上限淘汰最旧。
+   * 明文只在本次返回值出现一次；创建时清扫过期项（同临时会话的口径）。
+   */
+  async createPersistentSession(
+    userId: string,
+    options?: { label?: string; clientKind?: 'web' | 'harmony' },
+  ): Promise<{ token: string; expiresAt: string; id: string }> {
+    const now = this.now()
+    this.appSessionCache = this.appSessionCache.filter(
+      (record) => Date.parse(record.expiresAt) > now,
+    )
+    const mine = this.appSessionCache.filter((record) => record.userId === userId)
+    while (mine.length >= CENTER_APP_SESSIONS_PER_USER) {
+      const oldest = mine.shift()
+      if (oldest === undefined) break
+      this.appSessionCache = this.appSessionCache.filter((record) => record.id !== oldest.id)
+    }
+    const token = randomBytes(32).toString('hex')
+    const expiresAt = new Date(now + CENTER_APP_SESSION_TTL_MS).toISOString()
+    const record: PersistentSessionRecord = {
+      id: `s-${randomBytes(6).toString('hex')}`,
+      userId,
+      tokenHash: hashToken(token),
+      label: (options?.label ?? '').trim().slice(0, 64),
+      clientKind: options?.clientKind === 'harmony' ? 'harmony' : 'web',
+      createdAt: new Date(now).toISOString(),
+      expiresAt,
+    }
+    this.appSessionCache.push(record)
+    await this.appSessions.save(this.appSessionCache)
+    return { token, expiresAt, id: record.id }
+  }
+
+  /** 按令牌查持久会话（未过期）；不存在 / 已过期 → undefined。过期项顺带清出缓存。 */
+  persistentSessionOf(token: string): PersistentSessionRecord | undefined {
+    const tokenHash = hashToken(token)
+    const record = this.appSessionCache.find((entry) => entry.tokenHash === tokenHash)
+    if (record === undefined) return undefined
+    if (Date.parse(record.expiresAt) <= this.now()) {
+      this.appSessionCache = this.appSessionCache.filter((entry) => entry.id !== record.id)
+      // 过期清理是低频路径：落盘失败只记日志，下次 create/init 会再清扫
+      void this.appSessions.save(this.appSessionCache).catch((error) => {
+        this.logger?.warn('持久会话过期清理落盘失败', { error: String(error) })
+      })
+      return undefined
+    }
+    return record
+  }
+
+  /**
+   * 轮换持久会话令牌：旧令牌**立即失效**、TTL 重置（会话 id 不变 → 推送登记不丢）。
+   * 非持久 / 已过期 → undefined（路由回 400 E_NOT_PERSISTENT）。
+   */
+  async refreshPersistentSession(
+    token: string,
+  ): Promise<{ token: string; expiresAt: string } | undefined> {
+    const record = this.persistentSessionOf(token)
+    if (record === undefined) return undefined
+    const fresh = randomBytes(32).toString('hex')
+    const expiresAt = new Date(this.now() + CENTER_APP_SESSION_TTL_MS).toISOString()
+    record.tokenHash = hashToken(fresh)
+    record.expiresAt = expiresAt
+    await this.appSessions.save(this.appSessionCache)
+    return { token: fresh, expiresAt }
+  }
+
+  /**
+   * 按令牌删除持久会话，返回会话 id（供推送登记级联清理）；不是持久会话 → undefined。
+   * 与 `dropWebSession`（内存临时会话）配对使用，logout 路由两条都调。
+   */
+  async dropPersistentSessionByToken(token: string): Promise<string | undefined> {
+    const tokenHash = hashToken(token)
+    const record = this.appSessionCache.find((entry) => entry.tokenHash === tokenHash)
+    if (record === undefined) return undefined
+    this.appSessionCache = this.appSessionCache.filter((entry) => entry.id !== record.id)
+    await this.appSessions.save(this.appSessionCache)
+    return record.id
+  }
+
+  /** 持久会话视图（管理端；绝不含哈希）。userId 缺省 = 全部。 */
+  listPersistentSessions(userId?: string): CenterAppSessionView[] {
+    const now = this.now()
+    return this.appSessionCache
+      .filter((record) => Date.parse(record.expiresAt) > now)
+      .filter((record) => userId === undefined || record.userId === userId)
+      .map((record) => ({
+        id: record.id,
+        userId: record.userId,
+        label: record.label,
+        clientKind: record.clientKind,
+        createdAt: record.createdAt,
+        expiresAt: record.expiresAt,
+      }))
+  }
+
+  /** 按 id 吊销持久会话（管理端）；返回被吊销的记录（供级联），不存在 → undefined。 */
+  async revokePersistentSession(id: string): Promise<PersistentSessionRecord | undefined> {
+    const record = this.appSessionCache.find((entry) => entry.id === id)
+    if (record === undefined) return undefined
+    this.appSessionCache = this.appSessionCache.filter((entry) => entry.id !== id)
+    await this.appSessions.save(this.appSessionCache)
+    return record
+  }
+
+  /** 删除用户级联：清掉该用户的全部持久会话（docs/12 §15.1） */
+  async dropPersistentSessionsByUser(userId: string): Promise<void> {
+    const next = this.appSessionCache.filter((record) => record.userId !== userId)
+    if (next.length === this.appSessionCache.length) return
+    this.appSessionCache = next
+    await this.appSessions.save(this.appSessionCache)
   }
 
   private sweepSessions(): void {
