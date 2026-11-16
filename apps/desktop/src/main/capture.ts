@@ -6796,6 +6796,7 @@ export const SETTINGS_NOTIFICATIONS_SCHEDULE_CHECK = `(async () => {
  * 判据因此断言「开关关 + 子控件在但禁用 + 区组挂 dormant」，置灰态本身就是被验对象。
  * 时段两字段是时间轮盘（2026-11-07，docs/07 §2.5）：dormant 下触发器禁用、弹层开不出来，
  * 所以本场景只量触发器本身；弹出态钟面的断言在 settings-notifications-schedule 场景（勿扰轮盘可点）。
+ * v44 新增「结束后延迟投递」滑杆（0–120，出厂 0 = 立即）：同样断言 dormant 下禁用 + 量矩形。
  */
 export const SETTINGS_NOTIFICATIONS_SMART_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -6830,6 +6831,8 @@ export const SETTINGS_NOTIFICATIONS_SMART_CHECK = `(async () => {
     const daily = checkboxOf(field('smartWindow.daily'))
     const duringClass = checkboxOf(field('smartDuringClass'))
     const summarize = checkboxOf(field('smartSummarize'))
+    const delayField = field('smartDelayMinutes')
+    const delay = delayField === null ? null : delayField.querySelector('input[type="range"]')
     // 子控件 = 除总开关外的全部（总开关自己保持可点，见 enabledClickable）
     const toggles = [daily, duringClass, summarize]
     const dials = [start, end]
@@ -6844,6 +6847,7 @@ export const SETTINGS_NOTIFICATIONS_SMART_CHECK = `(async () => {
       enabledClickable: enabled !== null && enabled.disabled === false,
       subControlsDisabled: toggles
         .concat(dials)
+        .concat([delay])
         .every((element) => element !== null && element.disabled === true),
       togglesPresent: toggles.every((element) => element !== null && element.type === 'checkbox'),
       // 时段控件是时间轮盘的触发器按钮（TimeDial，docs/07 §2.5）
@@ -6859,6 +6863,13 @@ export const SETTINGS_NOTIFICATIONS_SMART_CHECK = `(async () => {
         const rect = element.getBoundingClientRect()
         return rect.height >= 24 && rect.width >= 120
       }),
+      // v44 延迟投递滑杆：在 DOM、出厂 0（= 立即）、量矩形（与 volume 滑杆同款复用类）
+      delaySliderPresent: delay !== null,
+      delaySliderZero: delay !== null && delay.value === '0',
+      delaySliderSized: delay === null ? false : (() => {
+        const rect = delay.getBoundingClientRect()
+        return rect.height >= 12 && rect.width >= 120
+      })(),
     }
     const pass = Object.keys(conditions).every((key) => conditions[key] === true)
     return { section: sectionRect, enabled: enabled === null ? null : enabled.checked, conditions, pass }

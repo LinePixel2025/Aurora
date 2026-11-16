@@ -369,7 +369,7 @@ export function smokeScript(
       const smartBefore = initialSmart && initialSmart.ok ? initialSmart.value.notifications : undefined
       record(
         '智慧提醒默认值（全关，行为与上一版本一致）',
-        Boolean(smartBefore) && smartBefore.smartEnabled === false && smartBefore.smartWindow === null && smartBefore.smartDuringClass === false && smartBefore.smartSummarize === true,
+        Boolean(smartBefore) && smartBefore.smartEnabled === false && smartBefore.smartWindow === null && smartBefore.smartDuringClass === false && smartBefore.smartSummarize === true && smartBefore.smartDelayMinutes === 0,
         JSON.stringify(smartBefore),
       )
 
@@ -391,6 +391,7 @@ export function smokeScript(
           smartWindow: { start: '00:00', end: '23:59', daily: true, armedDate },
           smartDuringClass: false,
           smartSummarize: true,
+          smartDelayMinutes: 0,
         },
       }))
       // 主进程订阅了 settings.onChange 并立即评估：抑制状态应当在下一拍就点亮
@@ -408,7 +409,7 @@ export function smokeScript(
       expectOk('settings.update(清空免打扰时段)', await window.aurora.settings.update({
         notifications: {
           channel: 'banner', sound: false, speak: false, volume: 20, size: 'standard', durationMs: 6000,
-          smartEnabled: true, smartWindow: null, smartDuringClass: false, smartSummarize: true,
+          smartEnabled: true, smartWindow: null, smartDuringClass: false, smartSummarize: true, smartDelayMinutes: 0,
         },
       }))
       const settled = await waitFor(
@@ -422,8 +423,58 @@ export function smokeScript(
       record('免打扰期结束结算出汇总卡片（队列清空 + 卡片可见）', Boolean(settled), JSON.stringify(settled))
       await window.aurora.app.smokeBanner('dismiss')
 
+      // v44 延迟投递：期结束后延迟 10 分钟再结算 —— 到期时刻按「结束时刻 + 当前 delay」live 重算，
+      // 因此不用真等 10 分钟：先证明「不投」，再把 delay 改 0 秒级触发结算。
+      // 观测元不用 digestFired（前半段已结算过，恒 true），用 queueLength + pendingSettleAt + 卡片可见性。
+      expectOk('settings.update(智慧提醒开启 + 全天窗口 + 延迟 10 分钟)', await window.aurora.settings.update({
+        notifications: {
+          channel: 'banner', sound: false, speak: false, volume: 20, size: 'standard', durationMs: 6000,
+          smartEnabled: true,
+          smartWindow: { start: '00:00', end: '23:59', daily: true, armedDate },
+          smartDuringClass: false,
+          smartSummarize: true,
+          smartDelayMinutes: 10,
+        },
+      }))
+      await waitFor(readSmartDiag, (value) => Boolean(value && value.active === true), 4000)
+      await window.aurora.notifications.test()
+      await waitFor(readSmartDiag, (value) => Boolean(value && value.queueLength >= 1), 4000)
+      expectOk('settings.update(清空免打扰时段，延迟保持 10 分钟)', await window.aurora.settings.update({
+        notifications: {
+          channel: 'banner', sound: false, speak: false, volume: 20, size: 'standard', durationMs: 6000,
+          smartEnabled: true, smartWindow: null, smartDuringClass: false, smartSummarize: true, smartDelayMinutes: 10,
+        },
+      }))
+      const delayed = await waitFor(
+        async () => {
+          const [diag, card] = [await readSmartDiag(), await readCardDiag()]
+          return diag && typeof diag.pendingSettleAt === 'string' && diag.queueLength >= 1 && card && card.cardVisible === false ? diag : undefined
+        },
+        Boolean,
+        6000,
+      )
+      record('延迟生效：期结束未立即结算（队列仍在 + 待投时刻已排）', Boolean(delayed), JSON.stringify(delayed))
+      // 流光卡片有 3s 去重合并：与上半段那次结算隔开 >3s，不然第二条摘要会被合并不弹卡
+      await wait(3200)
+      expectOk('settings.update(延迟改 0)', await window.aurora.settings.update({
+        notifications: {
+          channel: 'banner', sound: false, speak: false, volume: 20, size: 'standard', durationMs: 6000,
+          smartEnabled: true, smartWindow: null, smartDuringClass: false, smartSummarize: true, smartDelayMinutes: 0,
+        },
+      }))
+      const delaySettled = await waitFor(
+        async () => {
+          const [diag, card] = [await readSmartDiag(), await readCardDiag()]
+          return diag && diag.queueLength === 0 && card && card.cardVisible === true ? diag : undefined
+        },
+        Boolean,
+        6000,
+      )
+      record('延迟改 0 立即结算（队列清空 + 卡片可见）', Boolean(delaySettled), JSON.stringify(delaySettled))
+      await window.aurora.app.smokeBanner('dismiss')
+
       expectOk('settings.update(智慧提醒还原)', await window.aurora.settings.update({
-        notifications: { channel: 'system', sound: true, speak: true, volume: 60, size: 'standard', durationMs: 6000, smartEnabled: false, smartWindow: null, smartDuringClass: false, smartSummarize: true },
+        notifications: { channel: 'system', sound: true, speak: true, volume: 60, size: 'standard', durationMs: 6000, smartEnabled: false, smartWindow: null, smartDuringClass: false, smartSummarize: true, smartDelayMinutes: 0 },
       }))
       const smartRestored = await window.aurora.settings.get()
       const smartBack = smartRestored && smartRestored.ok ? smartRestored.value.notifications : undefined

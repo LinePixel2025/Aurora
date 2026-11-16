@@ -13,6 +13,9 @@
  *   `IScheduleProvider.getToday()` 推导，不读 ClassIsland status 快照。
  * - 结算（免打扰期结束且队列非空）：优先让模型总结，失败 / 关闭时回落为逐条纯文本——
  *   **不丢提醒**；投递走默认提醒方式且跳过抑制闸（`notifyDigest`）。
+ * - 期结束后延迟投递（v44）：`smartDelayMinutes` > 0 时期结束记下结束时刻 `pendingSince`，
+ *   到期（= 结束时刻 + 当前设置值，live 重算）再结算；延迟期间再次入窗取消待投、
+ *   出窗重新计时；关总开关仍到期投递（不丢提醒）。0 = 立即，与 v43 行为一致。
  */
 import type { Logger } from '@aurora/shared'
 import { isQuietHour } from './proactive.js'
@@ -32,6 +35,14 @@ export interface SmartReminderQueueFile {
   queue: SmartReminderEntry[]
   /** 最近一次结算投递的摘要文本（诊断 / 排障用；用户看的是投递出去的那条） */
   lastDigest?: string
+  /** 期结束下降沿时刻（ISO，v44）：延迟投递到期 = 它 + 当前 smartDelayMinutes；结算 / 再次入窗时清除 */
+  pendingSince?: string
+}
+
+/** 启动加载的队列状态（v44：pendingSince = null 表示无待投，旧版文件天然落到这里）。 */
+export interface SmartReminderQueueState {
+  queue: SmartReminderEntry[]
+  pendingSince: string | null
 }
 
 /** gate 需要的 `notifications` 子树（与 `NotificationsSettings` 的 smart* 字段同形）。 */
@@ -40,6 +51,7 @@ export interface SmartReminderPrefs {
   smartWindow: { start: string; end: string; daily: boolean; armedDate: string } | null
   smartDuringClass: boolean
   smartSummarize: boolean
+  smartDelayMinutes: number
 }
 
 /** gate 判定结果：`deliver` = 照常走通道；`suppress` = 已入队，调用方直接返回未投递。 */
@@ -55,7 +67,7 @@ export interface SmartReminderDeps {
   /** 今日课程；provider 失败按「没在上课」处理，绝不把错误抛出闸门 */
   lessonsToday: (now: Date) => Promise<readonly Lesson[]>
   /** 队列持久化（启动加载 + 每次入队 / 结算后保存；测试注入内存实现） */
-  loadQueue: () => Promise<SmartReminderEntry[]>
+  loadQueue: () => Promise<SmartReminderQueueState>
   saveQueue: (file: SmartReminderQueueFile) => Promise<void>
   /** 清空一次性手动窗口（结算后 / 过期时调用；写设置由装配层实现） */
   clearWindow: () => Promise<void>
@@ -70,7 +82,7 @@ export interface SmartReminderDeps {
 }
 
 /** 队列文件版本（形状变化时递增；读取对旧版本宽容——只认认识的字段） */
-export const SMART_REMINDER_QUEUE_VERSION = 1
+export const SMART_REMINDER_QUEUE_VERSION = 2
 
 /**
  * 汇总请求的分流标记（提示词首行，与 `session-title.ts` 的 `TITLE_PROMPT_MARKER` 同款口径）：
@@ -124,6 +136,8 @@ export class SmartReminderService {
   private started = false
   /** 最近一次评估的抑制状态（边沿检测：true → false 且队列非空 = 结算） */
   private active = false
+  /** 期结束下降沿时刻（v44 延迟投递）：null = 无待投；到期 = 它 + 当前 smartDelayMinutes */
+  private pendingSince: string | null = null
   /** 「上课中」缓存（gate 是同步的，课程表异步结果由 evaluate 每拍刷新） */
   private inClass = false
   private digestFired = false
@@ -143,15 +157,19 @@ export class SmartReminderService {
     if (this.started) return
     this.started = true
     try {
-      this.queue = await this.deps.loadQueue()
+      const state = await this.deps.loadQueue()
+      this.queue = state.queue
+      this.pendingSince = state.pendingSince
     } catch (error) {
       this.queue = []
+      this.pendingSince = null
       this.deps.logger.warn('智慧提醒队列读取失败，按空队列处理', { error: String(error) })
     }
     await this.evaluate()
     // 跨重启的遗留队列：此刻不在免打扰期 = 上一个窗口在停机期间结束（或用户中途关了
     // 总开关）—— 边沿检测赶不上，直接补一次结算，不让攒下的提醒无声消失。
-    if (!this.active && this.queue.length > 0) {
+    // 只认无 pendingSince 的旧版 / 漏沿队列；有待投边沿的交给 evaluate 判到期（v44）。
+    if (!this.active && this.queue.length > 0 && this.pendingSince === null) {
       await this.settle()
     }
     if (this.timer !== undefined) clearInterval(this.timer)
@@ -198,7 +216,7 @@ export class SmartReminderService {
   }
 
   /**
-   * 单次评估：刷新「上课中」缓存 → 更新抑制状态 → 边沿结算。
+   * 单次评估：刷新「上课中」缓存 → 更新抑制状态 → 边沿记时 / 延迟到期结算（v44）。
    * 定时器调用；测试也可以直接调（注入 clock 控制时间）。
    */
   async evaluate(): Promise<void> {
@@ -222,11 +240,34 @@ export class SmartReminderService {
     const wasActive = this.active
     this.active = activeNow
 
-    // 边沿：免打扰期刚结束且队列非空 → 结算。窗口到点 / 被编辑 / 总开关被关都表现为
-    // active → false，语义统一为「等待结束，把攒下的提醒交出来」。
-    if (wasActive && !activeNow && this.queue.length > 0) {
-      await this.settle()
-      return
+    // 再次入窗取消待投（v44）：含「重启后仍在窗内」（此时没有边沿），不依赖 wasActive；
+    // 必须落盘，不然文件里残留陈旧边沿，下次崩溃重启会把它带回来。
+    if (activeNow && this.pendingSince !== null) {
+      this.pendingSince = null
+      this.persist()
+    }
+
+    // 边沿：免打扰期刚结束且队列非空 → 记下结束时刻（v44）。窗口到点 / 被编辑 / 总开关被关
+    // 都表现为 active → false，语义统一为「等待结束，把攒下的提醒交出来」；
+    // delay = 0 时下面同拍即到期结算，行为与 v43 一致。
+    if (wasActive && !activeNow && this.queue.length > 0 && this.pendingSince === null) {
+      this.pendingSince = now.toISOString()
+      this.persist()
+    }
+
+    // 延迟到期结算（v44）：不门控 smartEnabled——延迟期间关总开关也要把欠的摘要交出来。
+    if (!activeNow && this.pendingSince !== null) {
+      if (this.queue.length === 0) {
+        // 防御：文件残留（有待投边沿但队列空），清掉不投
+        this.pendingSince = null
+        this.persist()
+      } else if (
+        now.getTime() >=
+        Date.parse(this.pendingSince) + prefs.smartDelayMinutes * 60_000
+      ) {
+        await this.settle()
+        return
+      }
     }
 
     // 过期的一次性窗口（跨天重启 / 结算前崩溃遗留）：队列空就直接清掉，不留死配置
@@ -251,6 +292,7 @@ export class SmartReminderService {
     if (entries.length === 0) return
     // 先清队列再投递：投递路径万一重入 gate 也不会把同一条提醒结两次
     this.queue = []
+    this.pendingSince = null
     this.persist()
 
     const prefs = this.deps.settings()
@@ -291,13 +333,27 @@ export class SmartReminderService {
     queueLength: number
     digestFired: boolean
     lastDigestAt: string | undefined
+    pendingSettleAt: string | undefined
   } {
+    let pendingSettleAt: string | undefined
+    if (this.pendingSince !== null) {
+      let delayMinutes = 0
+      try {
+        delayMinutes = this.deps.settings().smartDelayMinutes
+      } catch {
+        // 设置读取失败按 0（诊断绝不抛，与 gate 同款口径）
+      }
+      pendingSettleAt = new Date(
+        Date.parse(this.pendingSince) + delayMinutes * 60_000,
+      ).toISOString()
+    }
     return {
       active: this.active,
       inClass: this.inClass,
       queueLength: this.queue.length,
       digestFired: this.digestFired,
       lastDigestAt: this.lastDigestAt,
+      pendingSettleAt,
     }
   }
 
@@ -313,6 +369,7 @@ export class SmartReminderService {
       version: SMART_REMINDER_QUEUE_VERSION,
       queue: [...this.queue],
       ...(this.lastDigest === undefined ? {} : { lastDigest: this.lastDigest }),
+      ...(this.pendingSince === null ? {} : { pendingSince: this.pendingSince }),
     }
     this.saveChain = this.saveChain
       .then(() => this.deps.saveQueue(file))

@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 43 as const
+export const CONFIG_VERSION = 44 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -1287,6 +1287,12 @@ export const NotificationsSchema = z.object({
   smartDuringClass: z.boolean().default(false),
   /** 免打扰期结束后由 Agent 总结被抑制的提醒（v40）；关闭或总结失败时逐条纯文本投递。 */
   smartSummarize: z.boolean().default(true),
+  /**
+   * 期结束后延迟 N 分钟再汇总投递（v44，docs/07 §4）：0 = 立即（与 v43 行为一致）。
+   * 到期时刻 = 队列文件记录的结束时刻 + 当前值（live 重算：改 0 立即投）；
+   * 延迟期间再次入窗取消待投、出窗重新计时。
+   */
+  smartDelayMinutes: z.number().int().min(0).max(120).default(0),
   /**
    * 任务完成提醒（v41，docs/07 §4）：一条 Agent 请求正常收敛（job → `done`）后弹一条
    * 「任务完成」，点击跳回该会话。关掉后不发、也不入免打扰队列。

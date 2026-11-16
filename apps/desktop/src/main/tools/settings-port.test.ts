@@ -230,6 +230,7 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
     expect(port.writable('notifications.smartWindow').ok).toBe(true)
     expect(port.writable('notifications.smartDuringClass').ok).toBe(true)
     expect(port.writable('notifications.smartSummarize').ok).toBe(true)
+    expect(port.writable('notifications.smartDelayMinutes').ok).toBe(true)
     // 嵌套叶子不在黑名单 → 落到「Schema 叶子默认可写」（覆盖表只给黑名单前缀开口子）
     expect(port.writable('notifications.smartWindow.start').ok).toBe(true)
 
@@ -239,9 +240,11 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
         path: 'notifications.smartWindow',
         value: { start: '09:00', end: '11:30', daily: false, armedDate: '2026-11-07' },
       },
+      { path: 'notifications.smartDelayMinutes', value: 15 },
     ])
     expect(outcome.ok).toBe(true)
     expect(store.get().notifications.smartEnabled).toBe(true)
+    expect(store.get().notifications.smartDelayMinutes).toBe(15)
     expect(store.get().notifications.smartWindow).toEqual({
       start: '09:00',
       end: '11:30',

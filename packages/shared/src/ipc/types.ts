@@ -155,6 +155,8 @@ export interface SmartReminderDiagnostics {
   digestFired: boolean
   /** 最近一次结算投递的时刻（ISO） */
   lastDigestAt?: string
+  /** 待投摘要的预计投递时刻（ISO，v44）= 期结束时刻 + 当前 smartDelayMinutes；无待投时缺省 */
+  pendingSettleAt?: string
 }
 
 // ───────────────────────── 设置 ─────────────────────────

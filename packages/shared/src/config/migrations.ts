@@ -1449,6 +1449,28 @@ const migrateV42ToV43: Migration = {
   },
 }
 
+/**
+ * v43 → v44：`notifications` 补智慧提醒延迟投递分钟数（docs/07 §4）。
+ *
+ * 口径同 v41 → v42：以默认值为底、已有对象在上。补出来的 `smartDelayMinutes: 0` =
+ * 期结束立即结算，升级本身不改变任何用户已写的设置与 v43 的投递时机。
+ */
+const migrateV43ToV44: Migration = {
+  from: 43,
+  to: 44,
+  describe: 'v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const notifications = asRecord(next['notifications'])
+    next['notifications'] = {
+      ...DEFAULT_NOTIFICATIONS,
+      ...(notifications ?? {}),
+    }
+    next['version'] = 44
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1493,6 +1515,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV40ToV41,
   migrateV41ToV42,
   migrateV42ToV43,
+  migrateV43ToV44,
 ]
 
 export interface MigrationOutcome {

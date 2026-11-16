@@ -3072,6 +3072,7 @@ async function bootstrap(): Promise<void> {
         smartWindow: n.smartWindow,
         smartDuringClass: n.smartDuringClass,
         smartSummarize: n.smartSummarize,
+        smartDelayMinutes: n.smartDelayMinutes,
       }
     },
     // 与 ModeManager.currentId() 同源：模式 id 就存在 `modes.current` 里
@@ -3081,11 +3082,17 @@ async function bootstrap(): Promise<void> {
       try {
         const raw = JSON.parse(await fs.readFile(smartQueuePath, 'utf8')) as {
           queue?: SmartReminderEntry[]
+          pendingSince?: string
         }
-        return Array.isArray(raw.queue) ? raw.queue : []
+        // v1 旧文件没有 pendingSince → null（无待投，启动即补结算）；非法时刻同样回落
+        const pendingSince =
+          typeof raw.pendingSince === 'string' && Number.isFinite(Date.parse(raw.pendingSince))
+            ? raw.pendingSince
+            : null
+        return { queue: Array.isArray(raw.queue) ? raw.queue : [], pendingSince }
       } catch {
         // 不存在 / 损坏都按空队列：丢的是「待汇总」而非「已投递」，不构成提醒丢失
-        return []
+        return { queue: [], pendingSince: null }
       }
     },
     saveQueue: async (file) => {
