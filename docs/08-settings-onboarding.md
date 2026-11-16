@@ -302,6 +302,7 @@
     "size": "standard", // v38：compact / standard / large —— 按显示器宽度比例取卡宽并流体放大字号（2026-11-01 放大）
     "durationMs": 6000, // v38：停留时长（2000–30000）
     "smartEnabled": false, // v40：智慧提醒总开关（免打扰期先攒后汇总）
+    "smartDelayMinutes": 0, // v44：期结束后延迟 N 分钟再汇总（0–120，0 = 立即）
     "taskDoneEnabled": true, // v41：Agent 正常收敛后的「任务完成」提醒
     "taskDoneBackgroundOnly": true, // v41：仅主界面不在前台时提醒（正在看回复就不打断）
   },
@@ -652,7 +653,7 @@
   provider + model，严格使用该选择，不可用时暂停而不是回落。整组在 `SETTINGS_READONLY_PREFIXES` 里：
   它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
   内嵌图片是否真正读取由有效后台模型的 `vision` 决定；运行状态会如实显示「已开启 / 仅分析文字」。
-- `notifications`（**v37 新增，v38 / v40 / v41 / v42 扩展**，见 07 §4）：提醒通道与细节。
+- `notifications`（**v37 新增，v38 / v40 / v41 / v42 / v44 扩展**，见 07 §4）：提醒通道与细节。
   `channel`：`system`（默认，系统通知中心）/ `banner`（流光提醒）/ `both`（两条都发）/
   `off`（不打扰，只记日志）；`sound` / `volume` / `speak` / `size` / `durationMs`（v38）：
   流光提醒的提示音、音量（0–100）、语音朗读、卡片大小（`compact` / `standard` / `large`：
@@ -670,6 +671,9 @@
   `daily: false` 时仅 `armedDate`（YYYY-MM-DD）当天一次性生效、结束后自动清空）、
   ClassRoom 模式上课期间不提醒（从课程表推导「上课中」，不用 ClassIsland status 快照触发）、
   结束后由 Agent 总结被抑制的提醒（失败回落逐条纯文本，不丢提醒）。
+  `smartDelayMinutes`（**v44**）：期结束后延迟 N 分钟再汇总投递（0–120，默认 0 = 立即，
+  与 v43 行为一致）；到期时刻 = 记录的结束时刻 + 当前设置值（改设置即时重算，改 0 立即投）；
+  延迟期间再次入窗取消待投、出窗重新计时，关总开关仍到期投递（不丢提醒）。
   智慧提醒统一拦截默认通知、显式流光（`notify_banner` / 插件 `ctx.banner`）与
   `ask_user` 旁路播报：去重后、投递前入同一汇总队列；已排队的流光在出队时重查。
   仅汇总投递可在通知与流光两层跳过抑制闸，避免摘要被重新收集；提问卡与作答流程不变。
@@ -683,7 +687,7 @@
   它与 `channel` 是**叠加**关系：仍按默认提醒方式投递，`off` 下同样静默；`error` / 用户取消 /
   轮次暂停不发。`SettingsPatch` 新增可选 `notifications` 字段（顶层浅合并）；
   路径登记在 `WRITABLE_PATH_OVERRIDES` 的 `notifications.*`（AI 可以照用户要求切换打扰方式，
-  v40 的四个 `smart*` 与 v41 的两个 `taskDone*` 字段保持扁平、天然被通配覆盖），
+  v40 / v44 的五个 `smart*` 与 v41 的两个 `taskDone*` 字段保持扁平、天然被通配覆盖），
   **不在** `SETTINGS_READONLY_PREFIXES`。
 - `computerUse`（**v39 新增**，见 06 §28）：桌面操控总开关、视觉（虚拟光标 / 流光 / HUD）、
   节奏（移动时长 / 输入间隔 / 截图宽度）、限额（动作上限 / 闲置结束）与应用允许 / 禁止名单。
@@ -724,7 +728,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | 文件                           | 内容                                           | 说明                                                                  |
 | ------------------------------ | ---------------------------------------------- | --------------------------------------------------------------------- |
 | `userData/classification.json` | `{ version, records: ClassificationRecord[] }` | 分类流水（上限 500 条，新的在前）；原子写 + 300ms 防抖 + 损坏备份重建 |
-| `userData/smart-reminder-queue.json` | `{ version, queue: SmartReminderEntry[], lastDigest? }` | 智慧提醒免打扰期被抑制的提醒（v40，上限 50 条，新的在前）与最近一次汇总文本；原子写，损坏时按空队列重建（不丢提醒的兜底是结算时的回落路径） |
+| `userData/smart-reminder-queue.json` | `{ version, queue: SmartReminderEntry[], lastDigest?, pendingSince? }` | 智慧提醒免打扰期被抑制的提醒（v40，上限 50 条，新的在前）与最近一次汇总文本；`pendingSince`（v44，version=2）= 期结束下降沿时刻 ISO，延迟投递到期 = 它 + 当前 `smartDelayMinutes`（结算 / 再次入窗时清除；读取对 v1 宽容，缺省按无待投、启动即补结算）；原子写，损坏时按空队列重建（不丢提醒的兜底是结算时的回落路径） |
 
 规则缓存**不单独持久化**，启动时由流水中的用户修正记录重建（见 05 §3.2），
 因而不新增存储面，也不会与流水出现两处数据不一致。
@@ -920,12 +924,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `tts.providers.<id>` 补 `instructions: ''` / `language: 'auto'` —— 只补缺失 / 非法值，
   不改正值，补出来的默认值 = v43 之前的行为（两字段都不发送）；`tts` 分组缺失时留给
   默认配置兜底，不凭空造半截对象。同批新增 `dashscope-audio` 接口类型是纯增量枚举，
-  旧配置天然合法，不需要迁移表达）。
-  四十三条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  旧配置天然合法，不需要迁移表达）、
+  `v43 → v44`（**智慧提醒延迟投递**，见 §1 的 `notifications` 与 07 §4：为已有 `notifications` 补
+  `smartDelayMinutes: 0` —— 0 = 期结束立即结算，升级后行为与 v43 逐字一致；
+  用户已写的 `channel` / 智慧提醒字段原样保留）。
+  四十四条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **43** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **44** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1096,11 +1103,12 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   - **连接**：`center` Aurora Center；
   - **扩展**：`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
   - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
-  - **`notifications` 提醒（v37 新增，v38 / v40 / v41 / v42 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
+  - **`notifications` 提醒（v37 新增，v38 / v40 / v41 / v42 / v44 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
     自上而下六个区组 —— ①「默认提醒方式」四选一；②「流光提醒」细节
     （提示音 / 自定义音效（v42：选择文件 / 恢复默认）/ 音量 / 朗读 / 弹窗大小 / 停留时长，
     非流光通道时置灰）；
-    ③「智慧提醒」（v40：总开关 / 免打扰时段 / 上课期间 / Agent 总结）；
+    ③「智慧提醒」（v40：总开关 / 免打扰时段 / 上课期间 / Agent 总结；
+    v44：「结束后延迟投递」滑杆 0–120 分钟，0 显示「立即」，总开关关闭时置灰）；
     ④**「任务完成提醒」**（v41：`taskDoneEnabled` 总开关 +
     `taskDoneBackgroundOnly`「仅主界面不在前台时提醒」，总开关关闭时后者置灰）；
     ⑤**「定时提醒」**：自动化总开关（`automations.enabled`，常显）+ 课前提醒三件套
@@ -1115,6 +1123,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     `notifications.sound` / `.customSoundPath` / `.volume` / `.speak` / `.size.<key>` /
     `.duration.<ms>` /
     `notifications.taskDoneEnabled` / `.taskDoneBackgroundOnly` /
+    `notifications.smartDelayMinutes` /
     `notifications.test`，截图场景 `settings-notifications.png`（通道）、
     `settings-notifications-style.png`（细节区，拍前把通道切到流光以显示可用态）、
     `settings-notifications-smart.png`（智慧提醒区组）与
