@@ -1129,6 +1129,7 @@ describe('配置迁移链', () => {
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
+        'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1184,6 +1185,7 @@ describe('配置迁移链', () => {
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
+        'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1619,6 +1621,7 @@ describe('配置迁移链', () => {
         'v40 → v41：v40 → v41：notifications 补任务完成提醒（开关 / 仅主界面不在前台时发）',
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
+        'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2185,6 +2188,7 @@ describe('配置迁移链', () => {
         smartWindow: null,
         smartDuringClass: false,
         smartSummarize: true,
+        smartDelayMinutes: 0,
         taskDoneEnabled: true,
         taskDoneBackgroundOnly: true,
       })
@@ -2232,6 +2236,7 @@ describe('配置迁移链', () => {
         smartWindow: null,
         smartDuringClass: false,
         smartSummarize: true,
+        smartDelayMinutes: 0,
         taskDoneEnabled: true,
         taskDoneBackgroundOnly: true,
       })
@@ -2384,6 +2389,47 @@ describe('配置迁移链', () => {
         unknown
       >
       expect(providers['ghost']).toBe('not-an-object')
+    })
+  })
+
+  describe('v43 → v44（智慧提醒延迟投递，docs/07 §4）', () => {
+    it('为老配置补 smartDelayMinutes 0（= 立即），已有提醒字段原样保留', () => {
+      const outcome = migrate({
+        version: 43,
+        notifications: { channel: 'banner', smartEnabled: true, volume: 30 },
+      })
+      expect(outcome.applied[0]).toContain('v43 → v44')
+      expect(outcome.data['notifications']).toMatchObject({
+        channel: 'banner',
+        smartEnabled: true,
+        volume: 30,
+        smartDelayMinutes: 0,
+      })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('用户已写的延迟分钟数不被默认值覆盖（幂等）', () => {
+      const once = migrate({
+        version: 43,
+        notifications: { smartDelayMinutes: 15 },
+      })
+      expect(once.data['notifications']).toMatchObject({ smartDelayMinutes: 15 })
+      const twice = migrate({ ...once.data, version: 43 })
+      expect(twice.data['notifications']).toEqual(once.data['notifications'])
+    })
+
+    it('缺 notifications 组时补完整默认（含 0 = 立即），迁移结果过 Schema 的 notifications 段', () => {
+      const outcome = migrate({ version: 43 })
+      expect(outcome.data['notifications']).toMatchObject({ smartDelayMinutes: 0 })
+      const parsed = SettingsSchema.safeParse(outcome.data)
+      if (parsed.success) {
+        expect(parsed.data.notifications.smartDelayMinutes).toBe(0)
+      } else {
+        expect(
+          parsed.error.issues.every((issue) => issue.path[0] !== 'notifications'),
+          JSON.stringify(parsed.error.issues),
+        ).toBe(true)
+      }
     })
   })
 })

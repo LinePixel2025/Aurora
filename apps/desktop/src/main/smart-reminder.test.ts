@@ -37,7 +37,12 @@ interface Harness {
 }
 
 function captureSaves() {
-  const saved: { version: number; queue: SmartReminderEntry[]; lastDigest?: string }[] = []
+  const saved: {
+    version: number
+    queue: SmartReminderEntry[]
+    lastDigest?: string
+    pendingSince?: string
+  }[] = []
   return { saved }
 }
 
@@ -46,6 +51,7 @@ interface HarnessOptions {
   mode?: string
   lessons?: Lesson[] | 'throw'
   preloaded?: SmartReminderEntry[]
+  preloadedPendingSince?: string | null
   summarize?: ((entries: readonly SmartReminderEntry[]) => Promise<string | null>) | null
 }
 
@@ -58,6 +64,7 @@ function makeHarness(options: HarnessOptions = {}) {
     smartWindow: { start: '09:00', end: '10:00', daily: true, armedDate: localDateKey(MONDAY) },
     smartDuringClass: false,
     smartSummarize: true,
+    smartDelayMinutes: 0,
     ...options.prefs,
   }
   const modeId = options.mode ?? 'classroom'
@@ -76,7 +83,10 @@ function makeHarness(options: HarnessOptions = {}) {
       if (lessons === 'throw') throw new Error('provider down')
       return lessons
     },
-    loadQueue: async () => options.preloaded ?? [],
+    loadQueue: async () => ({
+      queue: options.preloaded ?? [],
+      pendingSince: options.preloadedPendingSince ?? null,
+    }),
     saveQueue: async (file) => {
       saved.push(JSON.parse(JSON.stringify(file)))
     },
@@ -234,7 +244,7 @@ describe('SmartReminderService.gate', () => {
       },
       mode: () => 'classroom',
       lessonsToday: async () => [],
-      loadQueue: async () => [],
+      loadQueue: async () => ({ queue: [], pendingSince: null }),
       saveQueue: async () => {},
       clearWindow: async () => {},
       summarize: async () => null,
@@ -321,6 +331,164 @@ describe('SmartReminderService 结算', () => {
   })
 })
 
+describe('SmartReminderService 延迟结算（v44）', () => {
+  /** 把时钟推到 10:05（窗口 09:00–10:00 之外）并评估 = 制造一次下降沿 */
+  async function edgeAt1005(h: ReturnType<typeof makeHarness>): Promise<void> {
+    h.now.setTime(new Date(2026, 2, 2, 10, 5).getTime())
+    await h.service.evaluate()
+  }
+
+  it('delay>0：边沿只记时刻不投递；到期投一次并清 pendingSince；延迟期间新提醒照常放行', async () => {
+    const h = makeHarness({ prefs: { smartDelayMinutes: 10 } })
+    await h.service.evaluate()
+    h.service.gate({ title: 'x', body: 'y' })
+    await edgeAt1005(h)
+    expect(h.digestCalls).toHaveLength(0)
+    expect(h.service.diagnostics().queueLength).toBe(1)
+    const edge = new Date(2026, 2, 2, 10, 5)
+    expect(h.service.diagnostics().pendingSettleAt).toBe(
+      new Date(edge.getTime() + 10 * 60_000).toISOString(),
+    )
+    await flushSaves()
+    expect(h.saved.at(-1)?.pendingSince).toBe(edge.toISOString())
+    // 延迟期间不在免打扰期：新提醒照常逐条投递，不入队
+    expect(h.service.gate({ title: 'new', body: 'z' })).toBe('deliver')
+    expect(h.service.diagnostics().queueLength).toBe(1)
+
+    // 差 1 秒不到期：不投
+    h.now.setTime(new Date(2026, 2, 2, 10, 14, 59).getTime())
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(0)
+    // 到期：投一次，pendingSince 清除
+    h.now.setTime(new Date(2026, 2, 2, 10, 15).getTime())
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(1)
+    expect(h.digestCalls[0]?.count).toBe(1)
+    expect(h.service.diagnostics().queueLength).toBe(0)
+    expect(h.service.diagnostics().pendingSettleAt).toBeUndefined()
+    await flushSaves()
+    expect(h.saved.at(-1)?.pendingSince).toBeUndefined()
+  })
+
+  it('延迟期间改 delay=0：立即结算', async () => {
+    const h = makeHarness({ prefs: { smartDelayMinutes: 10 } })
+    await h.service.evaluate()
+    h.service.gate({ title: 'x', body: 'y' })
+    await edgeAt1005(h)
+    expect(h.digestCalls).toHaveLength(0)
+    h.prefs.smartDelayMinutes = 0
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(1)
+    expect(h.service.diagnostics().queueLength).toBe(0)
+  })
+
+  it('延迟期间改大 delay：按新值顺延，原到期时刻不投', async () => {
+    const h = makeHarness({ prefs: { smartDelayMinutes: 10 } })
+    await h.service.evaluate()
+    h.service.gate({ title: 'x', body: 'y' })
+    await edgeAt1005(h)
+    h.prefs.smartDelayMinutes = 30
+    h.now.setTime(new Date(2026, 2, 2, 10, 15).getTime())
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(0)
+    expect(h.service.diagnostics().pendingSettleAt).toBe(new Date(2026, 2, 2, 10, 35).toISOString())
+    h.now.setTime(new Date(2026, 2, 2, 10, 35).getTime())
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(1)
+  })
+
+  it('延迟期间再次入窗：取消待投并落盘；出窗按新边沿重新计时，新旧队列合并结算', async () => {
+    const h = makeHarness({ prefs: { smartDelayMinutes: 10 } })
+    await h.service.evaluate()
+    h.service.gate({ title: 'old', body: 'y' })
+    await edgeAt1005(h)
+    expect(h.service.diagnostics().pendingSettleAt).toBeDefined()
+
+    // 重新入窗（10:00–11:00 覆盖当前 10:05）：取消待投
+    h.prefs.smartWindow = {
+      start: '10:00',
+      end: '11:00',
+      daily: true,
+      armedDate: localDateKey(MONDAY),
+    }
+    await h.service.evaluate()
+    expect(h.service.diagnostics().active).toBe(true)
+    expect(h.service.diagnostics().pendingSettleAt).toBeUndefined()
+    await flushSaves()
+    expect(h.saved.at(-1)?.pendingSince).toBeUndefined()
+    h.service.gate({ title: 'new', body: 'z' })
+    expect(h.service.diagnostics().queueLength).toBe(2)
+
+    // 出窗：按新边沿 11:05 重新计时
+    h.prefs.smartWindow = null
+    h.now.setTime(new Date(2026, 2, 2, 11, 5).getTime())
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(0)
+    expect(h.service.diagnostics().pendingSettleAt).toBe(new Date(2026, 2, 2, 11, 15).toISOString())
+    h.now.setTime(new Date(2026, 2, 2, 11, 15).getTime())
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(1)
+    expect(h.digestCalls[0]?.count).toBe(2)
+  })
+
+  it('延迟期间关总开关：不到期不投，到期仍投（不丢提醒）', async () => {
+    const h = makeHarness({ prefs: { smartDelayMinutes: 10 } })
+    await h.service.evaluate()
+    h.service.gate({ title: 'x', body: 'y' })
+    await edgeAt1005(h)
+    h.prefs.smartEnabled = false
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(0)
+    h.now.setTime(new Date(2026, 2, 2, 10, 15).getTime())
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(1)
+    expect(h.service.diagnostics().queueLength).toBe(0)
+  })
+
+  it('一次性窗口 + 延迟：待投期间不清窗口，到期结算后清空', async () => {
+    const h = makeHarness({
+      prefs: {
+        smartDelayMinutes: 10,
+        smartWindow: {
+          start: '09:00',
+          end: '10:00',
+          daily: false,
+          armedDate: localDateKey(MONDAY),
+        },
+      },
+    })
+    await h.service.evaluate()
+    h.service.gate({ title: 'x', body: 'y' })
+    await edgeAt1005(h)
+    expect(h.clearCalls).toBe(0)
+    expect(h.prefs.smartWindow).not.toBeNull()
+    h.now.setTime(new Date(2026, 2, 2, 10, 15).getTime())
+    await h.service.evaluate()
+    expect(h.digestCalls).toHaveLength(1)
+    expect(h.clearCalls).toBe(1)
+    expect(h.prefs.smartWindow).toBeNull()
+  })
+
+  it('空队列边沿不武装；pendingSince 残留 + 空队列：清残留不投递', async () => {
+    const h = makeHarness({ prefs: { smartDelayMinutes: 10 } })
+    await h.service.evaluate()
+    await edgeAt1005(h)
+    expect(h.service.diagnostics().pendingSettleAt).toBeUndefined()
+    expect(h.digestCalls).toHaveLength(0)
+
+    const h2 = makeHarness({
+      preloadedPendingSince: new Date(2026, 2, 2, 10, 5).toISOString(),
+      prefs: { smartWindow: null, smartDelayMinutes: 10 },
+    })
+    await h2.service.start()
+    expect(h2.digestCalls).toHaveLength(0)
+    expect(h2.service.diagnostics().pendingSettleAt).toBeUndefined()
+    await flushSaves()
+    expect(h2.saved.at(-1)?.pendingSince).toBeUndefined()
+    h2.service.stop()
+  })
+})
+
 describe('SmartReminderService.start（跨重启）', () => {
   it('启动时遗留队列且当前不在免打扰期：立即补一次结算', async () => {
     const h = makeHarness({
@@ -346,6 +514,73 @@ describe('SmartReminderService.start（跨重启）', () => {
     h.service.stop()
   })
 
+  it('v44 跨重启：待投已到期 → 补结算；未到期 → 到点投；仍在窗内 → 取消待投', async () => {
+    const entry = { at: '2026-03-02T09:10:00.000Z', title: 'x', body: 'y' }
+    const edge = new Date(2026, 2, 2, 10, 5).toISOString()
+
+    // 已到期（10:20 > 10:05 + 10min）
+    const due = makeHarness({
+      preloaded: [entry],
+      preloadedPendingSince: edge,
+      prefs: { smartWindow: null, smartDelayMinutes: 10 },
+    })
+    due.now.setTime(new Date(2026, 2, 2, 10, 20).getTime())
+    await due.service.start()
+    expect(due.digestCalls).toHaveLength(1)
+    due.service.stop()
+
+    // 未到期（10:10 < 10:15）：启动不投，到点投
+    const pending = makeHarness({
+      preloaded: [entry],
+      preloadedPendingSince: edge,
+      prefs: { smartWindow: null, smartDelayMinutes: 10 },
+    })
+    pending.now.setTime(new Date(2026, 2, 2, 10, 10).getTime())
+    await pending.service.start()
+    expect(pending.digestCalls).toHaveLength(0)
+    expect(pending.service.diagnostics().queueLength).toBe(1)
+    expect(pending.service.diagnostics().pendingSettleAt).toBe(
+      new Date(2026, 2, 2, 10, 15).toISOString(),
+    )
+    pending.now.setTime(new Date(2026, 2, 2, 10, 15).getTime())
+    await pending.service.evaluate()
+    expect(pending.digestCalls).toHaveLength(1)
+    pending.service.stop()
+
+    // 仍在窗内（09:40 在 09:00–10:00 内）：取消陈旧待投，继续攒
+    const inWindow = makeHarness({
+      preloaded: [entry],
+      preloadedPendingSince: edge,
+      prefs: { smartDelayMinutes: 10 },
+    })
+    inWindow.now.setTime(new Date(2026, 2, 2, 9, 40).getTime())
+    await inWindow.service.start()
+    expect(inWindow.digestCalls).toHaveLength(0)
+    expect(inWindow.service.diagnostics().active).toBe(true)
+    expect(inWindow.service.diagnostics().queueLength).toBe(1)
+    expect(inWindow.service.diagnostics().pendingSettleAt).toBeUndefined()
+    await flushSaves()
+    expect(inWindow.saved.at(-1)?.pendingSince).toBeUndefined()
+    inWindow.service.stop()
+  })
+
+  it('v44 跨重启 + 一次性窗口跨天：待投到期 → 结算并清窗口', async () => {
+    const h = makeHarness({
+      preloaded: [{ at: '2026-03-01T09:10:00.000Z', title: 'x', body: 'y' }],
+      preloadedPendingSince: new Date(2026, 2, 1, 10, 5).toISOString(),
+      prefs: {
+        smartDelayMinutes: 10,
+        smartWindow: { start: '09:00', end: '10:00', daily: false, armedDate: '2026-03-01' },
+      },
+    })
+    // MONDAY 09:30：一次性窗口昨天已过期，待投早已到期
+    await h.service.start()
+    expect(h.digestCalls).toHaveLength(1)
+    expect(h.clearCalls).toBe(1)
+    expect(h.prefs.smartWindow).toBeNull()
+    h.service.stop()
+  })
+
   it('队列文件损坏：按空队列启动，不抛错', async () => {
     const logger = makeLogger()
     const service = new SmartReminderService({
@@ -356,6 +591,7 @@ describe('SmartReminderService.start（跨重启）', () => {
         smartWindow: null,
         smartDuringClass: false,
         smartSummarize: true,
+        smartDelayMinutes: 0,
       }),
       mode: () => 'classroom',
       lessonsToday: async () => [],

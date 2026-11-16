@@ -208,7 +208,7 @@ function settingsWith(overrides: {
     appearance: { theme: 'system', accent: 'aurora', glass: true, awarenessGlow: true },
     // v36 新增顶层分组（插件，docs/14）：本用例不涉及插件，保持默认态
     plugins: { enabled: true, devDirs: [], activeTheme: { pluginId: '', themeId: '' } },
-    // v37 / v38 / v40 / v41 / v42：默认提醒方式、细节、智慧提醒、任务完成提醒与自定义音效（夹具不关心，取出厂默认）
+    // v37 / v38 / v40 / v41 / v42 / v44：默认提醒方式、细节、智慧提醒、任务完成提醒、自定义音效与延迟投递（夹具不关心，取出厂默认）
     notifications: {
       channel: 'system',
       sound: true,
@@ -221,6 +221,7 @@ function settingsWith(overrides: {
       smartWindow: null,
       smartDuringClass: false,
       smartSummarize: true,
+      smartDelayMinutes: 0,
       taskDoneEnabled: true,
       taskDoneBackgroundOnly: true,
     },

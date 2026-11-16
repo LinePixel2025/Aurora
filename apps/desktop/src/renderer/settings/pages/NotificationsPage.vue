@@ -8,6 +8,7 @@
  *    `volume` / `speak` / `size` / `durationMs`）；
  * 3. **智慧提醒**（v40）：免打扰期（手动时段 / ClassRoom 上课期间）不弹提醒，期结束后
  *    汇总成一条投递（`smartEnabled` / `smartWindow` / `smartDuringClass` / `smartSummarize`）；
+ *    v44 加「结束后延迟投递」（`smartDelayMinutes`，0 = 立即）；
  * 3.1 **任务完成提醒**（v41）：Agent 正常收敛后提醒「任务完成」，点击跳回会话；
  *    可关掉，也可选「仅主界面不在前台时提醒」（`taskDoneEnabled` / `taskDoneBackgroundOnly`）；
  * 4. **定时提醒**：自动化总开关（`automations.enabled`）+ 课前提醒三件套
@@ -234,6 +235,7 @@ async function saveQuiet(which: 'start' | 'end', value: string): Promise<void> {
 const smartEnabled = computed(() => notifications.value?.smartEnabled ?? false)
 const smartDuringClass = computed(() => notifications.value?.smartDuringClass ?? false)
 const smartSummarize = computed(() => notifications.value?.smartSummarize ?? true)
+const smartDelayMinutes = computed(() => notifications.value?.smartDelayMinutes ?? 0)
 const smartWindow = computed(() => notifications.value?.smartWindow ?? null)
 const smartStart = computed(() => smartWindow.value?.start ?? '')
 const smartEnd = computed(() => smartWindow.value?.end ?? '')
@@ -595,6 +597,28 @@ function describeTest(result: NotificationTestResult): string {
           :disabled="!smartEnabled"
           @change="save({ smartSummarize: ($event.target as HTMLInputElement).checked })"
         />
+      </SettingField>
+
+      <SettingField
+        data-field="notifications.smartDelayMinutes"
+        label="结束后延迟投递"
+        hint="0 = 立即；改延迟按新值重算，再次免打扰重新计时"
+      >
+        <div class="volume-row">
+          <input
+            class="volume-range"
+            type="range"
+            min="0"
+            max="120"
+            step="5"
+            :value="smartDelayMinutes"
+            :disabled="!smartEnabled"
+            @change="save({ smartDelayMinutes: Number(($event.target as HTMLInputElement).value) })"
+          />
+          <span class="tiny muted mono volume-value">
+            {{ smartDelayMinutes === 0 ? '立即' : smartDelayMinutes + ' 分钟' }}
+          </span>
+        </div>
       </SettingField>
     </section>
 
