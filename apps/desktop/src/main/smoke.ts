@@ -156,6 +156,25 @@ export function smokeScript(
       record('appearance 默认开启流光特效', settings.appearance && settings.appearance.awarenessGlow === true, String(settings.appearance && settings.appearance.awarenessGlow))
     }
 
+    // 原生材质降级（2026-11-18）：Win10 没有 DWM Acrylic，Electron 在 Win11 22H2 以下
+    // 对 setBackgroundMaterial 静默 no-op。判据必须先在主进程按 build 门控 —— 非 Win11
+    // 不得把窗口记成「已挂材质」；渲染层同时把 data-glass 压成 off，否则半透明面板
+    // 会叠在无模糊的透明窗口上（提示条直接裸漏桌面）。
+    {
+      const smokeDiag = await window.aurora.app.getSmokeDiagnostics()
+      const nativeGlass = smokeDiag && smokeDiag.ok === true ? smokeDiag.value.nativeGlass : undefined
+      record(
+        '原生材质状态与系统版本一致（非 Win11 不得标记 Acrylic）',
+        Boolean(nativeGlass) && (nativeGlass.supported ? nativeGlass.windows.indexOf('chat') !== -1 : nativeGlass.windows.length === 0),
+        nativeGlass ? JSON.stringify(nativeGlass) : '无诊断',
+      )
+      record(
+        'data-glass 与原生材质可用性一致',
+        document.documentElement.getAttribute('data-glass') === (nativeGlass && nativeGlass.supported ? 'on' : 'off'),
+        String(document.documentElement.getAttribute('data-glass')),
+      )
+    }
+
     const waitColorScheme = async (mode) => {
       const hit = await waitFor(
         async () => (window.matchMedia && window.matchMedia('(prefers-color-scheme: ' + mode + ')').matches ? mode : ''),

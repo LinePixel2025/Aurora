@@ -3514,6 +3514,13 @@ async function bootstrap(): Promise<void> {
       preClassFired: smokeMode ? [...preClassFired] : undefined,
       automationRuns: smokeMode ? [...automationRunLog] : undefined,
       widgetWindows: smokeMode ? widgetManager?.diagnostics() : undefined,
+      // 原生 Acrylic 判据（Win11 22H2+）与已挂材质窗口：Win10 上 windows 必须为空
+      nativeGlass: smokeMode
+        ? {
+            supported: windows?.supportsNativeGlass() ?? false,
+            windows: windows?.nativeGlassWindowNames() ?? [],
+          }
+        : undefined,
       // 流光提醒：服务队列 + 两个原生窗口的真实可见性（自测断言「show 后可见 / dismiss 后不可见」）
       banner: smokeMode ? bannerDiagnostics() : undefined,
       // 智慧提醒：抑制状态 / 队列长度 / 是否已结算（自测断言「抑制入队 → 结算出摘要」）

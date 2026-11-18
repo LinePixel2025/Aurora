@@ -312,7 +312,12 @@
 - **原生毛玻璃（2026-10-04，Windows 11 22H2+）**：主界面 BrowserWindow 使用
   `backgroundMaterial: 'acrylic'`，渲染层 body 透明，系统材质提供长驻窗口的桌面层次；
   页面侧栏、标题栏、输入区再叠加 CSS 玻璃作为可读性层。系统材质不可用或非 win32 时
-  自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗 / 记忆库 / 自动化详情窗 /
+  自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。
+  **2026-11-18：按 build 22621 门控**（`main/glass-support.ts`；Electron 在 Win10 上
+  `setBackgroundMaterial` 静默 no-op、不抛错，不能拿 try/catch 当降级判据）。Win10（含最后的
+  19045）与 Win11 21H2 不挂材质：窗口建窗即用不透明主题底色，preload 同步暴露
+  `app.nativeGlassSupported = false`，渲染层强制 `data-glass="off"`（与手动关毛玻璃同一套实色令牌）。
+  提示条同样生效 —— 收起态是 8px 竖条、展开态为实色面板，不存在「透明窗口 + 半透明 tint」裸漏桌面。设置窗 / 记忆库 / 自动化详情窗 /
   插件配置窗口同样启用原生 Acrylic（侧栏使用标准玻璃、内容区叠 `--glass-content` 可读性 tint）；
   提示条（§2.1）自 2026-10-11 起并入同一份材质名单；引导窗继续保持
   不透明基座，避免所有窗口同时采样桌面造成 GPU 重绘与可读性问题。

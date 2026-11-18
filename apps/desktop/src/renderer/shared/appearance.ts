@@ -31,6 +31,16 @@ export interface AppearanceInput {
   glass?: boolean | undefined
 }
 
+/**
+ * 当前系统是否有原生 Acrylic（Windows 11 22H2+）。
+ *
+ * preload 同步暴露；非 Electron / 老 preload 缺这个字段时按「可用」处理，保持原有行为。
+ */
+function nativeGlassAvailable(): boolean {
+  if (typeof window === 'undefined') return true
+  return window.aurora?.app?.nativeGlassSupported !== false
+}
+
 /** 把外观应用到文档根；`undefined`（配置还没加载）按默认档处理。 */
 export function applyAppearance(appearance: AppearanceInput | undefined): void {
   const style = document.documentElement.style
@@ -41,5 +51,7 @@ export function applyAppearance(appearance: AppearanceInput | undefined): void {
     style.setProperty('--aurora-blue', ACCENT_PRESETS[key])
   }
   // 显式写 'on' 而不是删属性：样式与探针都能读到确定态（关闭时才是 'off'）。
-  document.documentElement.setAttribute('data-glass', appearance?.glass === false ? 'off' : 'on')
+  // 原生材质不可用（Win10）时同样压成 'off'：窗口没有 DWM 模糊，面板必须走实色令牌。
+  const glassOff = appearance?.glass === false || !nativeGlassAvailable()
+  document.documentElement.setAttribute('data-glass', glassOff ? 'off' : 'on')
 }

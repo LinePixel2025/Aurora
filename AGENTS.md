@@ -57,12 +57,13 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、295 条断言应当全绿（2026-11-17 实测 `SUMMARY 295/295 passed`；
+  **全量约 40 秒、297 条断言应当全绿（2026-11-18 实测 `SUMMARY 297/297 passed`；
   2026-11-07 实测 283/283；v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
   v36 插件系统 +24、小组件与推送 +4、v37 小组件层级 / 材质 +4、插件配置窗口 +1、
   流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1、小组件不可激活 / 固定 +3、
   v39 Computer Use +5、v40 智慧提醒 §2.5 +6、v41 轮终改动汇总 / 任务完成提醒 +2、
-  统一缩放 +3、v42 自定义提示音 §2.4.1 +4、v43 TTS +7、v44 智慧提醒延迟投递 +2 条断言；
+  统一缩放 +3、v42 自定义提示音 §2.4.1 +4、v43 TTS +7、v44 智慧提醒延迟投递 +2、
+  v0.7.2 Win10 材质降级 +2 条断言；
   示例插件缺席等环境差异会少 3 条，以当轮 SUMMARY 为准）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
@@ -206,6 +207,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **项目根边界分两层**（弹卡用字符串判定；能不能碰由 realpath 前缀校验），`workspaceDir` **不是**安全边界；解析只走 `main/tools/session-project.ts` 的**会话级唯一口径**，别在执行链上再写一套。
 - **样式**：给子组件写样式要么独占类名要么 `:deep()`，别指望 scoped 隔掉同名类；`.clamp-2` 不挂 `<td>`（挂内层元素）。
 - **`.vue` 模板不写多语句内联处理器**；`prettier --write` 之后**必须重跑一次构建**再进截图。
+- **原生 Acrylic 必须按 Win11 22H2（build 22621）构建号门控**：主进程判据唯一在
+  `main/glass-support.ts`，preload 有一份自包含镜像（沙箱不能 import 工作区包，改动两处同步）。
+  Electron 在 Win10 上 `setBackgroundMaterial` **静默 no-op、不抛错**，别把 try/catch 当降级判据；
+  Win10 必须走不透明底色 + `data-glass="off"`（`app.nativeGlassSupported` 驱动）。
 - **改了 `packages/shared/src/**` 或 `packages/agent-core/src/**`**：先 build 该包再跑下游 typecheck；进端到端（dev / smoke / capture）前也要 build（它消费的是 `dist`）。
   **全新克隆（没有 `dist/`）要先 `pnpm build:packages`**：工作区包经 `main` / `types` 指向 `dist`，否则
   `pnpm typecheck` / `pnpm test` 报 `TS2307: Cannot find module '@aurora/shared'`。CI 已内置这一步（2026-11-14 实测）。

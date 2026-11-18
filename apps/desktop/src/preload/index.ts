@@ -40,8 +40,23 @@ function filePathOf(file: File): string {
   }
 }
 
+/**
+ * DWM 原生 Acrylic 只在 Windows 11 22H2（build 22621）及以上可用。
+ *
+ * 与主进程 `window-manager.ts` 的 `supportsNativeWindowMaterial()` 是**同一份判据**
+ * （沙箱 preload 不能 import 工作区包，只能各写一份，改动时两处同步）。
+ * 低版本上 Electron 的 `setBackgroundMaterial` 静默 no-op、不抛错，渲染层只能靠这个
+ * 同步布尔值把 `data-glass` 压成 off，否则半透明面板会叠在无模糊的透明窗口上。
+ */
+function supportsNativeWindowMaterial(): boolean {
+  if (process.platform !== 'win32') return false
+  const build = Number(process.getSystemVersion().split('.')[2] ?? '')
+  return Number.isInteger(build) && build >= 22621
+}
+
 const api: AuroraApi = {
   app: {
+    nativeGlassSupported: supportsNativeWindowMaterial(),
     getInfo: () => invoke(IPC.app.getInfo),
     quit: () => ipcRenderer.invoke(IPC.app.quit) as Promise<void>,
     openPath: (request) => invoke(IPC.app.openPath, request),

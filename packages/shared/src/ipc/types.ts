@@ -133,6 +133,14 @@ export interface SmokeDiagnostics {
   automationRuns?: AutomationRun[]
   /** 桌面小组件窗口原生状态（层级 / 材质，v37 起） */
   widgetWindows?: WidgetWindowDiagnostics[]
+  /**
+   * 原生 Acrylic 判据与已挂材质的窗口（2026-11-18）。
+   * 自测断言：`supported === false` 时 `windows` 必须为空（Win10 不得标记已挂材质）。
+   */
+  nativeGlass?: {
+    supported: boolean
+    windows: string[]
+  }
   /** 流光提醒的运行态（服务队列 + 两个原生窗口，2026-10-24） */
   banner?: BannerDiagnostics
   /** 智慧提醒的运行态（v40，docs/07 §4）：自测据此断言「抑制入队 → 结算出摘要」 */
@@ -2797,6 +2805,13 @@ export interface PluginOpenPanelEvent {
 
 export interface AuroraApi {
   app: {
+    /**
+     * 当前系统是否支持 DWM 原生材质（Windows 11 22H2+）。
+     *
+     * preload 同步暴露、不占 IPC：渲染层据此把 `data-glass` 压成 off（Win10 无 Acrylic）。
+     * 判据与主进程 `WindowManager.glassAllowed()` 同源（两处各一份，改动必须同步）。
+     */
+    nativeGlassSupported: boolean
     getInfo(): Promise<Result<AppInfo>>
     quit(): Promise<void>
     openPath(request: OpenPathRequest): Promise<Result<string>>

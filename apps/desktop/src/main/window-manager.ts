@@ -32,6 +32,7 @@ import {
   type WindowName,
   type WindowState,
 } from '@aurora/shared'
+import { supportsNativeWindowMaterial } from './glass-support.js'
 import {
   EDGE_BAR_WIDTHS,
   edgeBarShape,
@@ -278,7 +279,12 @@ const NATIVE_GLASS_WINDOWS = new Set<WindowName>([
   'edge-bar',
 ])
 
-/** 常规窗口使用 Acrylic；Electron 44 起系统最大化已能稳定保持材质。 */
+/**
+ * 常规窗口使用 Acrylic；Electron 44 起系统最大化已能稳定保持材质。
+ *
+ * 原生材质只在 **Win11 22H2+** 生效（判据 `glass-support.ts`；低版本 Electron 静默 no-op）。
+ * 渲染层的同一判据在 `preload/index.ts`，`data-glass` 由 `app.nativeGlassSupported` 驱动。
+ */
 const NATIVE_WINDOW_MATERIAL = 'acrylic' as const
 
 /**
@@ -435,6 +441,8 @@ export class WindowManager {
    */
   private glassAllowed(name: WindowName): boolean {
     if (process.platform !== 'win32' || !NATIVE_GLASS_WINDOWS.has(name)) return false
+    // Win10 没有 DWM Acrylic：设置开着也强制不挂，窗口走不透明底色（2026-11-18）
+    if (!supportsNativeWindowMaterial()) return false
     return this.options.settings.get().appearance.glass
   }
 
@@ -758,6 +766,16 @@ export class WindowManager {
   /** 当前窗口是否已启用 Windows 系统毛玻璃材质（供视觉验收断言）。 */
   usesNativeGlass(name: WindowName): boolean {
     return this.nativeGlassWindows.has(name)
+  }
+
+  /** 当前系统是否具备 DWM 原生材质（Win11 22H2+）；自测据此断言非 Win11 不得标记。 */
+  supportsNativeGlass(): boolean {
+    return supportsNativeWindowMaterial()
+  }
+
+  /** 已挂原生材质的窗口名快照（仅供自测诊断）。 */
+  nativeGlassWindowNames(): WindowName[] {
+    return [...this.nativeGlassWindows]
   }
 
   /** 自测诊断：读取窗口原生置顶位。 */
@@ -1756,6 +1774,7 @@ export class WindowManager {
       this.nativeGlassWindows.add(name)
     } catch (error) {
       this.nativeGlassWindows.delete(name)
+      // 版本门控之外的最后兜底（DWM 被组策略 / 远程会话关掉等）。
       // 回退判据就是「这个窗口本来在材质名单里」——不要再手抄一份名单：
       // 漏掉某一个（2026-10-11 的 edge-bar 就是这种）会让它落在「既不透明也没材质」的裸漏态。
       if (NATIVE_GLASS_WINDOWS.has(name)) {
