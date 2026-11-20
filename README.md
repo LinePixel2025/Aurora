@@ -173,7 +173,7 @@
 
 ### 从源码运行
 
-需要 **Node.js ≥ 20.19** 与 **pnpm 11.15.1**（`packageManager` 已固定，建议用 Corepack）。
+需要 **Node.js ≥ 22.22** 与 **pnpm 11.15.1**（`packageManager` 已固定，建议用 Corepack）。
 
 ```powershell
 pnpm install     # 首次会下载 Electron 运行时（约 100MB）

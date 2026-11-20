@@ -5,7 +5,7 @@
   "description": "Aurora —— 将 Windows 接入 AI 生态的系统级 Agent 工具",
   "packageManager": "pnpm@11.15.1",
   "engines": {
-    "node": ">=20.19"
+    "node": ">=22.22"
   },
   "scripts": {
     "dev": "pnpm --filter @aurora/desktop dev",

@@ -24,7 +24,7 @@
 ## 环境要求
 
 - **Windows 10 / 11 x64**（本项目的唯一正式支持平台）
-- **Node.js >= 20.19**（见根 `package.json` 的 `engines`）
+- **Node.js >= 22.22**（见根 `package.json` 的 `engines`；chokidar 6 要求）
 - **pnpm 11.15.1**：执行一次 `corepack enable` 即可，版本由 `packageManager` 字段钉住
 - 首次 `pnpm install` 会下载 Electron 运行时（约 100 MB）
 - Office 结构化能力依赖固定版本 OfficeCLI：`pnpm officecli:fetch`
