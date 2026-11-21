@@ -7,7 +7,7 @@
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-0A84FF.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20x64-0078D4.svg" alt="Platform: Windows x64" />
-  <img src="https://img.shields.io/badge/Electron-44.5.1-47848F.svg" alt="Electron 44.5.1" />
+  <img src="https://img.shields.io/badge/Electron-44.11.3-47848F.svg" alt="Electron 44.11.3" />
   <img src="https://img.shields.io/badge/Vue-3-42B883.svg" alt="Vue 3" />
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6.svg" alt="TypeScript strict" />
   <a href="https://github.com/LinePixel2025/Aurora/releases/latest"><img src="https://img.shields.io/github/v/release/LinePixel2025/Aurora?label=release" alt="Latest release" /></a>
@@ -17,12 +17,14 @@
   <a href="https://github.com/LinePixel2025/Aurora/security/code-scanning"><img src="https://img.shields.io/badge/CodeQL-weekly-6f42c1.svg" alt="CodeQL" /></a>
 </p>
 
-**Aurora** 是一款常驻 Windows 系统托盘的**系统级 AI Agent**。它把「AI 对话」做成系统的一部分：屏幕右缘一条 8px 的提示条负责随取随用，三栏工作台负责把活真正干完——读文件、跑命令、操作 Office、开浏览器、执行自动化，所有动作都有确认、快照与回滚。
+**Aurora** 是一款常驻 Windows 系统托盘的**系统级 AI Agent**。它把「AI 对话」做成系统的一部分：屏幕右缘一条 8px 的提示条负责随取随用，三栏工作台负责把活真正干完——读文件、跑命令、操作 Office、开浏览器、执行自动化、操作桌面；敏感动作按权限档确认，写文件前有快照，关键操作可回滚。
 
-> **当前发布：v0.7.0**（Windows x64，未签名）。主线是 **TTS 朗读优化**：语气指令可设定、
-> 合成语言可锁定（不再「中文读出外语腔」）、分块边播边取大幅降低首声延迟，新增
-> Qwen-Audio-TTS 接口类型（语气指令 / 复刻音色）；同批含全局统一缩放 `Ctrl +/−/0`、
-> 流光提醒自定义音效、右栏文件面板重做。配置 Schema v41 → v43（自动迁移）。
+> **当前发布：v0.7.2**（Windows x64，未签名）。v0.7.1 → v0.7.2 主线是
+> **Windows 10 原生材质适配修复**：DWM Acrylic 只在 Win11 22H2（build 22621）及以上可用，
+> Win10 / Win11 21H2 强制实色，修掉「窗口被记成已挂材质、实际透明无模糊」；安装向导保留
+> 安装目录选择。配置 Schema 仍为 **v44**（无迁移）。
+> 上一版 v0.7.1 带来智慧提醒延迟投递、桌面小组件 desktop 层置顶修复，以及 Center 0.7.0
+> 鸿蒙遥控台接入 API；TTS 朗读、全局缩放与文件面板重做见 v0.7.0。
 > 发布说明与安装包见 [Releases](https://github.com/LinePixel2025/Aurora/releases)。
 
 ---
@@ -52,9 +54,9 @@
 | | Aurora 的做法 |
 |---|---|
 | **不抢注意力** | 常驻托盘，默认只占屏幕右缘 8px；悬停展开提示条，点击才拉出完整工作台，关闭 = 隐藏 |
-| **真的能干活** | 工具调用循环 + 文件 / 命令 / Office / 浏览器 / 终端 / 子代理，不是“只给建议” |
+| **真的能干活** | 工具调用循环 + 文件 / 命令 / Office / 浏览器 / 桌面操控 / 子代理，不是“只给建议” |
 | **可感知、可主动** | 时间、电源、网络、前台窗口、课程表、文件变化都进入上下文；新文件自动分类、课前自动提醒 |
-| **可回滚** | 写文件前先做快照；敏感工具默认二次确认；每个动作都有执行轨迹 |
+| **可回滚 / 可控** | 写文件前先做快照；只读 / 确认 / 完全权限三档，敏感工具按档位确认或放行；每个动作都有执行轨迹 |
 | **可扩展** | Skill、MCP、插件（工具 / 面板 / 小组件 / 主题 / 配置）与自托管 Aurora Center |
 | **本地优先** | 配置、会话、记忆、日志都在本机；API Key 用系统安全存储加密，日志与导出统一脱敏 |
 
@@ -135,7 +137,7 @@
 - **会话**：本地持久化、损坏重建、字符预算截断、自动标题、项目 / Agent / 快速会话分组
 - **子代理**：并行、可写、可续跑，写权限按实际授予结果落盘
 - **上下文**：感知摘要 + 人设 + 模式片段 + Skill / 工具清单，超长自动摘要压缩
-- **确认与回滚**：敏感工具二次确认、写前快照、执行轨迹可回看
+- **确认与回滚**：敏感工具按权限档确认、写前快照、执行轨迹可回看
 
 ### 模式
 
@@ -148,10 +150,12 @@
 ### 扩展与系统能力
 
 - **自动化**：定时 / 间隔 / 上课 / 下课 / 指定科目 / 插件事件；Agent Mode 与 Normal Mode
+- **提醒**：系统通知、流光提醒、智慧提醒免打扰与延迟投递、任务完成提醒
+- **语音**：TTS 朗读（语气指令 / 语种锁定 / 分块边播边取 / 自定义提示音）、STT 语音输入
 - **插件系统**：工具、Skill、斜杠命令、右栏面板、桌面 / 提示条小组件、临时输入窗口、主题、配置项、自动化动作
 - **插件市场**：Aurora Center 上架、下载、校验与更新；页面型插件运行在沙箱 iframe
 - **内置浏览器**：Agent 可打开、读取、截图、点击真实页面（受单独开关与并发槽位限制）
-- **Computer Use（main 开发中）**：多模态模型 + 用户显式授权后截屏、移动虚拟光标、点击 / 输入 / 滚轮，退出即回前台
+- **Computer Use（v39 起已发布）**：多模态模型 + 用户显式授权后截屏、移动虚拟光标、点击 / 输入 / 滚轮，退出即回前台
 - **Aurora Center**：远程会话、文件双向、确认卡网页批复、官方模型网关、插件面板镜像
 - **系统感知**：时间、电源、网络、前台窗口、显示器、今日课程；可配置的自感知流光
 
@@ -196,7 +200,7 @@ pnpm typecheck    # 全仓 tsc / vue-tsc
 pnpm test         # vitest 全量单测
 pnpm lint         # ESLint
 pnpm format       # Prettier
-pnpm build        # shared / agent-core / modes + Electron 产物（apps/desktop/out）
+pnpm build        # 全仓包 + Electron 产物（apps/desktop/out）
 pnpm verify       # 真实磁盘的配置层验收（需先 build）
 pnpm package      # 构建 + electron-builder NSIS 安装包
 ```
@@ -241,10 +245,11 @@ packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式 / 窗�
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
 packages/modes/      IMode 框架、ClassRoom 完整实现、Work（BetaV2）/ Code 占位
 packages/center/     Aurora Center 服务器 + CLI + Web UI（可跨端 Node 服务）
-skills/              内置 SKILL.md（file-classify / system-status / timetable）
+skills/              内置 SKILL.md（automation / create-skill / file-classify / office-work / system-status / timetable）
 integrations/        ClassIsland 桥接插件源码（C# / .NET 8）
 examples/plugins/    插件示例与模板
 plugin-dev-kit/      可整体拷走的插件开发工具包（契约 + 模板 + 校验器）
+scripts/             图标生成、配置 / 插件 / 发布验收脚本
 docs/                项目文档（单一事实来源）
 ```
 
@@ -348,7 +353,7 @@ my-plugin/
 - **凭据**：API Key / MCP 环境变量经 Electron `safeStorage` 加密后写入 `config.json`；安全存储不可用时只驻留内存。`settings:get` 与 `settings:changed` 只回传 `apiKeySet` / `envSet` 标记。
 - **日志与导出**：`%APPDATA%/Aurora/logs/`（按天轮转保留 7 天）与「导出脱敏配置」中的凭据一律 `***`。
 - **进程隔离**：渲染进程启用 `contextIsolation` + `sandbox`，只能通过 preload 白名单调用主进程能力。
-- **命令执行**：MCP 服务器以用户显式配置的 argv 数组启动，绝不经过 shell；Skill 自带 `scripts/` 不会自动执行；敏感工具执行前需确认。
+- **命令执行**：MCP 服务器以用户显式配置的 argv 数组启动，绝不经过 shell；Skill 自带 `scripts/` 不会自动执行；敏感工具按权限档执行（confirm 档逐次确认）。
 - **文件边界**：项目根有两层判定（弹卡用字符串、能否操作由 realpath 前缀校验）；写文件前先快照，主写失败不回滚快照。
 - **网络**：所有出网走统一 `netFetch`，支持系统代理；会话内容只发送给用户自己配置的模型服务，不上传第三方。
 - **Computer Use**：必须由用户显式授权、模型支持视觉、且非只读档；授权只在内存、按会话、同时一个；Aurora 自身 / 终端 / 任务管理器 / UAC / 锁屏始终受保护。
@@ -365,6 +370,7 @@ Aurora 不做遥测。数据位置、出网场景与权限清单见 [docs/11-pri
 |---|---|
 | [01 项目总览](./docs/01-overview.md) | 产品定位、设计原则、核心概念、范围与验收 |
 | [02 系统架构](./docs/02-architecture.md) | 进程 / 模块 / IPC / 数据流 |
+| [03 技术选型](./docs/03-tech-stack.md) | 技术栈与关键决策记录（ADR） |
 | [04 实现路径](./docs/04-roadmap.md) | 阶段、里程碑与逐轮实现记录 |
 | [05 模式系统](./docs/05-mode-system.md) | ClassRoom / Work / Code 与分类管线 |
 | [06 Agent 内核](./docs/06-agent-core.md) | LLM、会话、循环、Skill、MCP、感知、Computer Use |

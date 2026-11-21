@@ -11,28 +11,19 @@
 
 ## 当前实现状态
 
-**当前发布 v0.7.0：TTS 朗读优化**（配置 Schema **v41 → v43**，两条自动迁移；插件 API 仍为
-**v1**）——语气指令可设定（自然语言描述语气 / 情感，按协议下发，效果取决于模型支持面）、
-合成语言可锁定（DashScope `language_type` / `language_hints`，根治 Auto 语种误判的「中文读出
-外语腔」）、分块边播边取（首块 ≤120 字合成完即开播、播放期间预取下一块，长回复首声延迟降一个
-量级）；新增 Qwen-Audio-TTS 接口类型（`dashscope-audio`，语气指令 / 复刻音色）；朗读前清洗
-Markdown / 代码块 / 链接，主进程 LRU 合成缓存。同批含全局统一缩放 `Ctrl +/−/0` 与 DPI 适配、
-流光提醒自定义音效（v42）、右栏文件面板重做（Office 正文 / 版式双视图 + 系统打开）。设计见
-[06 §13](./06-agent-core.md)、[08 §1](./08-settings-onboarding.md)，完整更新点与验收结果见
-[release-notes/v0.7.0.md](./release-notes/v0.7.0.md)。
-Aurora Center 服务器随本版升级到 **0.6.0**（版本线独立）：网关路由 Qwen-Audio-TTS 新端点并换
-音频签名票，网页端朗读分块边播边取；需按 `packages/center/deploy/README.md` 重新部署。
+**当前发布 v0.7.2：Windows 10 原生材质适配修复**（配置 Schema **v44** 不变；插件 API 仍为
+**v1**）——DWM 原生 Acrylic 只在 Windows 11 22H2（build 22621）及以上存在，Win10 / Win11 21H2
+改为强制实色，修掉「窗口被记成已挂材质、实际透明无模糊」造成的提示条裸漏桌面 / 面板发灰；
+安装向导保留**安装目录选择**。完整更新点与验收结果见
+[release-notes/v0.7.2.md](./release-notes/v0.7.2.md)。
 
-**上一发布 v0.6.4：插件临时输入窗口**（配置 Schema **v41** 不变；插件 API 仍为 **v1**，
-新增 `ui.dialogs` 权限与 `contributes.dialogs`）——桌面小组件继续“不抢前台”，插件改可用
-`ctx.ui.openDialog` 唤起由宿主创建的临时窗口，可正常键入文字；支持 Aurora 声明式 schema
-（宿主绘制取消 / 确定）或自定义 HTML / CSS 页面（沙箱内自行提交）。确定 / 取消 / × / Esc /
-10 分钟超时 / 插件退出后窗口立即销毁，不常驻；每个插件同时 1 扇、全局 ≤ 4 扇。设计见
-[14 §5.8](./14-plugin-system.md)，完整更新点与验收结果见
-[release-notes/v0.6.4.md](./release-notes/v0.6.4.md)。
-Aurora Center 服务器随后单独更新到 **0.5.3**（版本线独立），同步了 `ui.dialogs` 清单校验。
+**上一发布 v0.7.1：智慧提醒延迟投递**（配置 Schema **v43 → v44**，一条自动迁移；插件 API 仍为
+**v1**）——免打扰期结束后摘要可延迟 0–120 分钟再投，默认 0 = 立即（与 v0.7.0 行为逐字一致）；
+同批含桌面小组件 desktop 层置顶修复，以及 Center 0.7.0 鸿蒙遥控台接入 API（Center 版本线独立）。
+设计见 [07 §4](./07-ui-spec.md) / [08 §1](./08-settings-onboarding.md)，完整更新点与验收结果见
+[release-notes/v0.7.1.md](./release-notes/v0.7.1.md)。
 
-更早的逐版说明（**v0.6.2 及以前**）不再在本文维护，逐版见
+更早的逐版说明（**v0.7.0 及以前**）不再在本文维护，逐版见
 [`release-notes/`](./release-notes/) 与 [04-roadmap.md](./04-roadmap.md) 的「实现说明」；
 本文只保留最近两次发布，避免与发布说明重复增长。
 
