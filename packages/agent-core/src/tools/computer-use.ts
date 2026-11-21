@@ -324,6 +324,7 @@ function screenshotTool(port: ComputerUsePort): ToolDefinition {
       '窗口被移动 / 缩放 / 激活、弹窗出现、显示器变化后必须重新截图（旧坐标会失效）。' +
       '其后的 computer_mouse 坐标默认是这张图的图片像素。' +
       '结果给出本次图像覆盖的物理区域、图片尺寸、换算关系、前台窗口与鼠标位置，不需要自己换算物理坐标。' +
+      '只是查看屏幕、不需要操作时用 screenshot，不要为看一眼进入 Computer Use。' +
       '小控件看不清时用 windowId 只截目标窗口（同样 maxWidth 下细节更多），或调大 maxWidth。',
     parameters: {
       type: 'object',

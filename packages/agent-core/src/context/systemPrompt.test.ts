@@ -491,6 +491,56 @@ describe('buildToolGuidance', () => {
     expect(guidance).toContain('read_file')
     expect(guidance).toContain('确认卡片')
   })
+
+  it('成对工具同时可见时给出选择顺序，缺一侧时整条不出现（docs/06 §5.4）', () => {
+    const cases = [
+      { pair: ['office_read', 'read_file'], marker: '读文件先分流' },
+      { pair: ['web_fetch', 'browser_open'], marker: '取网页先分流' },
+      { pair: ['screenshot', 'computer_screenshot'], marker: '截屏先分流' },
+      { pair: ['open_path', 'browser_open'], marker: '打开网页给用户看' },
+      { pair: ['view_image', 'clipboard_read_image'], marker: '看图先看来源' },
+      { pair: ['notify_user', 'notify_banner'], marker: '告知用户默认用' },
+    ] as const
+    for (const item of cases) {
+      expect(buildToolGuidance([...item.pair])).toContain(item.marker)
+      for (const only of item.pair) {
+        expect(buildToolGuidance([only])).not.toContain(item.marker)
+      }
+    }
+  })
+
+  it('office_help 与 office_read / read_file 同在一组时才追加属性查询提示', () => {
+    expect(buildToolGuidance(['office_read', 'read_file'])).not.toContain('office_help')
+    expect(buildToolGuidance(['office_read', 'read_file', 'office_help'])).toContain('office_help')
+  })
+
+  it('六条选择顺序按固定次序排列（前缀缓存稳定）', () => {
+    const guidance = buildToolGuidance([
+      'office_read',
+      'read_file',
+      'office_help',
+      'web_fetch',
+      'browser_open',
+      'screenshot',
+      'computer_screenshot',
+      'open_path',
+      'view_image',
+      'clipboard_read_image',
+      'notify_user',
+      'notify_banner',
+    ])
+    const markers = [
+      '读文件先分流',
+      '取网页先分流',
+      '截屏先分流',
+      '打开网页给用户看',
+      '看图先看来源',
+      '告知用户默认用',
+    ]
+    const indexes = markers.map((marker) => guidance?.indexOf(marker) ?? -1)
+    expect(indexes.every((index) => index >= 0)).toBe(true)
+    expect(indexes).toEqual([...indexes].sort((a, b) => a - b))
+  })
 })
 
 describe('describeTools', () => {

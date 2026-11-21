@@ -46,6 +46,7 @@ export function createViewImageTool(options: ViewImageToolOptions): ToolDefiniti
     description:
       '读取本地的一张图片并把图片内容交给你看（截图、生成的图片、用户给的路径都可以）。' +
       '只能读图片格式（png / jpg / jpeg / webp / gif / bmp），读文本文件请用 read_file。' +
+      '剪贴板里的图片用 clipboard_read_image。' +
       '路径在项目根之外时会被拒绝，此时可以请用户把图片拖进对话窗口。',
     parameters: {
       type: 'object',

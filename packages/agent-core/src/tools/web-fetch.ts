@@ -29,7 +29,8 @@ export function createWebFetchTool(options: WebFetchToolOptions): ToolDefinition
     name: WEB_FETCH_TOOL_NAME,
     description:
       `抓取一个网页（仅 GET），返回剥掉标签后的纯文本（最长 ${MAX_WEB_FETCH_CHARS} 字符，超出被截断）。` +
-      '适合查资料、读文档、看文章正文；不适合需要登录或执行脚本才能看到内容的页面。',
+      '适合查资料、读文档、看文章正文；不适合需要登录或执行脚本才能看到内容的页面。' +
+      '需要登录态、执行脚本或交互后才能看到内容的页面用 browser_open + browser_read。',
     parameters: {
       type: 'object',
       properties: {

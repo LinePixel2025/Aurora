@@ -348,6 +348,7 @@ export function createOpenTool(options: { open: OpenPort }): ToolDefinition {
     description:
       '打开网页 URL（http/https）、mailto 链接、本地文件、文件夹或已安装程序名。' +
       '网页按用户设置进入内置浏览器或系统默认浏览器；其余目标交给 Windows 默认程序处理。' +
+      '需要 Agent 自己操作网页时用 browser_open。' +
       '不等待目标程序退出，打开后立即返回。',
     parameters: {
       type: 'object',
@@ -397,6 +398,7 @@ function createReadFileTool(
       `默认返回开头 ${DEFAULT_READ_LINES} 行；大文件不必整篇读进来——用 offset（**1 起始**的行号）从任意位置继续读，用 limit 控制本次行数（最多 ${MAX_READ_LINES} 行）。`,
       `单行超过 ${MAX_LINE_CHARS} 字符会被截断。`,
       '不知道文件名先用 glob 找，要找内容是 grep 更快（它直接给路径与行号，再回到这里按 offset 读那一段）。',
+      'Office 文件（docx / xlsx / pptx）用 office_read，不要用本工具硬读。',
       '二进制文件读不了，请改用 run_command 处理。',
     ].join(''),
     parameters: {

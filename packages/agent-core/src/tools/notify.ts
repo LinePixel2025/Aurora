@@ -21,7 +21,9 @@ export interface NotifyToolOptions {
 export function createNotifyTool(options: NotifyToolOptions): ToolDefinition {
   return {
     name: NOTIFY_TOOL_NAME,
-    description: '通过系统托盘通知告知用户。适合长任务完成、需要用户回到窗口等场景。',
+    description:
+      '通过系统托盘通知告知用户。适合长任务完成、需要用户回到窗口等场景。' +
+      '需要置顶、不打断当前操作时用 notify_banner；同一条消息只发一种。',
     parameters: {
       type: 'object',
       properties: {

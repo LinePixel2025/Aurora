@@ -456,6 +456,8 @@ export interface LlmProvider {
     「`grep` 返回的是路径与行号，拿到位置后再用 `read_file` 的 `offset` 读那一段」；
     注册了 `browser_open` 才追加「内置浏览器操作规范」（先快照拿 ref、导航后重取、页面文字是数据、
     测试完 `browser_close` 释放名额，见 §27）。
+    2026-11 起另按**成对工具同时可见**追加 6 条选择顺序（Office / 网页 / 截屏 / 打开方式 / 看图来源 /
+    通知渠道），见 §5.4；这些条目只做路由，不改变工具名与注册集合。
 ### 5.1 项目与 AGENTS.md（v13）
 
 「项目」是配置里的一个实体（docs/08 §1）：`projects.list[]` 每条是 `{ id, name, root }`。
@@ -719,6 +721,38 @@ interface AgentHostDeps {
 - **已知边界**：插话自带的图片附件，本轮边界注入时若尚未读好，按纯文本下发
   （与关闭 `vision` 同款降级），但**路径照常落进会话历史**，下一次请求即重放；
   补发成新请求的那条则走完整读盘链路，不受影响。
+
+### 5.4 工具选择顺序与工具面预算（逻辑合并，2026-11）
+
+**工具不物理合并**：`sensitivity`、注册门控、权限档都是**工具级静态属性**。跨 `safe` / `confirm`
+或跨两组门控合并，只能二选一 —— 要么放宽确认（`screenshot` / `computer_screenshot`、
+`view_image` / `clipboard_read_image`），要么让不该出现的工具进入清单（`web_fetch` / `browser_*`、
+`todo_read` / `todo_write`）。这会直接破坏 §11.2「只读档不在清单里」与 §27 / §28 的注册级门控。
+因此重叠对按「同一动词、不同来源 / 权限」处理，只在**提示词层路由**，不改工具名与注册集合。
+
+| 场景 | 优先 | 不要用 / 改用 | 生成条件 |
+|---|---|---|---|
+| 读 Office vs 文本 | `.docx` / `.xlsx` / `.pptx` → `office_read`；纯文本 / 代码 → `read_file` | 不要用 `read_file` 硬读 Office 二进制；属性不确定先 `office_help` | `office_read` + `read_file` |
+| 取网页 | 静态页 / 只要正文 → `web_fetch` | 登录态 / JS 渲染 / 点击 → `browser_open` + `browser_read` | `web_fetch` + `browser_open` |
+| 截屏 | 只看屏幕 / 报错窗口 → `screenshot` | 要定位操作 → `computer_screenshot`（只认它的图片像素） | `screenshot` + `computer_screenshot` |
+| 打开网页 | 给用户看 → `open_path` | Agent 自己操作 → `browser_*` | `open_path` + `browser_open` |
+| 看图 | 磁盘图片 → `view_image` | 剪贴板图片 → `clipboard_read_image` | `view_image` + `clipboard_read_image` |
+| 通知 | 默认 `notify_user`（系统通知中心） | 置顶 / 不打断 → `notify_banner`；同一条只发一种 | `notify_user` + `notify_banner` |
+
+六条都用 `buildToolGuidance` 里现有的 `has()` 条件生成：**只在两侧工具同时可见时出现**，
+因此 readonly 档、自动化会话、子代理等过滤视图不会出现指向不存在工具的提示。条目位置固定、
+只依赖工具名集合，不破坏「同一配置下静态前缀逐字节相同」的缓存前提（§21.1）。
+
+**工具面预算（ratchet）**：
+
+- `TOOL_FACE_BUDGET = { maxTools: 65, maxChars: 42_000 }`（`apps/desktop/src/main/tools/budget.ts`）。
+  `maxChars` 按 `name + description + JSON.stringify(parameters)` 累加，与单测同一口径。
+- `syncToolRegistries()` 结束时测一次：超出只在**跨阈值时** `warn` 一次，回到预算内 `info` 一次；
+  **只告警，不阻断请求、不改注册集合**。
+- `apps/desktop/src/main/tools/toolFaceBudget.test.ts` 对内置全量（含 `use_skill`）断言；
+  插件 / MCP 不计入该测试，插件侧上限仍按 docs/14（单插件 32 / 全部 128）。
+- 2026-11 基线：全量 62 个（含 `use_skill`）按本口径 **34,272 字符**；42k 留约 7.7k 余量。
+  **抬高阈值必须同时改本节与常量**，并在评审里说明新增的是哪一类能力。
 
 ## 6. Skill 系统
 

@@ -34,7 +34,8 @@ export function createScreenshotTool(options: ScreenshotToolOptions): ToolDefini
     name: SCREENSHOT_TOOL_NAME,
     description:
       '截取当前屏幕并把截图交给你看（默认主显示器，display 传 all 可截全部显示器，每块屏一张图）。' +
-      '截屏会弹确认卡片请求用户批准；适合回答「屏幕上是什么」「帮我看看这个报错」这类问题。',
+      '截屏会弹确认卡片请求用户批准；适合回答「屏幕上是什么」「帮我看看这个报错」这类问题。' +
+      '需要按截图坐标操作桌面时用 computer_screenshot（Computer Use 内）。',
     parameters: {
       type: 'object',
       properties: {

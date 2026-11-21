@@ -242,6 +242,7 @@ function createOfficeReadTool(
     name: OFFICE_READ_TOOL_NAME,
     description: [
       '读取 DOCX / XLSX / PPTX 的结构、元素路径、文本、问题或校验结果。',
+      '纯文本与代码用 read_file，本工具只处理 Office 文件。',
       'mode=summary 返回结构与统计；text 返回文本；element 用 target 读取元素；query 用 target 查询；issues 返回排版/内容问题；validate 返回 OpenXML 校验。',
       '编辑前必须先用本工具成功读取源文件。修改时应复用结果中的稳定路径（/@id=、/@paraId=、/Sheet/A1）。',
       '属性名和取值不确定时先调用 office_help，不要猜。',

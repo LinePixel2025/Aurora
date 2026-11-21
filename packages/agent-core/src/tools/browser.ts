@@ -243,6 +243,7 @@ function createBrowserOpenTool(options: BrowserToolsOptions): ToolDefinition {
       '在用户桌面的右侧内置浏览器里打开一个网页，并创建一个可操作的浏览器会话（用户能看见你在操作）。' +
       '返回页面标题、地址与首屏快照：可交互元素带 ref 编号，后续点击 / 输入用这些 ref。' +
       '同一会话重复调用会复用已打开的标签；适合网页功能测试、复现前端问题、核对线上页面。' +
+      '只是把网页打开给用户看用 open_path；需要 Agent 操作时才用本工具。' +
       '只接受 http / https 网址；本地文件用 show_preview 或先起本地服务器。',
     parameters: {
       type: 'object',
@@ -407,7 +408,8 @@ function createBrowserReadTool(options: BrowserToolsOptions): ToolDefinition {
     name: 'browser_read',
     description:
       '读取当前网页的运行时信息：console（控制台输出与错误）、network（网络请求与状态码）、' +
-      'page（标题、地址与可见正文）。调试前端问题时先看 console 里有没有报错。',
+      'page（标题、地址与可见正文）。调试前端问题时先看 console 里有没有报错。' +
+      '静态页只要正文时用 web_fetch。',
     parameters: {
       type: 'object',
       properties: {

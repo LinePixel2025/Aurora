@@ -56,6 +56,7 @@ export function createClipboardImageTool(options: ClipboardImageToolOptions): To
     name: CLIPBOARD_READ_IMAGE_TOOL_NAME,
     description:
       '读取系统剪贴板里的图片并把图片内容交给你看（用户刚截图 / 复制图片的场景）。' +
+      '磁盘上的图片用 view_image。' +
       '剪贴板里没有图片时会如实告诉你，不要据此编造内容；读取涉及隐私，会弹确认卡片。',
     parameters: {
       type: 'object',

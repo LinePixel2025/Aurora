@@ -264,6 +264,7 @@ import {
 } from './tools/index.js'
 import { registerBrowserTools } from './tools/index.js'
 import { registerComputerUseTools } from './tools/index.js'
+import { measureToolFace, TOOL_FACE_BUDGET } from './tools/budget.js'
 import { ComputerUseService } from './computer-use/service.js'
 import { ComputerUseInputHost } from './computer-use/input-host.js'
 import { DesktopComputerUsePort } from './computer-use/port.js'
@@ -7478,6 +7479,29 @@ function unregisterComputerUseStopHotkey(): void {
   computerUseService?.setStopHotkeyAvailable(false)
 }
 
+/**
+ * 上一次工具面测量是否超预算（docs/06 §5.4）。
+ *
+ * 只在**跨阈值**时打一条日志：`syncToolRegistries()` 会随设置 / 插件变化频繁触发，
+ * 每次都 warn 会把日志刷满；提示词 / 工具表本身不受影响，超限只用于提醒评审。
+ */
+let toolFaceOverBudget = false
+
+function checkToolFaceBudget(): void {
+  if (tools === undefined) return
+  const face = measureToolFace(tools.toLlmTools())
+  const over = face.count > TOOL_FACE_BUDGET.maxTools || face.chars > TOOL_FACE_BUDGET.maxChars
+  if (over && !toolFaceOverBudget) {
+    logger?.warn('工具面超出预算（考虑按需注册或收敛重叠工具）', {
+      ...face,
+      ...TOOL_FACE_BUDGET,
+    })
+  } else if (!over && toolFaceOverBudget) {
+    logger?.info('工具面回到预算内', face)
+  }
+  toolFaceOverBudget = over
+}
+
 function syncToolRegistries(): void {
   computerTools?.sync()
   settingsTool?.sync()
@@ -7499,6 +7523,8 @@ function syncToolRegistries(): void {
   awarenessTools?.sync()
   // 插件工具（docs/14）：`plugin.<id>.<name>`，默认 confirm；只读档只注册 readonly 工具
   pluginTools?.sync()
+  // 工具面预算（docs/06 §5.4）：内置 + 插件注册完再测一次；超限只 warn，不阻断请求
+  checkToolFaceBudget()
 }
 
 /**
