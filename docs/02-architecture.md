@@ -142,7 +142,7 @@ aurora/
 │     └─ package.json
 ├─ packages/
 │  ├─ agent-core/               # Agent 内核（纯 Node，vitest 单测）
-│  ├─ modes/                    # 模式实现（classroom / work / code）
+│  ├─ modes/                    # 模式实现（classroom / work）
 │  ├─ center/                   # Aurora Center 服务器 + CLI + Web UI（纯 Node，见 12）
 │  └─ shared/                   # 类型、IPC 契约、配置 Schema、Center 协议
 ├─ skills/                      # 内置 Skill（SKILL.md 包）

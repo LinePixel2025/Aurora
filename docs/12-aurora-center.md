@@ -401,7 +401,7 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 
 | 允许的路径前缀 | 对应能力 |
 |---|---|
-| `modes.current` | 切换工作 / 课堂 / 代码模式（`mode.switch` 命令同源） |
+| `modes.current` | 切换工作 / 课堂模式（`mode.switch` 命令同源；Code Mode 已于 v45 删除） |
 | `agent.tools.enabled` | 电脑操控工具总开关 |
 | `agent.tools.files.enabled` / `agent.tools.search.enabled` / `agent.tools.open.enabled` / `agent.tools.terminal.enabled` | 各子开关 |
 | `agent.permissionMode` | ⚠️ **不允许** —— 远程改权限档位等于把确认闸门交给远端，白名单不含它 |

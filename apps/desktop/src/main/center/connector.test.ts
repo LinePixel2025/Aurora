@@ -428,7 +428,7 @@ describe('CenterConnector · 命令处理', () => {
     socket.emit('open')
     socket.emit(
       'message',
-      JSON.stringify({ type: 'cmd', cmd: { kind: 'mode.switch', requestId: 'c-5', mode: 'code' } }),
+      JSON.stringify({ type: 'cmd', cmd: { kind: 'mode.switch', requestId: 'c-5', mode: 'work' } }),
     )
     await Promise.resolve()
     await Promise.resolve()

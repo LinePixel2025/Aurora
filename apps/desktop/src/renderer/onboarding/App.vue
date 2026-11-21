@@ -300,10 +300,6 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
                 办公场景：Office 文档 / 表格 / 演示文稿与 PDF 的处理、总结与生成。
               </p>
             </article>
-            <article class="card dim">
-              <h3>Code Mode</h3>
-              <p class="tiny muted">编码场景（建设中）：工作区识别、Git 感知、终端工具组。</p>
-            </article>
           </div>
         </section>
 

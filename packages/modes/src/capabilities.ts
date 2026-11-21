@@ -5,6 +5,9 @@
  * 基础能力**。工具注册与模式无关（`ModeManager` 不参与 `ToolRegistry`），因此
  * 每个条目的 `tools` 恒为 `SHARED_TOOLSET`——回归测试钉住这一点，防止未来有人
  * 给某个模式加「按模式裁剪工具」的隐性行为。
+ *
+ * v45 起 Code Mode 已删除（纯占位，无可保留能力）；会话级的 Plan Mode 不是
+ * `IMode`，因此不出现在本矩阵（docs/06 §29）。
  */
 import type { ModeId } from '@aurora/shared'
 
@@ -45,14 +48,6 @@ export const MODE_CAPABILITY_MATRIX: readonly ModeCapability[] = [
     perceptionSubscriptions: ['clock(60s)'],
     specialized: ['办公文档指引（Word / Excel / PPT / PDF）', '工作目录（workspaceDir）'],
     placeholder: false,
-  },
-  {
-    id: 'code',
-    displayName: '代码模式',
-    tools: SHARED_TOOLSET,
-    perceptionSubscriptions: [],
-    specialized: ['（特化能力建设中：工作区项目识别、Git 状态感知等）'],
-    placeholder: true,
   },
 ]
 

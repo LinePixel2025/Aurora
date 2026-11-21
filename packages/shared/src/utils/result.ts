@@ -36,6 +36,10 @@ export type ErrorCode =
   | 'E_IO'
   /** 续跑时 job 不在 `paused`（已完成 / 在跑 / 属于别的会话）：拒绝而不是"假装续跑"（v15） */
   | 'E_JOB_STATE'
+  /** 会话正在跑请求，操作要求空闲（计划模式进入/退出/批准等） */
+  | 'E_BUSY'
+  /** 没有可用的 AI 模型配置（计划批准等需要立即发起请求的入口） */
+  | 'E_NO_MODEL'
   | 'E_UNKNOWN'
 
 export function ok<T>(value: T): Ok<T> {

@@ -143,7 +143,7 @@ POST /api/uploads?clientId=<目标设备>
 | `session.readImage` | sessionId, imageId | 拉对话图片 → `{ dataUrl, name, mime }` |
 | `config.get` | clientId | 脱敏配置（凭据一律 `***`） |
 | `config.update` | clientId, patch | 白名单补丁（仅 modes.current / agent.tools.* 开关）；越权回 E_FORBIDDEN_PATH |
-| `mode.switch` | clientId, mode | 切工作/课堂/代码模式 |
+| `mode.switch` | clientId, mode | 切换工作 / 课堂模式 |
 | `confirm.resolve` | confirmId, approved | 批复确认卡（与 PC 本机先到先得） |
 | `ask.resolve` | sessionId, answers: string[], skipped?, answersByQuestion? | 回答提问卡；**requestId = 提问卡 id**；回执 `{ settled }` |
 | `file.send` | fileId | 把暂存文件推给设备落盘 |

@@ -17,7 +17,7 @@
  * - 运行态最多保留 `RUNTIME_CACHE_LIMIT` 个（LRU，当前 / 流式中的永不淘汰），已结束会话
  *   被淘汰后切回时由 `chat:history` 水合恢复，活动态（未读 / 失败点）独立保留。
  */
-import { computed, onScopeDispose, reactive, ref } from 'vue'
+import { computed, onScopeDispose, reactive, ref, watch } from 'vue'
 import { deepClone } from '@aurora/shared/browser'
 import type {
   AgentJob,
@@ -26,6 +26,7 @@ import type {
   ChatSessionSummary,
   ChatTurnChangesPayload,
   SendMessageRequest,
+  SessionPlan,
   WindowName,
 } from '@aurora/shared'
 import { createDeltaBuffer } from '@aurora/shared/browser'
@@ -145,6 +146,10 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   /** 会话 id → 活动态（轻量、不随运行态淘汰；左栏状态点 / 后台汇总） */
   const activities = reactive(new Map<string, SessionActivity>())
   const sessions = ref<ChatSessionSummary[]>([])
+  /** 当前会话的计划模式状态（docs/06 §29）；切会话 / 状态变化时经 IPC 刷新 */
+  const planState = ref<SessionPlan>({ active: false })
+  /** 计划状态版本号：右栏「计划」面板与计划芯片据此重拉 / 重渲染 */
+  const planVersion = ref(0)
   /** 已计入 `usage.totals` 的 `(requestId, round)`：全局一份（键本身全局唯一） */
   const countedUsage = new Set<string>()
 
@@ -338,6 +343,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       rt.resyncOnSettle = false
       void hydrateRuntime(rt.id, { force: true })
     }
+    // 本轮可能刚提交计划（submit_plan）：收尾后刷新计划状态，让芯片 / 计划卡 / 侧栏拿到 record
+    if (rt.id === sessionId.value && planState.value.active) void refreshPlanState()
     scheduleSessionsRefresh()
     evictIdleRuntimes()
   }
@@ -617,6 +624,67 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       },
     }
   }
+
+  // ───────────────────────── 计划模式（/plan，docs/06 §29） ─────────────────────────
+
+  function applyPlanState(next: SessionPlan): void {
+    planState.value = next
+    planVersion.value += 1
+  }
+
+  /** 拉当前会话计划状态；失败不覆盖旧状态（一次 IPC 抖动不该让芯片消失） */
+  async function refreshPlanState(): Promise<void> {
+    const target = sessionId.value
+    try {
+      const result = await window.aurora.chat.planStatus({ sessionId: target })
+      if (sessionId.value !== target) return
+      if (!result.ok) {
+        window.console?.warn('计划状态读取失败', result.message)
+        return
+      }
+      applyPlanState(result.value)
+    } catch (cause) {
+      window.console?.warn('计划状态读取异常', cause)
+    }
+  }
+
+  /** 进入 / 退出计划模式（运行中由主进程拒绝，这里只透传文案） */
+  async function setPlanMode(active: boolean): Promise<{ ok: boolean; message?: string }> {
+    const target = sessionId.value
+    try {
+      const result = await window.aurora.chat.setSessionPlanMode({ sessionId: target, active })
+      if (!result.ok) return { ok: false, message: result.message }
+      if (sessionId.value === target) applyPlanState(result.value)
+      return { ok: true }
+    } catch (cause) {
+      return { ok: false, message: cause instanceof Error ? cause.message : String(cause) }
+    }
+  }
+
+  /**
+   * 批准计划并开始执行：主进程先退出计划模式再发执行轮。
+   * 成功时返回 requestId（事件流会照常把执行轮接到当前会话）。
+   */
+  async function approvePlan(planId: string): Promise<{ ok: boolean; message?: string }> {
+    const target = sessionId.value
+    try {
+      const result = await window.aurora.chat.approvePlan({ sessionId: target, planId })
+      if (!result.ok) return { ok: false, message: result.message }
+      if (sessionId.value === target) applyPlanState(result.value.plan)
+      return { ok: true }
+    } catch (cause) {
+      return { ok: false, message: cause instanceof Error ? cause.message : String(cause) }
+    }
+  }
+
+  // 切会话（含挂载首帧）就拉一次计划状态：芯片 / 计划卡只认当前会话
+  watch(
+    sessionId,
+    () => {
+      void refreshPlanState()
+    },
+    { immediate: true },
+  )
 
   /** 切换 / 清空时复位「最近一轮」用量（累计不丢：切回由 meta 种子恢复） */
   function resetUsage(rt: ChatSessionRuntime): void {
@@ -993,6 +1061,16 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     sessionId,
     messages,
     sessions,
+    /** 当前会话计划模式状态（芯片 / 计划卡 / 右栏计划面板共用） */
+    planState,
+    /** 计划状态版本号（侧栏列表重拉触发器） */
+    planVersion,
+    /** 进入 / 退出计划模式（/plan、/plan off、芯片） */
+    setPlanMode,
+    /** 批准计划并开始执行 */
+    approvePlan,
+    /** 手动刷新计划状态（会话切换 / 收尾自愈） */
+    refreshPlanState,
     streaming,
     unread,
     error,

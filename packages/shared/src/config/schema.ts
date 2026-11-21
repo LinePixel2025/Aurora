@@ -6,14 +6,17 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 44 as const
+export const CONFIG_VERSION = 45 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
- * 08 §1 注释中的 `work / code / classroom` 为枚举列举顺序，不表示 UI 顺序；
- * 设置页与引导按本数组顺序渲染（docs/07 §2.5「三模式卡片」、docs/08 §3「ClassRoom 推荐」）。
+ * 08 §1 注释中的 `classroom / work` 为枚举列举顺序，不表示 UI 顺序；
+ * 设置页与引导按本数组顺序渲染（docs/07 §2.5「模式卡片」、docs/08 §3「ClassRoom 推荐」）。
+ *
+ * v45 删除 Code Mode（纯占位实现，docs/05）—— 只剩课堂 / 工作两种全局模式；
+ * 会话级的 Plan Mode 不是 `IMode`（见 docs/06 §29），刻意不在这里出现。
  */
-export const MODE_IDS = ['classroom', 'work', 'code'] as const
+export const MODE_IDS = ['classroom', 'work'] as const
 export type ModeId = (typeof MODE_IDS)[number]
 export const ModeIdSchema = z.enum(MODE_IDS)
 
@@ -658,13 +661,8 @@ export const ClassroomModeSchema = z.object({
 })
 export type ClassroomModeConfig = z.infer<typeof ClassroomModeSchema>
 
-export const PlaceholderModeSchema = z.object({
-  guideCompleted: z.boolean(),
-})
-export type PlaceholderModeConfig = z.infer<typeof PlaceholderModeSchema>
-
 /**
- * Work 模式配置（v8 起实装，docs/05 §6）：占位字段 + 办公工作目录。
+ * Work 模式配置（v8 起实装，docs/05 §6）：办公工作目录。
  * `workspaceDir` 为空串表示未配置（由引导 / 设置页收集）。
  */
 export const WorkModeSchema = z.object({
@@ -677,7 +675,6 @@ export const ModesSchema = z.object({
   current: ModeIdSchema,
   classroom: ClassroomModeSchema,
   work: WorkModeSchema,
-  code: PlaceholderModeSchema,
 })
 export type ModesSettings = z.infer<typeof ModesSchema>
 

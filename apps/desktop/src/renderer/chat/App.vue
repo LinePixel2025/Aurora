@@ -58,6 +58,7 @@ import ComposerPermissionSelect from './components/ComposerPermissionSelect.vue'
 import ComputerUseStatusBar from './components/ComputerUseStatusBar.vue'
 import SlashCommandMenu from './components/SlashCommandMenu.vue'
 import ContextPanel from './components/ContextPanel.vue'
+import PlanPanel from './components/PlanPanel.vue'
 import JobPanel from './components/JobPanel.vue'
 import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
@@ -100,8 +101,8 @@ import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores
 import { usePluginsStore } from '../shared/plugins-store.js'
 import { isTtsConfigured } from '../shared/tts-config.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
-import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
-import { ArrowUp, Mic, PanelLeft, Trash2 } from '@aurora/shared/browser'
+import { filterSlashItems, planTaskOf, slashQueryOf, type SlashItem } from './slashCommands.js'
+import { ArrowUp, ClipboardList, Mic, PanelLeft, Trash2, X } from '@aurora/shared/browser'
 import type { ComputerUseEvent, ComputerUseStatus } from '@aurora/shared'
 
 const chat = useChat('chat', 'main')
@@ -110,6 +111,10 @@ const {
   sessionId,
   messages,
   sessions,
+  planState,
+  planVersion,
+  setPlanMode,
+  approvePlan,
   streaming,
   error: chatError,
   statusTone,
@@ -321,6 +326,11 @@ const {
   closeTab: closeCtxTab,
   setTitle: setCtxTabTitle,
 } = useCtxTabs()
+
+/** 右栏当前是否停在「计划」标签（左栏计划入口的激活态） */
+const plansOpen = computed(
+  () => ctxTabs.value.find((tab) => tab.id === ctxActiveId.value)?.kind === 'plans',
+)
 
 /**
  * 已挂载过的标签（**首次激活挂载、之后常驻**，docs/07 §2.3）：文件 / 终端 / 浏览器面板
@@ -1833,8 +1843,110 @@ function computerUseTaskOf(text: string): string | null {
   return rest.trim()
 }
 
+// ── 计划模式（/plan，docs/06 §29） ──
+
+/** 计划卡动作进行中（批准 IPC 在途）：禁用卡片按钮，防重复批准 */
+const planBusy = ref(false)
+/** 从计划卡「在侧边栏查看」点进来时要定位的计划文件 id */
+const planFocusId = ref<string | null>(null)
+
+const planPending = computed(
+  () => planState.value.active && planState.value.record?.status === 'pending',
+)
+
+/** 进入计划模式；失败提示原因并保留当前输入（调用方负责决定是否继续发送） */
+async function enterPlanMode(): Promise<boolean> {
+  if (planState.value.active) return true
+  const result = await setPlanMode(true)
+  if (!result.ok) {
+    flashProjectNotice('error', result.message ?? '进入计划模式失败')
+    return false
+  }
+  flashProjectNotice('ok', '已进入计划模式：只读调研，计划批准后才会执行')
+  return true
+}
+
+/** 退出计划模式（计划正文 / md 文件都保留，不执行） */
+async function exitPlanMode(): Promise<boolean> {
+  const result = await setPlanMode(false)
+  if (!result.ok) {
+    flashProjectNotice('error', result.message ?? '退出计划模式失败')
+    return false
+  }
+  planFocusId.value = null
+  flashProjectNotice('ok', '已退出计划模式，计划正文仍保留在会话与「计划」面板中')
+  return true
+}
+
+async function onPlanApprove(callId: string): Promise<void> {
+  if (planBusy.value) return
+  planBusy.value = true
+  try {
+    const result = await approvePlan(callId)
+    if (!result.ok) {
+      flashProjectNotice('error', result.message ?? '批准计划失败')
+      return
+    }
+    flashProjectNotice('ok', '已批准计划，正在开始执行')
+  } finally {
+    planBusy.value = false
+  }
+}
+
+/** 继续完善：不退出计划模式，把反馈入口交给用户输入框 */
+function onPlanRevise(): void {
+  input.value = '请调整计划：'
+  void nextTick(() => {
+    const el = textareaEl.value
+    if (el === null) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+    autoGrow()
+  })
+}
+
+function onPlanExit(): void {
+  void exitPlanMode()
+}
+
+/** 打开右栏「计划」面板；`focusPlanId` 用于从计划卡定位到具体文件 */
+function openPlansPanel(focusPlanId: string | null = null): void {
+  contextOpen.value = true
+  const tab = ensureCtxKind('plans')
+  if (tab === null) {
+    flashProjectNotice('error', `标签已达上限（${CTX_TABS_MAX} 个），先关掉一个`)
+    return
+  }
+  planFocusId.value = focusPlanId
+}
+
+function onPlanOpen(callId: string): void {
+  openPlansPanel(callId)
+}
+
 async function send(): Promise<void> {
   let text = input.value.trim()
+  // `/plan` 与 `/computer` 同一套前缀改写：命令不进模型上下文，任务正文才发送。
+  const planTask = planTaskOf(text)
+  if (planTask !== null) {
+    if (planTask === 'off') {
+      if (await exitPlanMode()) {
+        input.value = ''
+        void nextTick(autoGrow)
+      }
+      return
+    }
+    if (!(await enterPlanMode())) return
+    if (planTask === '') {
+      input.value = ''
+      void nextTick(() => {
+        textareaEl.value?.focus()
+        autoGrow()
+      })
+      return
+    }
+    text = planTask
+  }
   const computerUseTask = computerUseTaskOf(text)
   if (computerUseTask !== null) {
     // 授权与任务一次完成；失败时保留输入内容，用户改完原因可以直接重发。
@@ -2263,6 +2375,9 @@ function applySlash(item: SlashItem): void {
     case 'settings':
       windowStore.show('settings')
       break
+    case 'plan':
+      void enterPlanMode()
+      break
     case 'computer':
       void activateComputerUse()
       break
@@ -2325,7 +2440,13 @@ const currentContextWindow = computed<number>(() => currentModelParams.value?.co
  * 悬浮提示 —— 工具行右侧那枚常驻的键位提示已移除（2026-10-01 UI 细节轮：
  * 常驻键位提示在窄窗下最先让位、实际多数时候看不见，却一直占着弹性槽）。
  */
-const placeholder = computed(() => (streaming.value ? '正在回复中，可继续输入…' : '输入消息…'))
+const placeholder = computed(() =>
+  streaming.value
+    ? '正在回复中，可继续输入…'
+    : planState.value.active
+      ? '描述要规划的任务…'
+      : '输入消息…',
+)
 
 /** 输入框悬浮提示：占位串里放不下的那部分能力说明（键位说明现在只在这里） */
 const composerTitle = computed(() =>
@@ -2398,6 +2519,8 @@ async function markGuideDone(): Promise<void> {
         :jobs-count="jobs.length"
         :jobs-running="jobsRunning"
         :jobs-open="jobsOpen"
+        :plans-open="plansOpen"
+        :plans-pending="planPending"
         @new-session="startNewSession"
         @new-agent-session="startAgentSession"
         @new-project-session="startProjectSession"
@@ -2409,6 +2532,7 @@ async function markGuideDone(): Promise<void> {
         @open-automations="view = 'automations'"
         @toggle-right-panel="contextOpen = !contextOpen"
         @toggle-jobs="toggleJobs"
+        @open-plans="openPlansPanel()"
         @open-settings="windowStore.show('settings')"
       />
     </aside>
@@ -2556,9 +2680,16 @@ async function markGuideDone(): Promise<void> {
           :settled-at="lastSettledAt"
           :latest-turn-groupable="latestTurnGroupable"
           :turn-changes="turnChangesForSession"
+          :plan="planState"
+          :plan-busy="planBusy"
+          :plan-interactive="true"
           @speak="speakMessage"
           @stop-speak="tts.stop"
           @open-file="openChangedFile"
+          @plan-approve="onPlanApprove"
+          @plan-revise="onPlanRevise"
+          @plan-exit="onPlanExit"
+          @plan-open="onPlanOpen"
         />
       </div>
 
@@ -2615,6 +2746,27 @@ async function markGuideDone(): Promise<void> {
             />
 
             <div class="composer-bar">
+              <!--
+                计划模式芯片（docs/06 §29）：只在本会话处于计划模式时出现。
+                点整枚 = 退出（/plan off），与输入框里的命令同一条 IPC；不占输入区浮层。
+              -->
+              <button
+                v-if="planState.active"
+                type="button"
+                class="composer-chip plan-chip press"
+                data-field="chat.plan-mode"
+                :data-plan-pending="planPending ? '1' : '0'"
+                :title="
+                  planPending
+                    ? '计划待批准：可在对话计划卡或右栏「计划」面板查看（点击退出计划模式）'
+                    : '计划模式：只读调研，批准计划后才会执行（点击退出）'
+                "
+                @click="onPlanExit"
+              >
+                <ClipboardList :size="12" :stroke-width="1.8" aria-hidden="true" />
+                <span>{{ planPending ? '计划待批准' : '计划模式' }}</span>
+                <X :size="11" :stroke-width="2" aria-hidden="true" />
+              </button>
               <!-- 权限档位（只读 / 变更前确认 / 完全权限）：两档时代写 advanced.confirmSensitiveTools，v13 起镜像写两个字段 -->
               <ComposerPermissionSelect
                 :mode="permissionMode"
@@ -2834,6 +2986,14 @@ async function markGuideDone(): Promise<void> {
             <TerminalPanel
               v-else-if="tab.kind === 'terminal'"
               :session-id="sessionId"
+              @title="(title) => setCtxTabTitle(tab.id, title)"
+            />
+            <!-- 计划面板（docs/06 §29）：当前会话的计划 md 文件列表 + 只读预览 -->
+            <PlanPanel
+              v-else-if="tab.kind === 'plans'"
+              :session-id="sessionId"
+              :version="planVersion"
+              :focus-plan-id="planFocusId"
               @title="(title) => setCtxTabTitle(tab.id, title)"
             />
             <!--
@@ -3059,6 +3219,7 @@ body.col-resizing .nav {
 .ctx-pane > :deep(.fp),
 .ctx-pane > :deep(.tp),
 .ctx-pane > :deep(.bp),
+.ctx-pane > :deep(.plan-panel),
 .ctx-pane > :deep(.plugin-panel),
 .ctx-pane > :deep(.plugin-page),
 .ctx-pane > :deep(.plugin-pane-missing) {
@@ -3424,6 +3585,31 @@ body.col-resizing .nav {
 
 .composer-picker.thinking-level {
   flex-shrink: 2;
+}
+
+/*
+ * 计划模式芯片（docs/06 §29）：与权限 / 模型芯片同一行，固定不收缩（它是模式指示器，
+ * 被压成图标会看不出"现在是只读规划"）。配色沿用认证类提示的 warning 令牌。
+ */
+.plan-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--warning-fill);
+  color: var(--warning-text);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.plan-chip:hover {
+  border-color: var(--warning-text);
 }
 
 /* 保存类操作的瞬时提示：出现时挤占的是弹性空隙，不把发送按钮挤出行外 —— 它第一个让位。 */

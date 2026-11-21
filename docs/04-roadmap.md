@@ -1,7 +1,7 @@
 # 04 · 实现路径与里程碑
 
 状态：`进行中`——P0–P5 已完成，P6 打包 / 自动更新 / 日志 / 文档完成（签名与启动优化待做），
-P6+「假开关」补齐与 P6++ 电脑操控已完成，P7 的 ClassIsland 联动已完成、Work / Code Mode 预留；
+P6+「假开关」补齐与 P6++ 电脑操控已完成，P7 的 ClassIsland 联动已完成、Work Mode 初步实装（Code Mode 已于 v45 删除）；
 **当前实际发布 v0.6.1（2026-11-01），Aurora Center 0.5.2**。
 
 > **版本口径**：2026-09-25 版本体系重构前，本文用 `v0.6.0` / `v0.7.0` / `v0.8.0` 表示里程碑
@@ -45,7 +45,7 @@ Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
 | P5 | 系统感知与主动引导：感知采集、上下文注入、课前提醒、敏感确认 | v0.5.0 | 1.5 周 | **已完成** |
 | P6 | 打磨发布：打包、安装器、日志、文档 | v1.0.0 | 1 周 | **打包 / 自动更新 / 日志 / 文档已完成**；签名待证书、启动优化未做 |
 | P6++ | 电脑操控：终端与文件操控工具、模型思考等级、「电脑操控」设置页与安全边界 | v0.7.0（旧里程碑编号） | — | **已完成（P6++ 里程碑）**；**Computer Use（鼠标键盘 / 窗口 / UIA）已随 v0.5.9 发布**，见 06 §28；录屏仍属后续范围 |
-| P7 | 后期：Work/Code Mode、ClassIsland 联动 | v1.x | — | **ClassIsland 联动已完成（P6+ 里程碑，桥接 v3）**；Work/Code Mode 预留 |
+| P7 | 后期：Work Mode、ClassIsland 联动 | v1.x | — | **ClassIsland 联动已完成（P6+ 里程碑，桥接 v3）**；Work 初步实装，Code Mode 已删除 |
 
 > 表中计划版本列的 `v0.6.0` / `v0.7.0` 是版本体系重构前的里程碑编号，不是真实 tag；
 > 实际发布版本见上方「版本口径」与 [release-notes](./release-notes/)。
@@ -165,7 +165,7 @@ Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
 - **已完成前置（v0.1.0）**：`ModeManager` + `IMode` 框架 + 模式切换事件（含失败回滚）；
   ClassRoom 完整模式实现（激活时创建感知文件夹与科目文件夹、系统提示词片段、就绪度校验）；
   `GuideRunner` 四步对话式引导（校验、写配置、可中断续接、重置引导）；
-  Work / Code 占位模式。
+  Work 占位模式（Code Mode 已于 v45 删除）。
 - **实现说明（v0.4.0）**：
   - **监听与稳定判定**：`main/file-watcher.ts`（chokidar，`depth: 0` + `awaitWriteFinish` + 忽略规则 +
     **抑制集**（分类落盘后由 `classification.ts` 经 `suppressPath` 回调登记目标路径）+
@@ -326,7 +326,7 @@ P6+ 的重点不是新增大功能，而是**把"设置里能改、运行时没�
 - **截图已由 `screenshot` 工具落地**（受模型 `vision` 门控，与本节的电脑操控工具不同族，见 06 §25）。
 - **鼠标键盘 / 窗口 / UI Automation 模拟已由 Computer Use 落地**（v39 开发中，用户显式授权 +
   多模态模型门控，见 06 §28）；**仍属后续范围**（**未实现**）：录屏、持久交互式 shell、命令黑名单、
-  Work / Code Mode 功能、Anthropic 等非 OpenAI 兼容协议。
+  Work Mode 后续能力、Anthropic 等非 OpenAI 兼容协议。
 - **验证**：`pnpm typecheck && pnpm test && pnpm build` 全绿（用例数随轮次变动，以实际输出为准）；
   `AURORA_SMOKE=1 pnpm dev` 新增「电脑操控」四条断言；`AURORA_CAPTURE` 18 张 PNG、无 FAIL。
 
@@ -371,7 +371,7 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
 
 ### P7 · 后期（预留，见 05 §4）
 
-- Work Mode / Code Mode 功能实现
+- Work Mode 功能深化（Code Mode 已于 v45 删除）
 - ~~ClassIsland 联动（课程表自动获取）~~ —— **已于 P6+ 里程碑完成**（桥接 v3 见 05 §3.4）
 - ~~终端 / 文件 / 打开路径操控工具~~ —— **已于 P6++ 里程碑完成**（见 P6++）；
   ~~截图~~ —— **已由 `screenshot` 工具落地**（受模型 vision 门控，见 06 §25）；
@@ -394,7 +394,7 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
 | ClassRoom：智慧感知文件夹拖入新文件 → 智能分析 → 自动分类 | P4 | P0 |
 | ClassRoom：选择模式后对话式主动引导设置 | P4 | P0 |
 | 每科目上课前自动打开对应科目文件夹 | P5（手动课程表）/ **P6+（ClassIsland 联动，已完成）** | P1 / P2 |
-| Work Mode / Code Mode（后期，预留接口） | P4 定义接口，P7 实现 | P2 |
+| Work Mode（后期；Code Mode 已于 v45 删除） | P4 定义接口，P7 初步实装 | P2 |
 
 ## 4. 主要风险与应对
 
@@ -459,7 +459,7 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
     前缀逐字节相同、两轮 `tools` 顺序相同且已排序、`usage` 事件带 `cachedTokens=512`）；
     `AURORA_CAPTURE` 48 张 PNG / 48 条 checks / 0 FAIL。
   - **明确不做**：`apply_patch`、LSP 诊断与符号检索、git snapshot / revert、doom-loop 检测、
-    显式 `cache_control`、命令黑名单、权限模型整体重构、Code Mode 实装、Anthropic 原生协议。
+    显式 `cache_control`、命令黑名单、权限模型整体重构、Anthropic 原生协议。
 - **2026-09-26（Agent 生产化主线：项目机制 + 三档权限 + 写前快照 + Task/Job 续跑 / 配置 v15）**：
   这一轮把 Agent 从「能改代码」推到「可托付地跑长任务」——**知道自己工作在哪个项目、按用户选的档位动手、
   改动前留底、跑到一半停下还能接着跑**；配置 Schema **v12 → v15**（三条迁移
@@ -515,7 +515,7 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
     `stepsDone 2→3`、`cursor 2→3`，会话里那条用户消息**仍只有一条**。
   - **明确未做**：**仍无 OS 级沙箱** —— 三档权限与项目根 realpath 前缀校验**不是**沙箱
     （没有作业对象 / 容器 / 受限令牌，`run_command` 仍是当前用户权限）；
-    子代理能力加强、上下文压缩修正**均未开始**（属第二批）；Code Mode 仍是占位实现。
+    子代理能力加强、上下文压缩修正**均未开始**（属第二批）；Code Mode 已删除（v45）。
     （**多模态输入与 Responses API 已于 2026-10-01 落地**，见下方「2026-10-01 多模态与 Responses API 轮」。）
     另需说明：上面「第二次启动」的续跑验证走的是**自测专用开关**
     `AURORA_SMOKE_WORKSPACE` + `AURORA_SMOKE_PHASE=resume` 拉起的两次启动，

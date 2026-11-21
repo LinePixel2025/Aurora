@@ -32,12 +32,17 @@ export const PLUGIN_ACTION_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/
 /** 最终工具名的长度上限（OpenAI function name 上限 64）。 */
 export const PLUGIN_TOOL_FULL_NAME_MAX = 64
 
-/** 与内置斜杠命令重名即拒绝（内置命令只有这 7 个，见 chat/slashCommands.ts）。 */
+/**
+ * 与内置斜杠命令重名即拒绝。
+ * 内置命令的完整清单见 `renderer/chat/slashCommands.ts` 的 `BUILTIN_COMMANDS` /
+ * `SLASH_STOP_COMMAND`；这里只列**不能给插件用**的名字（新增内置命令要同步加）。
+ */
 export const RESERVED_COMMAND_NAMES = [
   'new',
   'clear',
   'init',
   'compact',
+  'plan',
   'subagents',
   'settings',
   'stop',

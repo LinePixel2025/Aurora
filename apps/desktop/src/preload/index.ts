@@ -206,8 +206,17 @@ const api: AuroraApi = {
     stageImage: (request) => invoke(IPC.chat.stageImage, request),
     // 助手消息图片区：同样只回 data URL，原图路径不进入渲染层
     readDisplayImage: (request) => invoke(IPC.chat.readDisplayImage, request),
+    // 计划模式（docs/06 §29）：状态 / 进入退出 / 批准执行
+    planStatus: (request) => invoke(IPC.chat.planStatus, request),
+    setSessionPlanMode: (request) => invoke(IPC.chat.setSessionPlanMode, request),
+    approvePlan: (request) => invoke(IPC.chat.approvePlan, request),
     // 附件拖拽：同步返回路径，渲染层再把它放进 chat.send 的 attachments
     filePath: (file) => filePathOf(file),
+  },
+  // 计划文件（右栏「计划」面板）：只读列表 + Markdown 正文，不暴露文件路径
+  plans: {
+    list: (request) => invoke(IPC.plans.list, request),
+    read: (request) => invoke(IPC.plans.read, request),
   },
   classification: {
     history: (limit) => invoke(IPC.classification.history, limit),

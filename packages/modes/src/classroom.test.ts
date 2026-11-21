@@ -12,7 +12,6 @@ import {
   classroomReadiness,
 } from './classroom.js'
 import { WORK_GUIDE_ID, createWorkMode, workGuide, workReadiness } from './work.js'
-import { createCodeMode } from './code.js'
 
 function createContext(input: Settings = createDefaultSettings()) {
   const settings: Settings = input
@@ -363,20 +362,5 @@ describe('Work 模式行为', () => {
     expect(workReadiness(settings)).toEqual({ ready: false, missing: ['工作目录'] })
     settings.modes.work.workspaceDir = 'D:\\x'
     expect(workReadiness(settings)).toEqual({ ready: true, missing: [] })
-  })
-})
-
-describe('占位模式', () => {
-  it('Code 标记为占位且提示词说明建设中', () => {
-    const mode = createCodeMode()
-    expect(mode.placeholder).toBe(true)
-    expect(mode.systemPrompt({} as ModeContext)).toContain('建设中')
-    expect(mode.guide?.steps).toHaveLength(1)
-  })
-
-  it('占位模式激活 / 停用不抛错', async () => {
-    const { ctx } = createContext()
-    await expect(createCodeMode().onActivate(ctx)).resolves.toBeUndefined()
-    await expect(createCodeMode().onDeactivate(ctx)).resolves.toBeUndefined()
   })
 })

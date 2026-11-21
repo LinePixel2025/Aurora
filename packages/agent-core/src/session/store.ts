@@ -17,6 +17,8 @@ import {
   type ChatSessionSummary,
   type FileSystemPort,
   type PermissionMode,
+  type SessionPlan,
+  type SessionPlanRecord,
   type SessionUsageStats,
   type TokenUsage,
 } from '@aurora/shared'
@@ -757,6 +759,51 @@ export class SessionStore {
   }
 
   /**
+   * 会话级计划模式（`/plan`，docs/06 §29）。
+   *
+   * - **异步**：`ensureLoaded` 后读；未进入计划模式时返回 `{ active: false }`；
+   * - **幂等**：与当前值相同（含「都没有」）→ 不写盘；
+   * - `null` / `{ active:false }` 且无记录 → 删键，避免空 `plan` 占着每个会话文件；
+   * - 先 `ensureLoaded` + **await 写盘完成**（与 `setPermissionMode` 同一条铁律）。
+   */
+  async setPlan(sessionId: string, plan: SessionPlan | null): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.metaCache.get(id) ?? {}
+    const nextValue = normalizePlan(plan)
+    if (samePlan(normalizePlan(current.plan), nextValue)) return
+
+    const next: SessionMeta = { ...current }
+    if (nextValue === undefined) delete next.plan
+    else next.plan = nextValue
+    this.metaCache.set(id, next)
+    this.dirty.add(id)
+    this.scheduleWrite(id, 0)
+    await (this.writing.get(id) ?? Promise.resolve())
+  }
+
+  /** 会话级计划模式（**异步**，必要时先读盘；未进入 = `{ active:false }`）。 */
+  async planOf(sessionId: string): Promise<SessionPlan> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    return normalizePlan(this.metaCache.get(id)?.plan) ?? { active: false }
+  }
+
+  /**
+   * 会话级计划模式（**同步**，只读内存缓存）。
+   *
+   * 为什么必须同步：消费方是 `runProfileFor`（内核 `run()` 组装工具面时同步调用，
+   * 不能新增 await）。依赖与 `modelOverrideOf` 同一条不变量：**发送之前会话列表 /
+   * `sessions.get` 已装载**，因此计划状态必然已在缓存里；未装载时按「未进入」处理是安全的
+   * （从未进过计划模式的会话不可能在缓存未装载时就需要隐藏写工具）。
+   */
+  planOfSync(sessionId: string): SessionPlan {
+    return (
+      normalizePlan(this.metaCache.get(normalizeSessionId(sessionId))?.plan) ?? { active: false }
+    )
+  }
+
+  /**
    * 会话空间（docs/06 §4 会话三分）。
    *
    * - **幂等**：与当前空间相同（含「都是未标记」）→ 直接返回，不写盘；
@@ -1398,6 +1445,9 @@ function normalizeMeta(value: unknown): SessionMeta {
   // 手动压缩留痕（/compact，本轮）：三个字段齐全且 summary 非空才算有效
   const compact = normalizeCompact(candidate['compact'])
   if (compact !== undefined) meta.compact = compact
+  // 计划模式（/plan，docs/06 §29）：active 或有效记录至少一个成立才保留
+  const plan = normalizePlan(candidate['plan'])
+  if (plan !== undefined) meta.plan = plan
   return meta
 }
 
@@ -1449,6 +1499,47 @@ function normalizeCompact(value: unknown): SessionCompact | undefined {
     return undefined
   }
   return { summary, at, upToMessageId }
+}
+
+/** 计划记录归化：id / markdown / status / 两个时间戳齐全才算有效 */
+function normalizePlanRecord(value: unknown): SessionPlanRecord | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Record<string, unknown>
+  const id = candidate['id']
+  const markdown = candidate['markdown']
+  const status = candidate['status']
+  const createdAt = candidate['createdAt']
+  const updatedAt = candidate['updatedAt']
+  if (
+    typeof id !== 'string' ||
+    id.trim() === '' ||
+    typeof markdown !== 'string' ||
+    (status !== 'pending' && status !== 'approved' && status !== 'exited') ||
+    typeof createdAt !== 'string' ||
+    typeof updatedAt !== 'string'
+  ) {
+    return undefined
+  }
+  return { id, markdown, status, createdAt, updatedAt }
+}
+
+/**
+ * 计划状态归化（读取侧 `normalizeMeta`、写入侧 `setPlan`、同步 getter 共用）。
+ *
+ * 无 `active` 且无有效记录 = 没进入过计划模式 → `undefined`（不写键）。
+ */
+function normalizePlan(value: unknown): SessionPlan | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Record<string, unknown>
+  const active = candidate['active'] === true
+  const record = normalizePlanRecord(candidate['record'])
+  if (!active && record === undefined) return undefined
+  return { active, ...(record === undefined ? {} : { record }) }
+}
+
+/** 计划状态相等判定（用于 `setPlan` 的幂等短路） */
+function samePlan(left: SessionPlan | undefined, right: SessionPlan | undefined): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
 }
 
 /**
@@ -1608,6 +1699,8 @@ function isEmptyMeta(meta: SessionMeta): boolean {
         meta.usage.cachedTokens === 0 &&
         meta.usage.rounds === 0)) &&
     meta.compact === undefined &&
+    // 计划模式（/plan）：未进入 / 已清空时不落键
+    meta.plan === undefined &&
     // space 只有 'work' 才有信息量（'agent' = 缺省空间），setSpace / createSession 写入侧已归一
     (meta.space === undefined || meta.space === 'agent')
   )

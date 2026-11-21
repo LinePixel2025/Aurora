@@ -270,7 +270,7 @@ export interface ModeSummary {
   icon?: string
   guideCompleted: boolean
   guideResumeable: boolean
-  /** 占位模式（work / code）在执行层的行为差异 */
+  /** 占位模式标记（v45 起现有 classroom / work 均为 false，字段保留给未来占位实现） */
   placeholder: boolean
   active: boolean
   /** 该模式引导需要收集的字段说明，供设置页展示 */
@@ -889,6 +889,84 @@ export interface ClassIslandNotifyResult {
   /** 失败原因（桥接未安装 / 端点不可达 / 命令文件不可写 / 超时） */
   error?: string
   elapsedMs: number
+}
+
+// ───────────────────────── 计划模式（Plan Mode，docs/06 §29） ─────────────────────────
+
+/** 计划记录状态：待批准 / 已批准 / 已退出（会话级状态；文件索引另有 superseded / unknown） */
+export type SessionPlanStatus = 'pending' | 'approved' | 'exited'
+
+/**
+ * 一条计划记录（`meta.plan.record`，会话数据，不进 config / 不进 CONFIG_VERSION）。
+ *
+ * `id` 就是 `submit_plan` 的 toolCallId：计划卡、文件索引、批准请求三处靠它对齐。
+ */
+export interface SessionPlanRecord {
+  id: string
+  markdown: string
+  status: SessionPlanStatus
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * 会话级计划状态（`sessions/<id>.json` 的 `meta.plan`）。
+ *
+ * `active = true`：下一次请求进入只读计划模式；`record` 可为空（还没提交计划）。
+ */
+export interface SessionPlan {
+  active: boolean
+  record?: SessionPlanRecord
+}
+
+/** 计划文件状态：在会话状态之外多两种——被新计划取代 / 索引重建时的未知历史态 */
+export type PlanFileStatus = SessionPlanStatus | 'superseded' | 'unknown'
+
+/** 侧边栏「计划」面板的列表项（`plans:list`，不含正文） */
+export interface PlanFileInfo {
+  id: string
+  title: string
+  createdAt: string
+  status: PlanFileStatus
+}
+
+/** 侧边栏「计划」面板的预览内容（`plans:read`） */
+export interface PlanFileContent extends PlanFileInfo {
+  markdown: string
+}
+
+/** `chat:planStatus` 请求 */
+export interface ChatPlanStatusRequest {
+  sessionId: string
+}
+
+/** `chat:setSessionPlanMode` 请求：active 切换计划模式（运行中拒绝） */
+export interface ChatSetSessionPlanModeRequest {
+  sessionId: string
+  active: boolean
+}
+
+/** `chat:approvePlan` 请求：批准某条待批准计划并立即开始执行 */
+export interface ChatApprovePlanRequest {
+  sessionId: string
+  planId: string
+}
+
+/** `chat:approvePlan` 结果：批准后的状态 + 执行轮 requestId */
+export interface ChatApprovePlanResult {
+  plan: SessionPlan
+  requestId: string
+}
+
+/** `plans:list` 请求 */
+export interface PlansListRequest {
+  sessionId: string
+}
+
+/** `plans:read` 请求 */
+export interface PlansReadRequest {
+  sessionId: string
+  planId: string
 }
 
 /** 会话摘要（`chat:sessions`，docs/06 §4） */
@@ -3131,6 +3209,26 @@ export interface AuroraApi {
       request: ChatDisplayImageReadRequest,
     ): Promise<Result<ChatDisplayImageReadResult>>
     /**
+     * 当前会话的计划模式状态（docs/06 §29）。
+     *
+     * 未进入计划模式时返回 `{ active: false }`；不会抛错。
+     */
+    planStatus(request: ChatPlanStatusRequest): Promise<Result<SessionPlan>>
+    /**
+     * 进入 / 退出计划模式（`/plan`、`/plan off`、输入区芯片）。
+     *
+     * 运行中的会话一律拒绝（`E_BUSY`）：`onRoundStart` 会按新状态重算工具面，
+     * 中途退出会让同一请求的下一轮突然获得写工具。退出时待批准记录标 `exited`。
+     */
+    setSessionPlanMode(request: ChatSetSessionPlanModeRequest): Promise<Result<SessionPlan>>
+    /**
+     * 批准一条待批准计划并立即开始执行（docs/06 §29）。
+     *
+     * 主进程先退出计划模式（保证执行轮拿到正常工具面），再把计划正文注入本轮
+     * `extraContext` 并调用 `agent.send`；失败会回滚为待批准。返回执行轮 requestId。
+     */
+    approvePlan(request: ChatApprovePlanRequest): Promise<Result<ChatApprovePlanResult>>
+    /**
      * 拖拽文件的绝对路径（docs/07 §2.3）。
      *
      * **同步方法**，且只能在 preload 里实现：Electron 32+ 已移除 `File.path`，
@@ -3138,6 +3236,16 @@ export interface AuroraApi {
      * 无法经 IPC 传到主进程再解析。返回空串表示该文件拿不到本地路径（如网页拖拽）。
      */
     filePath(file: File): string
+  }
+  /**
+   * 计划文件（docs/06 §29 / docs/07 §2.3）：右栏「计划」面板的只读数据源。
+   *
+   * 渲染层不接触文件系统；主进程按 `sessionId` 隔离目录并做路径校验，
+   * 只回列表元数据与 Markdown 正文。
+   */
+  plans: {
+    list(request: PlansListRequest): Promise<Result<PlanFileInfo[]>>
+    read(request: PlansReadRequest): Promise<Result<PlanFileContent>>
   }
   classification: {
     /** 分类流水（新的在前）；缺省返回全部（主进程上限 500 条） */

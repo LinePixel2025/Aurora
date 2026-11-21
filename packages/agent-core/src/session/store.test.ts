@@ -1465,3 +1465,67 @@ describe('SessionStore · 提问留痕（StoredSession.asks，docs/12 §5）', (
     expect(await store.summaries()).toHaveLength(1)
   })
 })
+
+describe('SessionStore · 会话级计划模式（/plan，docs/06 §29）', () => {
+  const record = (id = 'call-1') => ({
+    id,
+    markdown: '# 实施计划\n\n1. 第一步',
+    status: 'pending' as const,
+    createdAt: '2025-01-01T00:00:00.000Z',
+    updatedAt: '2025-01-01T00:00:00.000Z',
+  })
+
+  it('setPlan 落 meta.plan，planOf / planOfSync 都能读；同值幂等', async () => {
+    const { store, fs } = setup()
+    await store.setPlan('quick', { active: true, record: record() })
+    expect(await store.planOf('quick')).toEqual({ active: true, record: record() })
+    expect(store.planOfSync('quick')).toEqual({ active: true, record: record() })
+
+    const path = sessionFilePath(SESSION_DIR, 'quick')
+    const persisted = JSON.parse(fs.files.get(path) ?? '{}') as {
+      meta?: { plan?: unknown }
+    }
+    expect(persisted.meta?.plan).toMatchObject({ active: true, record: { id: 'call-1' } })
+
+    const writes = fs.writeLog.length
+    await store.setPlan('quick', { active: true, record: record() })
+    expect(fs.writeLog.length).toBe(writes)
+  })
+
+  it('空计划状态删键；未进入时同步 getter 返回 active:false', async () => {
+    const { store, fs } = setup()
+    expect(store.planOfSync('quick')).toEqual({ active: false })
+    await store.setPlan('quick', { active: false })
+    expect(await store.planOf('quick')).toEqual({ active: false })
+    // 只有空 meta 时连文件都不会写（与 projectId 同款）
+    expect(fs.writeLog).toHaveLength(0)
+  })
+
+  it('畸形 meta.plan 宽容归化：非对象 / 非法状态 / 缺字段都按未进入处理', async () => {
+    const { store } = setup({
+      [`${SESSION_DIR}\\quick.json`]: JSON.stringify({
+        version: 7,
+        sessionId: 'quick',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '你好')],
+        meta: {
+          plan: {
+            active: true,
+            record: { id: 'x', markdown: '# p', status: 'bogus', createdAt: 'a', updatedAt: 'b' },
+          },
+        },
+      }),
+    })
+    expect(await store.planOf('quick')).toEqual({ active: true })
+    expect((await store.get('quick')).length).toBe(1)
+  })
+
+  it('跨实例重新读盘仍能恢复计划状态', async () => {
+    const fs = new TestFileSystem()
+    const first = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
+    await first.setPlan('quick', { active: true, record: record('call-9') })
+    await first.flush()
+    const second = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
+    expect(await second.planOf('quick')).toEqual({ active: true, record: record('call-9') })
+  })
+})

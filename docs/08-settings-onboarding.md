@@ -369,7 +369,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **41**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **45**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -799,7 +799,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 43`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 45`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -927,18 +927,21 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   旧配置天然合法，不需要迁移表达）、
   `v43 → v44`（**智慧提醒延迟投递**，见 §1 的 `notifications` 与 07 §4：为已有 `notifications` 补
   `smartDelayMinutes: 0` —— 0 = 期结束立即结算，升级后行为与 v43 逐字一致；
-  用户已写的 `channel` / 智慧提醒字段原样保留）。
-  四十四条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  用户已写的 `channel` / 智慧提醒字段原样保留）、
+  `v44 → v45`（**移除 Code Mode**，见 docs/05：删除 `modes.code` 占位配置组；
+  `modes.current === 'code'` 归一为 `'classroom'`（出厂默认 / 推荐首发模式）；
+  `modes` 分组缺失时不凭空造对象，其他 `modes.current` 值原样保留）。
+  四十五条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **44** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **45** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
 
 ```
-欢迎（品牌 + 三模式介绍）
+欢迎（品牌 + 两模式介绍）
   → AI 模型配置【必填】：provider 预设（DeepSeek / OpenAI / 自定义）+ baseURL + API key + 模型名
         → “测试连接”（展示延迟；可选拉取模型列表）
   → 模式选择（ClassRoom 推荐）
@@ -1264,7 +1267,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `modes.classroom.*`                                                                           | `modes.current === 'classroom'`                                                                                                                                    |
 | `modes.work.workspaceDir`                                                                     | `modes.current === 'work'`（v8 起 Work 区组有字段，与 ClassRoom 区组同口径；`data-empty="modes.work"` 空状态随之取消）                                             |
-| `modes.code.*`                                                                                | 无字段：Code 选中时只显示「暂无可配置项」空状态（`data-empty="modes.code"`）                                                                                       |
+
 | `modes.classroom.schedule.classisland.*`                                                      | `schedule.provider === 'classisland'`                                                                                                                              |
 | `modes.classroom.preClassReminder`                                                            | `schedule.lessons.length > 0`（2026-10-25 起「提醒」页也聚合三件套：同字段同门控，非 ClassRoom 模式或无节次时同样落 `data-empty`）                                    |
 | `modes.classroom.preClassLeadMinutes`                                                         | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v10 新增）                                                                                        |

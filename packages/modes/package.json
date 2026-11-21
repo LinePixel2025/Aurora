@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Aurora 模式系统（classroom 完整实现，work / code 占位）",
+  "description": "Aurora 模式系统（classroom 完整实现，work 初步实装）",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

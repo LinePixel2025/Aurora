@@ -7,7 +7,6 @@ import type { ModeId } from '@aurora/shared'
 const MODE_LABELS: Record<ModeId, string> = {
   classroom: '课堂',
   work: '工作',
-  code: '代码',
 }
 
 export function modeLabel(mode: string): string {

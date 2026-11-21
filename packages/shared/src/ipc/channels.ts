@@ -227,6 +227,18 @@ export const IPC = {
      * 按会话 + imageId 读盘并只回 data URL。
      */
     readDisplayImage: 'chat:readDisplayImage',
+    /**
+     * 计划模式（docs/06 §29）：状态读取 / 进入退出 / 批准执行。
+     * 计划状态存会话文件 `meta.plan`（零迁移），计划正文另落 `<userData>/plans/`。
+     */
+    planStatus: 'chat:planStatus',
+    setSessionPlanMode: 'chat:setSessionPlanMode',
+    approvePlan: 'chat:approvePlan',
+  },
+  /** 计划文件只读通道（docs/06 §29 / docs/07 §2.3）：右栏「计划」面板用 */
+  plans: {
+    list: 'plans:list',
+    read: 'plans:read',
   },
   /** 全局快捷键注册状态（docs/07 §5、docs/08 §1） */
   hotkey: {

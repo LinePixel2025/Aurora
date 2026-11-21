@@ -10,7 +10,6 @@ import { ModeManager } from './manager.js'
 import { GuideRunner } from './guide-runner.js'
 import { createClassroomMode } from './classroom.js'
 import { createWorkMode } from './work.js'
-import { createCodeMode } from './code.js'
 
 function createHarness(settings: Settings = createDefaultSettings()) {
   const logger = createMemoryLogger()
@@ -39,7 +38,6 @@ function createHarness(settings: Settings = createDefaultSettings()) {
   const manager = new ModeManager(logger)
   manager.register(createClassroomMode())
   manager.register(createWorkMode())
-  manager.register(createCodeMode())
   const runner = new GuideRunner({ manager, ctx, logger })
   return { manager, runner, ctx, settings, logger }
 }
@@ -162,15 +160,6 @@ describe('GuideRunner', () => {
     result = runner.answer('work', '知道了')
     expect(result.session.completed).toBe(true)
     expect(settings.modes.work.guideCompleted).toBe(true)
-  })
-
-  it('code 占位引导一步并可完成', async () => {
-    const { manager, runner, ctx, settings } = createHarness()
-    await manager.init(ctx)
-    settings.modes.current = 'code'
-    runner.start('code')
-    runner.answer('code', '知道了')
-    expect(settings.modes.code.guideCompleted).toBe(true)
   })
 
   it('无引导流程的模式抛出明确错误', async () => {

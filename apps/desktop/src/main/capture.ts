@@ -3791,7 +3791,7 @@ export const CHAT_CTX_EMPTY_CHECK = `(async () => {
   const report = { ok: false, reason: '' }
   try {
     const act = window.__auroraCtxEmptyAct || { ok: false, reason: 'act 没有留下读数' }
-    const kinds = ['context', 'files', 'terminal', 'browser']
+    const kinds = ['context', 'plans', 'files', 'terminal', 'browser']
     const allTabs = () => document.querySelectorAll('[data-field^="chat.ctx-tab-"][data-tab-id]').length
     const cards = kinds.map((k) => document.querySelector('[data-action="chat.tool-open-' + k + '"]'))
     const cardPresent = cards.every((el) => el !== null)
@@ -7036,6 +7036,8 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
     // 数量断言在"加命令"时无谓变红，锚点断言能同时证明"新命令真的注册到了菜单"
     const slashInit = count('[data-field="chat.slash-init"]')
     const slashCompact = count('[data-field="chat.slash-compact"]')
+    // 计划模式入口（docs/06 §29）：同样按锚点断言，证明 /plan 真的注册到了菜单
+    const slashPlan = count('[data-field="chat.slash-plan"]')
     const permissionLabel = textOf('[data-field="chat.permission"]')
     const usageText = textOf('[data-field="chat.context-usage"]')
 
@@ -7077,6 +7079,7 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
       slashSkillItems,
       slashInit,
       slashCompact,
+      slashPlan,
       permissionLabel,
       permissionMenuClosed: count('[data-field="chat.permission-menu"]'),
       contextBar: count('[data-field="chat.context"]'),
@@ -7090,6 +7093,7 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
         slashCommandItems >= 4 &&
         slashInit === 1 &&
         slashCompact === 1 &&
+        slashPlan === 1 &&
         slashSkillItems >= 1 &&
         permissionLabel.indexOf('完全权限') !== -1 &&
         count('[data-field="chat.permission-menu"]') === 0 &&
@@ -14969,6 +14973,450 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   )
 }
 
+// ───────────────────────── 计划模式探针（docs/06 §29） ─────────────────────────
+
+/** 取当前活跃会话 id（计划 IPC 全部按会话隔离；chat 窗口默认是 main） */
+const PLAN_ACTIVE_SESSION_SNIPPET = `
+  const activeSessionId = async () => {
+    try {
+      const result = await window.aurora.chat.sessions()
+      if (result && result.ok) {
+        const active = result.value.find((item) => item.active === true)
+        if (active !== undefined) return active.id
+      }
+    } catch (error) {
+      /* 回落 main */
+    }
+    return 'main'
+  }
+`
+
+/** 进入计划模式（截图现场：输入区芯片 + placeholder） */
+export const CHAT_PLAN_MODE_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    ${PLAN_ACTIVE_SESSION_SNIPPET}
+    const sessionId = await activeSessionId()
+    // 走真实 UI：输入「/plan」后按发送键 —— App 的 send() 会识别前缀并调用
+    // setSessionPlanMode，useChat 同步更新 planState，芯片才会出现。
+    // 直接调 IPC 只改主进程状态，渲染层的 planState 仍是旧值（截图会拍不到芯片）。
+    const box = document.querySelector('.composer-input')
+    if (box === null) return { ready: false, reason: 'composer-input 不存在' }
+    box.focus()
+    box.value = '/plan'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await wait(250)
+    const sendButton = document.querySelector('.composer-box [aria-label="发送"]')
+    if (sendButton === null) return { ready: false, reason: '发送按钮不存在' }
+    sendButton.click()
+    let chip = null
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      chip = document.querySelector('[data-field="chat.plan-mode"]')
+      if (chip !== null) break
+      await wait(150)
+    }
+    return {
+      ready: chip !== null,
+      sessionId,
+      reason: chip === null ? '计划模式芯片没有出现' : '',
+    }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_PLAN_MODE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const chip = document.querySelector('[data-field="chat.plan-mode"]')
+    const chipText = chip === null ? '' : (chip.textContent || '').trim()
+    const box = document.querySelector('.composer-input')
+    const placeholder = box === null ? '' : String(box.getAttribute('placeholder') || '')
+    const pending = chip === null ? null : chip.getAttribute('data-plan-pending')
+    // 收尾走**真实芯片点击**（onPlanExit → useChat 同步 planState），并等芯片消失；
+    // 直接调 IPC 只改主进程状态，渲染层仍以为在计划模式，会污染后续场景。
+    let exited = false
+    if (chip !== null) {
+      chip.click()
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if (document.querySelector('[data-field="chat.plan-mode"]') === null) {
+          exited = true
+          break
+        }
+        await wait(150)
+      }
+    }
+    return {
+      chip: chip !== null,
+      chipText,
+      pending,
+      placeholder,
+      exited,
+      pass:
+        chip !== null &&
+        chipText.indexOf('计划模式') !== -1 &&
+        pending === '0' &&
+        placeholder.indexOf('规划') !== -1 &&
+        exited === true,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/** 提交计划现场（截图：计划卡 + 待批准徽章 + 三个动作 + 输入区待批准芯片） */
+export function chatPlanCardAct(marker: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    ${PLAN_ACTIVE_SESSION_SNIPPET}
+    const sessionId = await activeSessionId()
+    window.__auroraPlanSessionId = sessionId
+    const box = document.querySelector('.composer-input')
+    if (box === null) return { ready: false, reason: 'composer-input 不存在' }
+    box.focus()
+    // 「/plan <任务>」走 App.send() 的前缀改写：进入计划模式 + 发送任务一步完成，
+    // 渲染层 planState 同步更新（直接调 IPC 会让计划卡停留在「历史计划」）。
+    box.value = '/plan ' + ${JSON.stringify(marker)} + ' 给登录加一个失败重试'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await wait(250)
+    const sendButton = document.querySelector('.composer-box [aria-label="发送"]')
+    if (sendButton === null) return { ready: false, reason: '发送按钮不存在' }
+    sendButton.click()
+    let card = null
+    for (let attempt = 0; attempt < 160; attempt += 1) {
+      card = document.querySelector('[data-field="chat.plan-card"]')
+      const streaming = document.querySelector('.thread.streaming')
+      if (card !== null && streaming === null) break
+      await wait(250)
+    }
+    return { ready: card !== null, sessionId, reason: card === null ? '计划卡没有出现' : '' }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+}
+
+export function chatPlanCardCheck(title: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const textOf = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').trim()
+    }
+    const card = document.querySelector('[data-field="chat.plan-card"]')
+    const badge = textOf('[data-field="chat.plan-card"] .plan-badge')
+    const body = textOf('[data-field="chat.plan-card"] .plan-body')
+    const approve = document.querySelector('[data-action="chat.plan-approve"]') !== null
+    const revise = document.querySelector('[data-action="chat.plan-revise"]') !== null
+    const exit = document.querySelector('[data-action="chat.plan-exit"]') !== null
+    const open = document.querySelector('[data-action="chat.plan-open"]') !== null
+    const chip = document.querySelector('[data-field="chat.plan-mode"]')
+    const chipText = chip === null ? '' : (chip.textContent || '').trim()
+    const chipPending = chip === null ? null : chip.getAttribute('data-plan-pending')
+
+    // 单计划现场（用户截图就是单计划）：从计划卡打开侧栏，必须只有一份预览头、
+    // 不出现多计划选择条；否则又会回到「列表 + 预览」双标题的老问题。
+    let singleOk = false
+    const openButton = document.querySelector('[data-action="chat.plan-open"]')
+    if (openButton !== null) {
+      openButton.click()
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const previewTitle = textOf('[data-field="chat.plan-preview-title"]')
+        if (previewTitle.indexOf(${JSON.stringify(title)}) !== -1) {
+          singleOk = document.querySelector('[data-field="chat.plan-selector"]') === null
+          break
+        }
+        await wait(150)
+      }
+      const close = document.querySelector('[data-field="chat.ctx-tab-close-plans"]')
+      if (close !== null) close.click()
+      await wait(200)
+    }
+
+    return {
+      card: card !== null,
+      badge,
+      bodyHasTitle: body.indexOf(${JSON.stringify(title)}) !== -1,
+      approve,
+      revise,
+      exit,
+      open,
+      singlePlanPanel: singleOk,
+      chipText,
+      chipPending,
+      pass:
+        card !== null &&
+        badge.indexOf('待批准') !== -1 &&
+        body.indexOf(${JSON.stringify(title)}) !== -1 &&
+        approve &&
+        revise &&
+        exit &&
+        open &&
+        singleOk &&
+        chipText.indexOf('计划待批准') !== -1 &&
+        chipPending === '1',
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+}
+
+/**
+ * 打开左栏「计划」入口 → 右栏计划面板（截图：多计划 chips + 只读 Markdown 阅读区）。
+ *
+ * 自足：面板场景被单独筛选跑时若计划不足两份，依次提交两份夹具；
+ * 然后把右栏拖到最小 280px 截图（用户实测窄窗是错位高发区）。
+ */
+export function chatPlanPanelAct(
+  marker: string,
+  marker2: string,
+  title1: string,
+  title2: string,
+): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    ${PLAN_ACTIVE_SESSION_SNIPPET}
+    const sessionId = await activeSessionId()
+    const listPlans = async () => {
+      try {
+        const result = await window.aurora.plans.list({ sessionId })
+        return result && result.ok ? result.value : []
+      } catch (error) {
+        return []
+      }
+    }
+    const submitPlan = async (text) => {
+      const before = (await listPlans()).length
+      const box = document.querySelector('.composer-input')
+      if (box === null) return false
+      box.focus()
+      box.value = text
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+      await wait(250)
+      const sendButton = document.querySelector('.composer-box [aria-label="发送"]')
+      if (sendButton === null) return false
+      sendButton.click()
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const after = (await listPlans()).length
+        if (after > before && document.querySelector('.thread.streaming') === null) return true
+        await wait(250)
+      }
+      return false
+    }
+    let plans = await listPlans()
+    if (!plans.some((item) => item.title === ${JSON.stringify(title1)})) {
+      if (!(await submitPlan('/plan ' + ${JSON.stringify(marker)} + ' 给登录加一个失败重试'))) {
+        return { ready: false, reason: '第一份计划没有提交成功' }
+      }
+      plans = await listPlans()
+    }
+    if (!plans.some((item) => item.title === ${JSON.stringify(title2)})) {
+      if (!(await submitPlan('/plan ' + ${JSON.stringify(marker2)} + ' 整理课程表数据'))) {
+        return { ready: false, reason: '第二份计划没有提交成功' }
+      }
+      plans = await listPlans()
+    }
+    // chips 场景要求「最新一条」是第二份夹具；若已有更新的计划，再提交一次第二份
+    if (plans[0] === undefined || plans[0].title !== ${JSON.stringify(title2)}) {
+      if (!(await submitPlan('/plan ' + ${JSON.stringify(marker2)} + ' 整理课程表数据'))) {
+        return { ready: false, reason: '第二份计划没有提交成功' }
+      }
+      plans = await listPlans()
+    }
+    if (plans.length < 2) return { ready: false, reason: '计划文件不足两份' }
+    const entry = document.querySelector('[data-field="chat.plans-entry"]')
+    if (entry === null) return { ready: false, reason: '左栏计划入口不存在' }
+    entry.click()
+    let tab = null
+    let chips = 0
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      tab = document.querySelector('[data-field="chat.ctx-tab-plans"]')
+      chips = document.querySelectorAll('[data-field="chat.plan-chip"]').length
+      if (tab !== null && chips >= 2) break
+      await wait(250)
+    }
+    // 窄右栏现场：把右栏拖到最小 280，截图与 check 都针对窄宽布局
+    const resizer = document.querySelector('[data-field="chat.ctx-resizer"]')
+    if (resizer !== null) {
+      const left = resizer.getBoundingClientRect().left
+      const opts = { bubbles: true, pointerId: 11, clientX: left }
+      resizer.dispatchEvent(new PointerEvent('pointerdown', { ...opts, button: 0, buttons: 1 }))
+      resizer.dispatchEvent(
+        new PointerEvent('pointermove', {
+          ...opts,
+          button: 0,
+          buttons: 1,
+          clientX: Math.round(window.innerWidth) - 280,
+        }),
+      )
+      resizer.dispatchEvent(
+        new PointerEvent('pointerup', {
+          ...opts,
+          button: 0,
+          buttons: 0,
+          clientX: Math.round(window.innerWidth) - 280,
+        }),
+      )
+      await wait(450)
+    }
+    return { ready: tab !== null && chips >= 2, tab: tab !== null, chips }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+}
+
+/**
+ * 计划面板 check：多计划 chips（含切换）+ 窄宽几何 + 单阅读区。
+ *
+ * 用户实测的回归点全部钉在这里：面板占满窗格、面板 / 预览头不横向溢出、
+ * 选中 chip 在选择条可视区内、正文是唯一纵向滚动区、旧垂直列表不再存在。
+ */
+export function chatPlanPanelCheck(title1: string, title2: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const textOf = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').trim()
+    }
+    const chipsOf = () => Array.from(document.querySelectorAll('[data-field="chat.plan-chip"]'))
+    const previewTitle = () => textOf('[data-field="chat.plan-preview-title"]')
+    const previewStatus = () => textOf('[data-field="chat.plan-preview-status"]')
+    const tab = document.querySelector('[data-field="chat.ctx-tab-plans"]')
+    const panel = document.querySelector('[data-field="chat.plan-panel"]')
+    const pane = document.querySelector('.ctx-pane[data-tab-kind="plans"]')
+    const chipsEl = document.querySelector('[data-field="chat.plan-selector"]')
+    const previewHead = document.querySelector('[data-field="chat.plan-preview"]')
+    const previewBody = document.querySelector('[data-field="chat.plan-preview-body"]')
+    const bodyText = textOf('[data-field="chat.plan-preview-body"]')
+    const oldList = document.querySelector('[data-field="chat.plan-file-list"]') !== null
+    const editors = panel === null ? 0 : panel.querySelectorAll('textarea, input, [contenteditable="true"]').length
+    const chips = chipsOf()
+    const activeChip = () => document.querySelector('[data-field="chat.plan-chip"][aria-selected="true"]')
+    const rectOf = (el) => (el === null ? null : el.getBoundingClientRect())
+    const paneRect = rectOf(pane)
+    const panelRect = rectOf(panel)
+    const chipsRect = rectOf(chipsEl)
+    const activeRect = rectOf(activeChip())
+    const fillsPane =
+      paneRect !== null &&
+      panelRect !== null &&
+      Math.abs(panelRect.top - paneRect.top) <= 2 &&
+      Math.abs(panelRect.height - paneRect.height) <= 2
+    const panelNoOverflow =
+      panel !== null && panel.scrollWidth <= panel.clientWidth + 1
+    const headNoOverflow =
+      previewHead !== null && previewHead.scrollWidth <= previewHead.clientWidth + 1
+    const activeChipVisible =
+      chipsRect !== null &&
+      activeRect !== null &&
+      activeRect.left >= chipsRect.left - 1 &&
+      activeRect.right <= chipsRect.right + 1
+    const bodyScrollable =
+      previewBody !== null && getComputedStyle(previewBody).overflowY === 'auto'
+    const latestTitleOk = previewTitle().indexOf(${JSON.stringify(title2)}) !== -1
+    // header 已展示标题：正文里不得再出现同一标题（Markdown 开头 H1 已裁掉）
+    const bodyHasTitle = bodyText.indexOf(${JSON.stringify(title2)}) !== -1
+    const hasTwoChips = chips.length >= 2
+
+    // chips 新的在前：切到**最后一条** = 旧计划，标题变化 + 状态应是被新计划取代
+    let switchOk = false
+    const oldChip = chips[chips.length - 1]
+    if (oldChip !== undefined) {
+      oldChip.click()
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (previewTitle().indexOf(${JSON.stringify(title1)}) !== -1) {
+          switchOk = true
+          break
+        }
+        await wait(150)
+      }
+    }
+    const oldStatus = previewStatus()
+    // 再切回最新计划：验证 chips 双向切换（截图之后做，不影响截图现场）
+    let backOk = false
+    const allChips = chipsOf()
+    const latestChip = allChips[0]
+    if (latestChip !== undefined) {
+      latestChip.click()
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (previewTitle().indexOf(${JSON.stringify(title2)}) !== -1) {
+          backOk = true
+          break
+        }
+        await wait(150)
+      }
+    }
+
+    // 收尾：恢复右栏默认宽、回上下文标签并关掉计划标签；再退出计划模式
+    let cleaned = false
+    try {
+      const resizer = document.querySelector('[data-field="chat.ctx-resizer"]')
+      if (resizer !== null) {
+        resizer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+        await wait(350)
+      }
+      const contextTab = document.querySelector('[data-field="chat.ctx-tab-context"]')
+      if (contextTab !== null) contextTab.click()
+      const close = document.querySelector('[data-field="chat.ctx-tab-close-plans"]')
+      if (close !== null) close.click()
+      const chip = document.querySelector('[data-field="chat.plan-mode"]')
+      if (chip !== null) {
+        chip.click()
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          if (document.querySelector('[data-field="chat.plan-mode"]') === null) break
+          await wait(150)
+        }
+      }
+      cleaned = document.querySelector('[data-field="chat.plan-mode"]') === null
+    } catch (error) {
+      cleaned = false
+    }
+
+    return {
+      tab: tab !== null,
+      chips: chips.length,
+      latestTitleOk,
+      bodyHasTitle,
+      hasTwoChips,
+      switchOk,
+      oldStatus,
+      backOk,
+      oldList,
+      editors,
+      fillsPane,
+      panelNoOverflow,
+      headNoOverflow,
+      activeChipVisible,
+      bodyScrollable,
+      cleaned,
+      pass:
+        tab !== null &&
+        hasTwoChips &&
+        latestTitleOk &&
+        bodyHasTitle === false &&
+        switchOk &&
+        oldStatus.indexOf('已被取代') !== -1 &&
+        backOk &&
+        oldList === false &&
+        editors === 0 &&
+        fillsPane === true &&
+        panelNoOverflow === true &&
+        headNoOverflow === true &&
+        activeChipVisible === true &&
+        bodyScrollable === true &&
+        cleaned === true,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+}
 export function defaultCapturePlan(manager: WindowManager, userData: string): CaptureTarget[] {
   const theme = activeTheme()
   const plan: CaptureTarget[] = [

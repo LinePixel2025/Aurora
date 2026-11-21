@@ -368,7 +368,6 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       classification: { ...DEFAULT_CLASSIFICATION },
     },
     work: { guideCompleted: false, workspaceDir: '' },
-    code: { guideCompleted: false },
   },
   skills: {
     userDir: '',

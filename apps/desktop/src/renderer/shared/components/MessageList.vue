@@ -60,7 +60,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { Ref } from 'vue'
-import type { AgentToolCall, ChangedFileInfo, ChatDisplayImage } from '@aurora/shared'
+import type { AgentToolCall, ChangedFileInfo, ChatDisplayImage, SessionPlan } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '@aurora/shared/browser'
 import '@aurora/shared/browser/markdown/md.css'
@@ -79,6 +79,7 @@ import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '@aurora/
 import AgentTrace from './AgentTrace.vue'
 import AgentToolRow from './AgentToolRow.vue'
 import ChangedFilesCard from './ChangedFilesCard.vue'
+import PlanCard from './PlanCard.vue'
 import DisplayImageGallery from './DisplayImageGallery.vue'
 
 const props = withDefaults(
@@ -129,6 +130,12 @@ const props = withDefaults(
      * 缺省空 Map = 不渲染任何卡片（子代理页 / 自动化回放等不需要它）。
      */
     turnChanges?: ReadonlyMap<string, readonly ChangedFileInfo[]>
+    /** 当前会话计划状态（docs/06 §29）：计划卡徽章 / 动作可见性 */
+    plan?: SessionPlan
+    /** 计划批准中 / 流式中：禁用计划卡动作 */
+    planBusy?: boolean
+    /** 是否允许计划卡交互（对话主界面 true；历史回放 / 自动化页面 false） */
+    planInteractive?: boolean
   }>(),
   {
     emptyHint: '开始一段对话吧',
@@ -143,6 +150,9 @@ const props = withDefaults(
     latestTurnGroupable: true,
     sessionId: '',
     turnChanges: () => new Map<string, readonly ChangedFileInfo[]>(),
+    plan: () => ({ active: false }),
+    planBusy: false,
+    planInteractive: false,
   },
 )
 
@@ -200,6 +210,11 @@ const emit = defineEmits<{
   (event: 'stopSpeak'): void
   /** 点改动文件卡片（行 / 标题）：由父级打开右栏文件预览 */
   (event: 'open-file', path: string): void
+  /** 计划卡动作（docs/06 §29）：批准 / 继续完善 / 退出 / 在侧边栏查看 */
+  (event: 'plan-approve', callId: string): void
+  (event: 'plan-revise', callId: string): void
+  (event: 'plan-exit'): void
+  (event: 'plan-open', callId: string): void
 }>()
 
 /**
@@ -383,6 +398,47 @@ function changedFilesOf(message: ChatMessage): readonly ChangedFileInfo[] {
 
 function openChangedFile(path: string): void {
   emit('open-file', path)
+}
+
+/**
+ * 每个请求里最后一条 `submit_plan` 调用（docs/06 §29）。
+ *
+ * 计划卡挂在请求**最后一条助手消息**的尾部（与改动文件卡同一位置），
+ * 因此中间工具轮里的计划调用不会重复出卡。
+ */
+const planCallByRequest = computed<Map<string, AgentToolCall>>(() => {
+  const calls = new Map<string, AgentToolCall>()
+  for (const message of props.messages) {
+    if (message.requestId === undefined) continue
+    for (const call of message.toolCalls ?? []) {
+      if (call.name === 'submit_plan') calls.set(message.requestId, call)
+    }
+  }
+  return calls
+})
+
+const latestPlanCallId = computed<string>(() => {
+  const calls = [...planCallByRequest.value.values()]
+  return calls[calls.length - 1]?.id ?? ''
+})
+
+function planCardOf(message: ChatMessage): AgentToolCall | null {
+  const requestId = message.requestId
+  if (requestId === undefined) return null
+  if (finalAssistantIdByRequest.value.get(requestId) !== message.id) return null
+  return planCallByRequest.value.get(requestId) ?? null
+}
+
+/** 计划正文：当前记录优先（将来支持编辑后也不会与工具参数打架），否则读 submit_plan 入参 */
+function planMarkdownOf(call: AgentToolCall): string {
+  const current = props.plan?.record
+  if (current?.id === call.id && current.markdown.trim() !== '') return current.markdown
+  const input = call.input
+  if (typeof input === 'object' && input !== null && !Array.isArray(input)) {
+    const value = (input as Record<string, unknown>)['plan']
+    if (typeof value === 'string') return value
+  }
+  return ''
 }
 
 /** 这条消息正在合成 / 正在播放；两者互斥，由 `useTts` 的状态决定。 */
@@ -1507,6 +1563,24 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               v-if="changedFilesOf(message).length > 0"
               :files="changedFilesOf(message)"
               @open="openChangedFile"
+            />
+
+            <!--
+              计划卡（docs/06 §29）：请求最后一条助手消息的尾部，与计划模式状态联动。
+              计划正文来自 submit_plan 入参 / meta.plan.record；文件另存于 <userData>/plans/。
+            -->
+            <PlanCard
+              v-if="planCardOf(message) !== null"
+              :call-id="planCardOf(message)!.id"
+              :markdown="planMarkdownOf(planCardOf(message)!)"
+              :state="props.plan"
+              :latest="planCardOf(message)!.id === latestPlanCallId"
+              :busy="props.planBusy || props.streaming"
+              :interactive="props.planInteractive"
+              @approve="(callId) => emit('plan-approve', callId)"
+              @revise="(callId) => emit('plan-revise', callId)"
+              @exit="emit('plan-exit')"
+              @open="(callId) => emit('plan-open', callId)"
             />
 
             <!--

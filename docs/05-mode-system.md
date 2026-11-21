@@ -1,6 +1,6 @@
 # 05 · 模式系统与 ClassRoom Mode 设计
 
-状态：`已定稿`（ClassRoom 为 v1 基线 + BetaV2 增补；Work 为 BetaV2 初步实装；Code 为接口预留）
+状态：`已定稿`（ClassRoom 为 v1 基线 + BetaV2 增补；Work 为 BetaV2 初步实装；v45 删除 Code Mode；会话级 Plan Mode 见 docs/06 §29）
 
 ## 1. 模式框架（packages/modes）
 
@@ -17,7 +17,7 @@ export interface ModeContext {
 }
 
 export interface IMode {
-  id: 'work' | 'code' | 'classroom';
+  id: 'work' | 'classroom';
   displayName: string;
   description: string;
   icon?: string;
@@ -41,7 +41,7 @@ export interface ModeGuide {
 
 ### 1.2 ModeManager 职责
 
-- 注册表：`register(mode)`；启动时装配全部三个模式（classroom 为完整实现，work 为初步实装，code 为占位实现）。
+- 注册表：`register(mode)`；启动时装配两个模式（classroom 为完整实现，work 为初步实装）。
 - 切换流程：前置校验 → 持久化 `modes.current` → `onDeactivate(旧)` → `onActivate(新)` → 广播 `mode:changed` → 若新模式 `guide` 未完成，触发主动引导（见 06 §9）。
 - 约束：同一时刻仅一个模式激活；切换失败回滚并提示。
 
@@ -346,7 +346,11 @@ ClassRoom 的系统提示词会附上「你可以修改的 ClassRoom 设置」�
 > 按科目切换某处状态等）应作为**内置自动化**或**用户自动化**接入，
 > **不要另外写定时服务**——否则「改了设置不生效」「与引擎抢触发」这类坑会重新长出来。
 
-## 4. Work Mode（BetaV2 初步实装）与 Code Mode（占位）
+## 4. Work Mode（BetaV2 初步实装）
+
+> **Code Mode 已于 v45 删除**（纯占位实现，无独有工具 / 配置）：`CONFIG_VERSION` 44 → 45 的迁移会删除
+> `modes.code` 并把 `modes.current = 'code'` 归一为 `classroom`。**Plan Mode 不是第 4 个 `IMode`**——
+> 它是会话级运行态（不写 `config.json`、不进 `MODE_IDS`），见 docs/06 §29。
 
 ### 4.1 Work Mode
 
@@ -381,24 +385,19 @@ v1 占位的 Work Mode 在 BetaV2 完成**初步实装**（`packages/modes/src/w
 - 局限：日程 / 邮件 / 待办、深度文档排版等能力仍未提供；`workReadiness()` 导出供设置页展示
   缺失项（工作目录未配置不阻塞对话，只是产出落点未定）。
 
-### 4.2 Code Mode（仍为占位）
-
-Code Mode 保持**占位实现**：引导一步（确认知晓），提示词说明「功能建设中」；工作区项目识别、
-Git 状态感知、终端 / 命令执行工具组留待后续版本（能力位通过 06 文档的扩展点预留）。
-会话空间的 `'code'` 取值已为它预留（`SessionSpace` 类型，docs/06 §4）——
-Code Mode 实装时左栏「项目对话」区之外将出现自己的分区，当前**不产生**该取值。
-
-| 模式 | 当前状态 | 预留能力位（后续实现） |
+| 模式 | 当前状态 | 后续能力位 |
 |---|---|---|
+| ClassRoom Mode | 完整实现（分类管线 / 课前提醒 / ClassIsland） | 见 §3 |
 | Work Mode | 初步实装（guide + 办公 systemPrompt + workspaceDir） | 日程 / 邮件 / 待办、深度文档排版、会议纪要 |
-| Code Mode | 占位注册，提示词说明“功能建设中” | 工作区项目识别、Git 状态感知、终端 / 命令执行工具组 |
 
 ## 5. 模式相关配置（详见 08 §1）
 
-- `modes.current`：当前模式
+- `modes.current`：当前模式（`classroom` / `work`）
 - `modes.classroom.*`：watchDir、subjects（科目→文件夹映射）、schedule（课程表）、preClassReminder、preClassOpenFolder、classification（autoMove / confidenceThreshold / fallbackFolder）、guideCompleted
 - `modes.work.*`：guideCompleted、workspaceDir（BetaV2 起，办公工作目录）
-- `modes.code.*`：仅 `guideCompleted`（占位）
+
+> 会话级计划模式（`/plan`）的状态在 `sessions/<id>.json` 的 `meta.plan`，**不是配置项**；
+> 计划正文另存 `<userData>/plans/`。详见 docs/06 §29。
 
 ## 6. 模式能力对齐（v0.2.0 定稿）
 
@@ -412,11 +411,11 @@ Code Mode 实装时左栏「项目对话」区之外将出现自己的分区，�
    `ModeManager` 不参与工具注册。
 2. **差异只允许出现在两处**：
    - **自主感知**（`perceptionSubscriptions`）：classroom 订阅文件监听与课程时钟、
-     work 订阅时钟、code 暂无 —— 感知差异影响"Agent 主动知道什么"，不影响"Agent 能做什么"；
+     work 订阅时钟 —— 感知差异影响"Agent 主动知道什么"，不影响"Agent 能做什么"；
    - **特化功能**（`systemPrompt` 片段 + guide + 模式专属配置）：classroom 的分类管线 /
      课前提醒、work 的办公文档指引与工作目录。特化功能**只增不减**：模式提示词可以
-     声明"本模式的特化能力边界"（如 code 的"功能建设中"），但**不得声明或暗示**
+     声明"本模式的特化能力边界"，但**不得声明或暗示**
      基础工具（文件 / 命令 / 检索 / Center 等）在当前模式不可用。
-3. **回归护栏**：`packages/modes/src/manager.test.ts` 的能力矩阵用例断言三个模式
+3. **回归护栏**：`packages/modes/src/manager.test.ts` 的能力矩阵用例断言所有模式
    `capabilities.tools` 恒等（`MODE_CAPABILITY_MATRIX` 导出，见 `packages/modes/src/capabilities.ts`），
    防止未来有人给某个模式加"工具裁剪"。

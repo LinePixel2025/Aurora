@@ -2,12 +2,12 @@
 /**
  * 右栏空标签态的工具快捷入口（docs/07 §2.3）。
  *
- * 右栏标签全部关闭后，标签条仍保留「＋」，但正文区是空的；这里把四种面板的
+ * 右栏标签全部关闭后，标签条仍保留「＋」，但正文区是空的；这里把五种面板的
  * 重开入口直接放在右栏正文区，避免用户再走「＋ → 菜单 → 选种类」两步。
  * `chat.tool-shortcuts` / `chat.tool-open-<kind>` 是 capture 探针契约，不可改名。
  */
 import type { Component } from 'vue'
-import { FileText, Globe, LayoutGrid, Terminal } from '@aurora/shared/browser'
+import { ClipboardList, FileText, Globe, LayoutGrid, Terminal } from '@aurora/shared/browser'
 import type { CtxTabKind } from '../composables/ctxTabsCore'
 
 const emit = defineEmits<{
@@ -16,6 +16,7 @@ const emit = defineEmits<{
 
 const TOOL_SHORTCUTS = [
   { kind: 'context', label: '上下文', icon: LayoutGrid },
+  { kind: 'plans', label: '计划', icon: ClipboardList },
   { kind: 'files', label: '文件', icon: FileText },
   { kind: 'terminal', label: '终端', icon: Terminal },
   { kind: 'browser', label: '浏览器', icon: Globe },

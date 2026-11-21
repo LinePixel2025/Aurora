@@ -1130,6 +1130,7 @@ describe('配置迁移链', () => {
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
+        'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1186,6 +1187,7 @@ describe('配置迁移链', () => {
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
+        'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1622,6 +1624,7 @@ describe('配置迁移链', () => {
         'v41 → v42：v41 → v42：notifications 补自定义音效路径（空 = 默认提示音）',
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
+        'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2389,6 +2392,47 @@ describe('配置迁移链', () => {
         unknown
       >
       expect(providers['ghost']).toBe('not-an-object')
+    })
+  })
+
+  describe('v44 → v45（移除 Code Mode，docs/05）', () => {
+    it('删 modes.code，并把 current=code 归一为 classroom', () => {
+      const outcome = migrate({
+        version: 44,
+        modes: {
+          current: 'code',
+          classroom: { guideCompleted: true, watchDir: 'D:\\感知' },
+          work: { guideCompleted: false, workspaceDir: '' },
+          code: { guideCompleted: true },
+        },
+      })
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied[0]).toContain('v44 → v45')
+      const modes = outcome.data['modes'] as Record<string, unknown>
+      expect(modes['current']).toBe('classroom')
+      expect('code' in modes).toBe(false)
+      expect((modes['classroom'] as Record<string, unknown>)['watchDir']).toBe('D:\\感知')
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('非 code 的 current 原样保留，modes 分组缺失时不凭空造对象', () => {
+      const work = migrate({
+        version: 44,
+        modes: { current: 'work', work: { guideCompleted: true } },
+      })
+      expect((work.data['modes'] as Record<string, unknown>)['current']).toBe('work')
+      const missing = migrate({ version: 44 })
+      expect(missing.data['modes']).toBeUndefined()
+    })
+
+    it('已是 v45 时不再执行；重复执行结果幂等', () => {
+      const once = migrate({
+        version: 44,
+        modes: { current: 'code', code: { guideCompleted: true } },
+      })
+      const twice = migrate({ ...once.data, version: 44 })
+      expect((twice.data['modes'] as Record<string, unknown>)['current']).toBe('classroom')
+      expect('code' in (twice.data['modes'] as Record<string, unknown>)).toBe(false)
     })
   })
 

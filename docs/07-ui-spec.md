@@ -52,7 +52,7 @@
   下一节课与系统摘要。
   旧版的“当前模式大卡 + 长列表系统状态”收成顶部状态摘要和底部 chips。
   「下一节」是 ClassRoom 专属摘要：`modes.current !== 'classroom'` 时整条不渲染；
-  Work / Code 模式只保留通用系统摘要与模式提示，不能复用课堂课表。
+  Work 模式只保留通用系统摘要与模式提示，不能复用课堂课表（Code Mode 已于 v45 删除）。
 - **行为**：
   - **鼠标**悬停 → 120ms 后展开面板，移开 → 面板退出后收起；标题栏右上角是「隐藏」图标，底部主操作区固定为
     「打开主界面 / 记忆库 / 设置」**三个**入口（**BetaV2**：「打开对话窗口」更名「打开主界面」）；
@@ -457,7 +457,8 @@
     逐行状态点。
   - **composer（2026-09 输入框重做，2026-09-29 减负轮，见下方「输入框规格」）**：单张悬浮卡
     （附件缩略图 → textarea → 工具行 → 上下文详解条）；附件缩略图在**卡内顶部**，支持拖拽与
-    `Ctrl+V` 粘贴图片；工具行 = 权限模式 + 模型来源 + 模型 + 思考等级（四枚自绘芯片，
+    `Ctrl+V` 粘贴图片；工具行 = 计划模式芯片（仅计划模式出现，`chat.plan-mode`，点击退出）+
+    权限模式 + 模型来源 + 模型 + 思考等级（四枚自绘芯片，
     浮层统一贴在卡上方）+（右侧）麦克风 + 停止 / 打断并发送 / 发送（后两者只在流式中）；
     旧「会话：xxx · 可调用 Skill 与 MCP 工具」常驻 meta 文案移除，三枚工具控件是 28px 零边框「芯片」，
     占位文案只留一句（`输入消息…`）。
@@ -489,12 +490,13 @@
   - **右栏功能标签 = 浏览器式多标签（2026-10-03 新增，同日升级为「可多开」）**：
     右栏顶部是一条**可多开的标签条**（`chat.ctx-tabs`，标签锚点 `chat.ctx-tab-<id>`），
     一个标签 = 一个面板实例：**文件 / 终端 / 浏览器可各开多个**（追加实例的 id 为
-    `files-2` / `browser-2`…，首个实例沿用种类名），**「上下文」是单例**（任务面板 +
-    模式感知上下文栏的两行网格语义逐字保留，整体收在它里面）。
+    `files-2` / `browser-2`…，首个实例沿用种类名），**「上下文」与「计划」是单例**
+    （上下文标签收任务面板 + 模式感知上下文栏；计划标签是当前会话计划 md 文件的只读列表，
+    见下方「计划面板」）。
     初始标签集 = **「上下文 / 文件 / 终端 / 浏览器」**（每种一个，**缺省激活「上下文」**
     —— 旧探针读的 DOM 与四个锚点逐字保留）。
-    - **开新标签**：「＋」（`chat.ctx-new-tab`）弹出 `chat.ctx-new-menu`（文件 / 终端 /
-      浏览器 / 上下文；「上下文」已在就切过去、不在则重建），标签总数上限 **12**。
+    - **开新标签**：「＋」（`chat.ctx-new-tab`）弹出 `chat.ctx-new-menu`（上下文 / 计划 /
+      文件 / 终端 / 浏览器；单例已在就切过去、不在则重建），标签总数上限 **12**。
     - **标签形制**：图标 + 标题 + 关闭 ✕（`chat.ctx-tab-close-<id>`，悬停 / 激活才显形，
       命中区 ≥ 24×24）。标题由**面板上报**：文件 = 当前目录名或文件名、终端 = cwd 末段、
       浏览器 = 页面标题（`page-title-updated`，回落主机名；Agent 专属标签另前置
@@ -536,9 +538,25 @@
       收益不抵惊扰；宽度记忆（localStorage）不受影响。
       左栏「任务」入口会先**确保上下文标签在**（被关掉则重建）并激活它，再翻面板显隐
       （任务面板收在标签里，直接翻看不见）。
+    - **计划面板（v45，2026-11-21 重做）**：当前会话的 `<userData>/plans/<sessionId>/` 计划文件。
+      **不再渲染垂直列表**（旧版「列表 + 预览」双区在窄栏 / 紧凑高度下半行裁切、标题重复）：
+      - 顶部 header：`chat.plan-panel` 内的标题 / 数量 / 「只读」；
+      - **只有计划 >1 时**才出现横向选择条（`chat.plan-selector`，每条 `chat.plan-chip`，带
+        `data-plan-id` / `data-plan-status` / `aria-selected`）；一个计划时不渲染选择条，
+        因此面板里只有一份标题；
+      - 其余空间全部给单阅读区：`chat.plan-preview`（标题 / 时间 / 状态 / `当前 / 总数`）+
+        `chat.plan-preview-body`（唯一纵向滚动的只读 Markdown，`renderMarkdown`；
+        正文开头的一级标题会被去掉，因为标题已在 preview header 展示，避免同一句话出现两遍）；
+      - 状态：待批准 / 已批准 / 已退出 / 已被取代 / 历史；**没有编辑控件**——修改走「继续完善」。
+      面板必须**占满 `.ctx-pane` 整格**（`grid-row: 1 / -1`）；根容器与内容区都用
+      `minmax(0, 1fr)` 明确由正文承担滚动。窄宽时选择条横向滚动、标题 / meta 自然换行，
+      面板与 preview-header **不得横向溢出**（用户实测窄窗下标题列被挤成 0 的回归）。
+      chip 选中项自动滚入选择条可视区；新计划置顶时自动选中，仅状态刷新不打断当前阅读。
+      左栏固定入口「计划」（`chat.plans-entry`，待批准时带圆点）与计划卡头部
+      「在侧边栏查看」（`data-action="chat.plan-open"`）都打开它；**不自动抢焦点切栏**。
     - **无标签页时的工具快捷入口（2026-10-03 新增，2026-10-04 移至右栏）**：右栏标签**全部关掉**之后
       （`ctxTabs.length === 0`），右栏正文区出现「工具」分组（`chat.tool-shortcuts`），
-      四张卡片依次是右栏四种标签（上下文 / 文件 / 终端 / 浏览器，`chat.tool-open-<kind>`，
+      五张卡片依次是右栏五种标签（上下文 / 计划 / 文件 / 终端 / 浏览器，`chat.tool-open-<kind>`，
       图标与标签条 / 新建菜单同一套）。点卡片 = 打开该种类标签**并确保右栏展开** ——
       标签全关后不必再翻右上角的「＋」菜单，在右栏空态就能重开。
       本区**只在标签为空时存在**（它就是空态本身；有标签时留着只是占地方），
@@ -1281,6 +1299,8 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
     指南，走正常发送链，指令正文由主进程拼进本轮 extraContext，06 §6）、
     `/compact` 压缩上下文（选中即调 `chat:compact`，把历史压成摘要写进 `meta.compact`，
     06 §4；**不走发送链**——压缩没有流式回复，走了输入区会永远停在「流式中」）；
+    v45 新增 `/plan` 计划模式（`/plan` 进入、`/plan <任务>` 进入并发送、`/plan off` 退出；
+    选中即调 `chat:setSessionPlanMode`，见 06 §29）；
   - 技能（选中**只补全**成 `/技能名 `，焦点留在输入框）：来自 `skills:list` 里 `enabled`
     的技能，与内核 `parseExplicitInvocation` 认的 `/` 前缀调用是同一套（06 §6）。
     键盘：`↑` / `↓` 移动高亮、`Enter` / `Tab` 确认、`Esc` 关闭（输入内容一变即重新打开）。
@@ -1342,6 +1362,12 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   `chat.effort-menu` / `chat.effort-<level>` / `chat.attachments` / `chat.attachment` /
   `chat.attachment-thumb` / `chat.attachment-remove`；
   旧的 `chat.model` / `chat.reasoningEffort` / `chat.mic` 位置变了但锚点不变。
+  计划模式（v45）：`chat.plan-mode` / `chat.plan-card` / `chat.plan-approve` / `chat.plan-revise` /
+  `chat.plan-exit` / `chat.plan-open` / `chat.plans-entry` / `chat.ctx-tab-plans` /
+  `chat.plan-panel` / `chat.plan-selector` / `chat.plan-chip` / `chat.plan-preview` /
+  `chat.plan-preview-title` / `chat.plan-preview-status` / `chat.plan-preview-body` /
+  `chat.plan-panel-empty` / `chat.plan-panel-error` / `chat.plan-panel-loading`。
+  （旧 `chat.plan-file-*` 锚点已随垂直列表一起删除，不要再在探针里使用。）
   左栏归档（2026-09-26 新增）：`chat.archive-group` / `chat.archive-toggle` / `chat.archive-list` /
   `chat.archived-banner`，动作锚点 `data-action="chat.archive-session"` / `"chat.unarchive-session"`
   / `"chat.unarchive-current"`（最后一个在已归档提示条上）。
@@ -1663,10 +1689,11 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   （v20 新增，`data-field="general.requireAdmin"`，常显 checkbox）—— 启动时未提权会用 UAC
   重新拉起（**改动重启后生效**，理由与四条边界见 docs/08 §1、docs/09 §9）；
   本页的死字段口径不变：`general.language` 任何页面都不渲染（见下条）。
-- 模式页（**BetaV2**）：三模式卡片选择 + 引导状态；**只渲染当前模式的配置内容** ——
+- 模式页（**BetaV2**）：两模式卡片选择 + 引导状态；**只渲染当前模式的配置内容** ——
   ClassRoom 区组不变；Work 已实装，提供工作目录 `workspaceDir`（`data-field="modes.work.workspaceDir"`）
-  等配置；Code 仍显示「暂无可配置项」空状态。
-  **v19 起页首另有「自动化」区组**（不跟模式门控，三模式都显示）：只有自动化总开关
+  等配置。v45 起 Code Mode 已删除，页面只渲染 classroom / work 两种卡片；未知模式值保留
+  「暂无可配置项」兜底（不写成「占位实现」）。
+  **v19 起页首另有「自动化」区组**（不跟模式门控，classroom / work 都显示）：只有自动化总开关
   （`data-field="automations.enabled"`，常显），说明文案指向主界面左栏的「自动化」入口 ——
   自动化的定义与历史都在那边管理，设置页只放这一道闸门（见 docs/13 §2.2 / docs/08 §1）。
 - **ClassIsland 提醒通道与课前提前分钟数（2026-09 新增，见 `05 §3.4 v3`）**：
@@ -2050,6 +2077,13 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      `chat-follow-wheel-up` 必须并存）。
      2026-11-07 新增一条：`chat-parallel-sessions.png`（双会话并行 + 后台状态点 / 药丸；
      见下面「多会话并行」一条）。
+      v45 新增三条：`chat-plan-mode.png`（进入计划模式：输入区芯片 + placeholder）、
+      `chat-plan-card.png`（桩模型经 `submit_plan` 返回夹具计划：计划卡 + 待批准徽章 +
+      开始执行 / 继续完善 / 退出计划 / 在侧边栏查看）、`chat-plan-panel.png`（先提交两份计划夹具，
+      左栏「计划」入口 → 右栏计划标签：**把右栏拖到最小 280px** 后截图，断言多计划 chips、
+      默认选中最新计划、chips 双向切换、单阅读区无重复标题、面板占满窗格、面板 / 预览头无横向溢出、
+      选中 chip 在可视区内、正文是唯一纵向滚动区；旧垂直列表锚点必须不存在）。
+      同时 `chat-composer-slash` 增加 `chat.slash-plan === 1` 断言。
      历史现场由 `runCapture` 在跑计划前经 `seedChatTtsHistory` 种进 `sessions/main.json`：
      一条助手消息，内容含裸 URL 与行内代码（核对链接样式），并带 `reasoning` 字段
      （**探针标记 `capture-reasoning-probe`**，思考块探针靠它确认「展开后看到的就是 seed 的思考全文」）；

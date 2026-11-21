@@ -204,7 +204,7 @@ describe('Hub · 会话命令路由', () => {
       type: 'config.update',
       requestId: 'web-6',
       clientId: 'c1',
-      patch: { 'modes.current': 'code', 'llm.active': 'evil' },
+      patch: { 'modes.current': 'work', 'llm.active': 'evil' },
     })
     const result = owner.sent.at(-1) as { ok: boolean; error?: string }
     expect(result.ok).toBe(false)

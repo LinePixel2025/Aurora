@@ -49,9 +49,12 @@ import type {
   ModeSummary,
   OpenPathRequest,
   PerceptionSummary,
+  PlanFileContent,
+  PlanFileInfo,
   Result,
   SensitiveToolRequest,
   SendMessageRequest,
+  SessionPlan,
   Settings,
   SkillSummary,
   SkillsStatus,
@@ -233,6 +236,21 @@ export interface BannerServiceLike {
   currentId(): string
   /** 当前展示那条要跳回的会话（没有 / 不带会话时为空串） */
   currentSessionId(): string
+}
+
+/**
+ * 计划模式服务的最小契约（docs/06 §29）：IPC 只依赖这几面。
+ * 具体实现 `main/plan/service.ts` 结构上满足它；`ipc.ts` 不 import 具体类。
+ */
+export interface PlanServiceLike {
+  status(sessionId: string): Promise<SessionPlan>
+  isActiveSync(sessionId: string): boolean
+  setActive(sessionId: string, active: boolean): Promise<SessionPlan>
+  approve(sessionId: string, planId: string): Promise<SessionPlan>
+  restorePending(sessionId: string, planId: string): Promise<void>
+  list(sessionId: string): Promise<PlanFileInfo[]>
+  read(sessionId: string, planId: string): Promise<PlanFileContent>
+  deleteSessionFiles(sessionId: string): Promise<void>
 }
 
 export interface AgentHost {

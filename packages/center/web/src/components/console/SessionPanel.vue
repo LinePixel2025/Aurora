@@ -59,7 +59,6 @@ const REASONING_LEVELS: ReasoningEffort[] = ['auto', 'low', 'medium', 'high']
 const MODES: Array<{ id: ModeId; label: string }> = [
   { id: 'classroom', label: '课堂' },
   { id: 'work', label: '工作' },
-  { id: 'code', label: '代码' },
 ]
 
 /** 远程白名单内的路径（与客户端 `CENTER_REMOTE_CONFIG_PREFIXES` 对齐） */

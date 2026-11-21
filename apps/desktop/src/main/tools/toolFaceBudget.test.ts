@@ -5,6 +5,7 @@ import { measureToolFace, TOOL_FACE_BUDGET } from './budget.js'
 import {
   registerAgentCoreTools,
   registerAutomationTools,
+  registerPlanTool,
   registerAwarenessTools,
   registerBrowserTools,
   registerCenterTools,
@@ -85,6 +86,8 @@ function buildFullToolFace(): ToolRegistry {
     provider: stub<never>(),
     getSettings,
   }).sync()
+  // 计划工具（docs/06 §29）：普通模式被运行档隐藏，但它是全量内置工具面的一部分
+  registerPlanTool({ tools, logger, port: stub<never>() })
   registerClassIslandTools({ tools, logger, port: stub<never>() }).sync()
   registerCenterTools({
     tools,
@@ -126,8 +129,8 @@ function buildFullToolFace(): ToolRegistry {
 describe('工具面预算（docs/06 §5.4）', () => {
   it('全量内置工具面不超过 65 个 / 42,000 字符', () => {
     const defs = buildFullToolFace().toLlmTools()
-    // 62 = 61 个装配器工具 + use_skill；新增工具必须同步评审预算，别静默涨
-    expect(defs).toHaveLength(62)
+    // 63 = 61 个装配器工具 + use_skill + submit_plan；新增工具必须同步评审预算，别静默涨
+    expect(defs).toHaveLength(63)
     expect(defs.length).toBeLessThanOrEqual(TOOL_FACE_BUDGET.maxTools)
     expect(measureToolFace(defs).chars).toBeLessThanOrEqual(TOOL_FACE_BUDGET.maxChars)
   })

@@ -38,6 +38,7 @@ import { useModeStore } from '../../shared/stores.js'
 import {
   Bot,
   ChevronRight,
+  ClipboardList,
   ListChecks,
   PanelRight,
   Plus,
@@ -90,6 +91,10 @@ const props = defineProps<{
   jobsRunning: boolean
   /** 任务面板是否展开（入口激活态） */
   jobsOpen: boolean
+  /** 右栏「计划」标签是否激活（入口激活态） */
+  plansOpen: boolean
+  /** 当前会话有「待批准计划」：入口带一个小圆点 */
+  plansPending: boolean
 }>()
 
 const emit = defineEmits<{
@@ -112,6 +117,8 @@ const emit = defineEmits<{
   (event: 'toggleRightPanel'): void
   /** 任务面板开关（原 App.vue 的 .nav-jobs，2026-09-30 收拢进本组件） */
   (event: 'toggleJobs'): void
+  /** 打开右栏「计划」标签（docs/06 §29） */
+  (event: 'openPlans'): void
   (event: 'openSettings'): void
 }>()
 
@@ -293,6 +300,29 @@ const noSessionsAtAll = computed(
         :class="{ running: props.jobsRunning }"
         >{{ props.jobsCount }}</span
       >
+    </button>
+
+    <!--
+      固定顶置项：计划面板（docs/06 §29）。右栏「计划」标签里是当前会话的
+      Markdown 计划文件列表；有「待批准」计划时入口带一个小圆点，不抢焦点自动切栏。
+    -->
+    <button
+      type="button"
+      class="quick-item hover-fill press"
+      data-field="chat.plans-entry"
+      :class="{ active: props.plansOpen }"
+      :aria-expanded="props.plansOpen"
+      title="查看本会话的计划 Markdown 文件"
+      @click="emit('openPlans')"
+    >
+      <ClipboardList class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
+      <span class="item-title">计划</span>
+      <span
+        v-if="props.plansPending"
+        class="plans-dot"
+        data-field="chat.plans-pending-dot"
+        aria-label="有待批准的计划"
+      />
     </button>
 
     <nav class="nav-scroll">
@@ -758,6 +788,16 @@ const noSessionsAtAll = computed(
   background: color-mix(in srgb, var(--aurora-blue) 22%, transparent);
   color: var(--accent-text);
   animation: aurora-confirm var(--dur-base) var(--ease-spring) both;
+}
+
+/* 计划入口的「待批准」圆点（不显示数字：计划数在面板里看） */
+.plans-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--warning-text);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning-text) 18%, transparent);
 }
 
 /* ── 会话滚动区（三分区 + 归档组） ── */

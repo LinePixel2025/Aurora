@@ -115,6 +115,62 @@ export const WRITE_FILE_CONTENT = 'AURORA_STUB_WRITTEN'
 export const BURST_MARKER = 'burst-probe'
 
 /**
+ * 计划模式场景标记（docs/06 §29）。
+ *
+ * - `PLAN_STUB_MARKER`：用户消息里带它 → 第 1 轮发 `submit_plan`（夹具计划），
+ *   拿到工具结果后第 2 轮收尾；**内容寻址**，排在计数寻址的默认对话分流之前。
+ * - 执行轮没有用户标记：按 `extraContext` 首行（批准注入文本）寻址。
+ */
+export const PLAN_STUB_MARKER = 'AURORA_STUB_PLAN'
+/** 第二份计划夹具（右栏计划面板的 chips 切换场景）：标题 / 正文与第一份不同 */
+export const PLAN_STUB_MARKER_2 = 'AURORA_STUB_PLAN_2'
+export const PLAN_STUB_DONE_MARKER = 'AURORA_PLAN_SUBMITTED'
+export const PLAN_EXECUTED_MARKER = 'AURORA_PLAN_EXECUTED'
+export const PLAN_EXECUTION_MARKER = '【已批准的实施计划，现在开始执行】'
+
+/** 夹具计划：标题用于侧栏列表 / 计划卡断言 */
+export const PLAN_STUB_TITLE = '实现登录重试'
+export const PLAN_STUB_TITLE_2 = '整理课程表数据'
+export const PLAN_STUB_MARKDOWN_2 = [
+  `# ${PLAN_STUB_TITLE_2}`,
+  '',
+  '## 目标',
+  '把本周课程表整理成一张可分享的表格。',
+  '',
+  '## 现状',
+  '- 读取 `data/timetable.csv`：列名不统一，且有重复课次。',
+  '',
+  '## 实施步骤',
+  '1. 归一列名并去重。',
+  '2. 生成 `timetable.xlsx` 与 README。',
+  '',
+  '## 验证',
+  '- 打开表格检查一周 5 天、每天 8 节。',
+  '',
+  '## 风险',
+  '- 调课记录可能覆盖原始课次，需要保留原文件。',
+].join('\n')
+export const PLAN_STUB_MARKDOWN = [
+  `# ${PLAN_STUB_TITLE}`,
+  '',
+  '## 目标',
+  '为登录请求增加失败重试。',
+  '',
+  '## 现状',
+  '- 读取 `src/login.ts`：当前没有重试逻辑。',
+  '',
+  '## 实施步骤',
+  '1. 在 `src/login.ts` 增加最多 3 次指数退避重试。',
+  '2. 补充 `src/login.test.ts` 的单测。',
+  '',
+  '## 验证',
+  '- 运行 `pnpm vitest run src/login.test.ts`。',
+  '',
+  '## 风险',
+  '- 避免重试风暴；只在网络类错误上重试。',
+].join('\n')
+
+/**
  * 「只要一次工具、且**不发思考增量**」的标记（`chat-trace-fold` 场景，2026-10-01）。
  *
  * 为什么需要它：轨迹（`AgentTrace`）的自动折叠曾经只收「这一轮打开过的」消息，而消息
@@ -743,6 +799,79 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
               {
                 index: 0,
                 delta: { content: `${STUB_MARKER} 工具轮已收尾（本轮没有思考增量）。` },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSseStop(res)
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
+      // ── 计划执行轮（docs/06 §29）：批准后 extraContext 首行寻址 ──
+      // 必须排在计数寻址之前：执行轮是新的请求，计数分支会给它发 use_skill 工具调用，
+      // 让"计划已开始执行"的收尾断言拿不到纯文本。
+      // 注意：extraContext 是**一条 system 消息**（agentLoop 把它放在 user 之后），
+      // 不是最后一条 user 消息 —— 不能复用 `lastUserContent`。
+      const hasPlanExecutionContext = (record.body?.messages ?? []).some(
+        (message) =>
+          message.role === 'system' &&
+          typeof message.content === 'string' &&
+          message.content.includes(PLAN_EXECUTION_MARKER),
+      )
+      if (hasPlanExecutionContext) {
+        sendSse(res, {
+          choices: [
+            {
+              index: 0,
+              delta: { content: `${PLAN_EXECUTED_MARKER} 已按已批准的计划开始执行。` },
+              finish_reason: null,
+            },
+          ],
+        })
+        sendSseStop(res)
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
+      // ── 计划提交场景（docs/06 §29）：内容寻址，第 1 轮 submit_plan，第 2 轮收尾 ──
+      const planUserText = lastUserContent(record)
+      const secondPlan = planUserText.includes(PLAN_STUB_MARKER_2)
+      if (planUserText.includes(PLAN_STUB_MARKER) || secondPlan) {
+        if (!hasToolResultSinceLastUser(record)) {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: secondPlan ? 'call_smoke_plan_2' : 'call_smoke_plan_1',
+                      type: 'function',
+                      function: {
+                        name: 'submit_plan',
+                        arguments: JSON.stringify({
+                          plan: secondPlan ? PLAN_STUB_MARKDOWN_2 : PLAN_STUB_MARKDOWN,
+                        }),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+        } else {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: { content: `${PLAN_STUB_DONE_MARKER} 计划已提交，等待批准。` },
                 finish_reason: null,
               },
             ],

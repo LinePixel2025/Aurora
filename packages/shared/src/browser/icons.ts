@@ -90,6 +90,8 @@ export {
   ClipboardCopy,
   Image as ImageIcon,
   ListChecks,
+  // 计划模式（/plan，docs/06 §29）：右栏「计划」标签 / 左栏入口 / 计划卡
+  ClipboardList,
   // 搜索层（grep / glob，v12）
   Search,
   FolderSearch,

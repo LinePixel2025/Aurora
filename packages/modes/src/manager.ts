@@ -194,8 +194,6 @@ export class ModeManager {
         return settings.modes.classroom.guideCompleted
       case 'work':
         return settings.modes.work.guideCompleted
-      case 'code':
-        return settings.modes.code.guideCompleted
       default:
         return true
     }
@@ -207,7 +205,6 @@ export class ModeManager {
     ctx.settings.mutate((draft) => {
       if (id === 'classroom') draft.modes.classroom.guideCompleted = true
       if (id === 'work') draft.modes.work.guideCompleted = true
-      if (id === 'code') draft.modes.code.guideCompleted = true
     })
     this.emit({ current: this.currentId(), previous: null, reason: 'system', modes: this.list() })
     return this.list()
@@ -219,7 +216,6 @@ export class ModeManager {
     ctx.settings.mutate((draft) => {
       if (id === 'classroom') draft.modes.classroom.guideCompleted = false
       if (id === 'work') draft.modes.work.guideCompleted = false
-      if (id === 'code') draft.modes.code.guideCompleted = false
     })
     return this.list()
   }

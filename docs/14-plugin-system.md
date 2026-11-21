@@ -178,7 +178,7 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
   保留段（`aurora|builtin|plugin|mcp|skill` 等）拒绝。
 - 工具名 `^[a-z][a-z0-9_]{0,24}$`；最终工具名 **`plugin.<id>.<name>` ≤ 64 字符**。
   单插件工具 ≤ 32，全部插件工具总数 ≤ 128。
-- 命令名 `^[a-z][a-z0-9_-]{0,31}$`，不得与内置命令重名（`new/clear/init/compact/subagents/settings/stop`）。
+- 命令名 `^[a-z][a-z0-9_-]{0,31}$`，不得与内置命令重名（`new/clear/init/compact/plan/subagents/settings/stop`；完整清单见 `renderer/chat/slashCommands.ts`）。
 - 面板 ≤ 8；`schema` 与 `entry` **二选一**；schema JSON ≤ 256 KB；entry 必须在包内。
 - 小组件 ≤ 4；`slot ∈ { "desktop", "edge-bar" }`；`schema` 与 `entry` 二选一；
   **`slot = "edge-bar"` 只允许 `schema`**（不允许在提示条里塞 webview），也不接受 `defaultSize`；

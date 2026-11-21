@@ -141,7 +141,6 @@ function settingsWith(overrides: {
         },
       },
       work: { guideCompleted: false, workspaceDir: '' },
-      code: { guideCompleted: false },
     },
     skills: { userDir: '', disabled: [] },
     mcp: { servers: [], lazyConnect: false },

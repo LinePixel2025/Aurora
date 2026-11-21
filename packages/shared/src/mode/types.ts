@@ -75,7 +75,10 @@ export interface IMode {
   displayName: string
   description: string
   icon?: string
-  /** v1 中 work / code 为占位实现 */
+  /**
+   * 占位模式标记。v45 起 Code Mode 已删除，现有 classroom / work 都是实装模式；
+   * 字段保留给未来可能出现的占位实现（设置页仍按它显示「建设中」徽章）。
+   */
   placeholder: boolean
   guide?: ModeGuide
   onActivate(ctx: ModeContext): Promise<void>

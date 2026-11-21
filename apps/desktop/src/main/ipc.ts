@@ -165,6 +165,15 @@ import {
   type ComputerUseStartRequest,
   type ComputerUseStatus,
   type ComputerUseStopRequest,
+  type ChatApprovePlanRequest,
+  type ChatApprovePlanResult,
+  type ChatPlanStatusRequest,
+  type ChatSetSessionPlanModeRequest,
+  type PlanFileContent,
+  type PlanFileInfo,
+  type PlansListRequest,
+  type PlansReadRequest,
+  type SessionPlan,
 } from '@aurora/shared'
 import type {
   AgentHost,
@@ -188,9 +197,12 @@ import type {
   WindowManagerLike,
   CenterConnectionLike,
   FileAwarenessControllerLike,
+  PlanServiceLike,
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
 import { buildInitCommandContext, isInitCommand } from './agent-commands.js'
+import { buildPlanExecutionContext } from './plan/context.js'
+import { PlanModeError } from './plan/service.js'
 import { buildFilePreview, type DocumentBody } from './file-preview.js'
 import type { FileLayoutService } from './file-layout.js'
 import type { TerminalService } from './terminal-service.js'
@@ -370,6 +382,11 @@ export interface DesktopDeps {
    * 未装配时 status 返回关闭态，start 如实报 E_INVALID_STATE（不静默成功）。
    */
   computerUse?: ComputerUseIpcLike
+  /**
+   * 计划模式（chat:planStatus / setSessionPlanMode / approvePlan + plans:list/read，
+   * docs/06 §29）。未装配时相关通道如实回 E_INVALID_STATE。
+   */
+  plan?: PlanServiceLike
   /** Job 存储（chat:jobs / resumeJob / cancelJob，docs/06 §4.1，v15） */
   jobs?: JobStore
   /** 删除会话时级联清理任务清单（docs/06 §18）。未注入时保留旧的单删会话行为。 */
@@ -1266,6 +1283,117 @@ export function registerIpc(deps: DesktopDeps): () => void {
       )
     },
   )
+  // ───────────────────────── 计划模式（/plan，docs/06 §29） ─────────────────────────
+
+  const planFailure = (error: unknown): ReturnType<typeof err> =>
+    error instanceof PlanModeError
+      ? err(error.code, error.message)
+      : err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+
+  handle<SessionPlan>(IPC.chat.planStatus, async (request: ChatPlanStatusRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '') return err('E_INVALID_ARGUMENT', 'sessionId 不能为空')
+    if (deps.plan === undefined) return err('E_INVALID_STATE', '计划服务尚未装配')
+    try {
+      return ok(await deps.plan.status(sessionId))
+    } catch (error) {
+      return planFailure(error)
+    }
+  })
+
+  handle<SessionPlan>(
+    IPC.chat.setSessionPlanMode,
+    async (request: ChatSetSessionPlanModeRequest) => {
+      const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+      if (sessionId === '') return err('E_INVALID_ARGUMENT', 'sessionId 不能为空')
+      if (deps.plan === undefined) return err('E_INVALID_STATE', '计划服务尚未装配')
+      try {
+        return ok(await deps.plan.setActive(sessionId, request?.active === true))
+      } catch (error) {
+        return planFailure(error)
+      }
+    },
+  )
+
+  /**
+   * 批准计划：先退出计划模式，再启动执行轮。
+   *
+   * 顺序不可颠倒：`runProfileFor` 在 `agent.send` 的请求开始处同步读取计划状态，
+   * 若先 send 后退出，执行轮自己也会被只读白名单限制。send 抛错 / 会话恰好忙
+   * 则回滚为待批准（`restorePending`），用户可重试。
+   */
+  handle<ChatApprovePlanResult>(IPC.chat.approvePlan, async (request: ChatApprovePlanRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    const planId = typeof request?.planId === 'string' ? request.planId : ''
+    if (sessionId === '' || planId === '') {
+      return err('E_INVALID_ARGUMENT', '缺少 sessionId 或 planId')
+    }
+    if (deps.plan === undefined) return err('E_INVALID_STATE', '计划服务尚未装配')
+    if (!deps.agent.isReady()) {
+      return err(
+        'E_NO_MODEL',
+        '还没有可用的 AI 模型配置：请在「设置 → AI 模型」中填写并保存 API Key',
+      )
+    }
+    let approved: SessionPlan
+    try {
+      approved = await deps.plan.approve(sessionId, planId)
+    } catch (error) {
+      return planFailure(error)
+    }
+    const record = approved.record
+    if (record === undefined) {
+      await deps.plan.restorePending(sessionId, planId)
+      return err('E_INVALID_STATE', '计划记录丢失，无法开始执行')
+    }
+    // approve 内部已检查过一次；这里再查一次，防止 approve 落盘等待期间别的链路开跑
+    if (deps.agent.isBusy(sessionId)) {
+      await deps.plan.restorePending(sessionId, planId)
+      return err('E_BUSY', '会话正在运行，等这次回复结束后再批准计划')
+    }
+    try {
+      const sent = (await deps.agent.send({
+        sessionId,
+        text: '开始执行计划',
+        origin: 'chat',
+        extraContext: buildPlanExecutionContext(record.markdown),
+      })) as { requestId: string; queued?: boolean }
+      if (sent.queued === true) {
+        await deps.plan.restorePending(sessionId, planId)
+        return err('E_BUSY', '会话正在运行，计划已回到待批准状态')
+      }
+      return ok({ plan: approved, requestId: sent.requestId })
+    } catch (error) {
+      await deps.plan.restorePending(sessionId, planId)
+      return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+    }
+  })
+
+  handle<PlanFileInfo[]>(IPC.plans.list, async (request: PlansListRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '') return err('E_INVALID_ARGUMENT', 'sessionId 不能为空')
+    if (deps.plan === undefined) return err('E_INVALID_STATE', '计划服务尚未装配')
+    try {
+      return ok(await deps.plan.list(sessionId))
+    } catch (error) {
+      return planFailure(error)
+    }
+  })
+
+  handle<PlanFileContent>(IPC.plans.read, async (request: PlansReadRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    const planId = typeof request?.planId === 'string' ? request.planId : ''
+    if (sessionId === '' || planId === '') {
+      return err('E_INVALID_ARGUMENT', '缺少 sessionId 或 planId')
+    }
+    if (deps.plan === undefined) return err('E_INVALID_STATE', '计划服务尚未装配')
+    try {
+      return ok(await deps.plan.read(sessionId, planId))
+    } catch (error) {
+      return err('E_INVALID_ARGUMENT', error instanceof Error ? error.message : String(error))
+    }
+  })
+
   /**
    * 真删除会话（docs/08 会话管理页，`SessionStore.remove`）：删 `sessions/<id>.json`
    * + 清全部内存态，**不可逆** —— 渲染层负责两步确认，这里负责守卫：
@@ -1289,6 +1417,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
         // 广播在**删除成功之后**（失败/被守卫拒绝时不发，避免渲染层对着不存在的删除动作回落）
         broadcast(IPC.chat.sessionDeleted, { sessionId })
         void deps.plugins?.deliverEvent('session.deleted', { sessionId })
+        // 计划文件随会话一起清掉（best-effort，失败只 warn，不阻断删除）
+        void deps.plan?.deleteSessionFiles(sessionId)
       }
       return result
     })

@@ -18,7 +18,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import type { PluginPanelInfo } from '@aurora/shared'
-import { FileText, Globe, LayoutGrid, Plus, Terminal, X } from '@aurora/shared/browser'
+import {
+  ClipboardList,
+  FileText,
+  Globe,
+  LayoutGrid,
+  Plus,
+  Terminal,
+  X,
+} from '@aurora/shared/browser'
 import {
   CTX_TABS_MAX,
   CTX_TAB_KINDS,
@@ -49,6 +57,7 @@ const emit = defineEmits<{
 /** 每种标签的图标（与左栏固定项 / 工具卡片同一套 lucide 语言；语义优先，别按外观挑） */
 const TAB_ICONS: Record<CtxTabKind, Component> = {
   context: LayoutGrid,
+  plans: ClipboardList,
   files: FileText,
   terminal: Terminal,
   browser: Globe,
@@ -63,6 +72,7 @@ function iconOf(tab: CtxTab): Component {
 /** 新建菜单里的条目文案：上下文是单例，已有就「切过去」而不是再开一个 */
 const NEW_TAB_LABEL: Record<CtxTabKind, string> = {
   context: '上下文面板',
+  plans: '计划面板',
   files: '新建文件标签',
   terminal: '新建终端标签',
   browser: '新建浏览器标签',

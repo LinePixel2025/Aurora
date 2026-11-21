@@ -158,6 +158,15 @@ const CHANNELS = {
     stageImage: 'chat:stageImage',
     // 助手消息图片区（show_image / generate_image）：与 shared 契约同构
     readDisplayImage: 'chat:readDisplayImage',
+    // 计划模式（docs/06 §29）：状态 / 进入退出 / 批准执行
+    planStatus: 'chat:planStatus',
+    setSessionPlanMode: 'chat:setSessionPlanMode',
+    approvePlan: 'chat:approvePlan',
+  },
+  // 计划文件只读通道（右栏「计划」面板）
+  plans: {
+    list: 'plans:list',
+    read: 'plans:read',
   },
   hotkey: {
     status: 'hotkey:status',

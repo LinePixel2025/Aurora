@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { MODE_IDS } from '@aurora/shared'
 import { MODE_CAPABILITY_MATRIX, SHARED_TOOLSET, modeCapabilityOf } from './capabilities.js'
 import { createWorkMode } from './work.js'
-import { createCodeMode } from './code.js'
 import { createClassroomMode } from './classroom.js'
 
 describe('模式能力矩阵（docs/05 §6 能力对齐）', () => {
@@ -40,7 +39,7 @@ describe('模式能力矩阵（docs/05 §6 能力对齐）', () => {
   })
 
   it('矩阵与实际模式实现的 placeholder 标记一致', () => {
-    const modes = [createClassroomMode(), createWorkMode(), createCodeMode()]
+    const modes = [createClassroomMode(), createWorkMode()]
     for (const mode of modes) {
       expect(modeCapabilityOf(mode.id)?.placeholder).toBe(mode.placeholder)
     }

@@ -34,6 +34,7 @@ import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types
 import { ToolRegistry } from './registry.js'
 import type { ToolDefinition, ToolProgress, ToolResult } from './registry.js'
 import { ASK_USER_TOOL_NAME } from './ask-user.js'
+import { SUBMIT_PLAN_TOOL_NAME } from './submit-plan.js'
 import { createSubagentLimiter } from './subagent-limiter.js'
 import type { SubagentLimiter, SubagentSlotRelease } from './subagent-limiter.js'
 
@@ -286,6 +287,8 @@ async function runSubagent(
     // 一个后台子代理会弹卡片打断用户，而它自己又看不到回答之外的上下文 ——
     // 澄清需求是主代理的职责，子代理只负责把派下来的活干完。
     if (tool.name === ASK_USER_TOOL_NAME) continue
+    // 计划提交只能由主代理做：子代理看不到父会话的计划模式，提交会得到「不在计划模式」
+    if (tool.name === SUBMIT_PLAN_TOOL_NAME) continue
     if (tool.name.startsWith('mcp.')) continue
     const writable = allowWrite && SUBAGENT_WRITE_TOOLS.has(tool.name)
     if (tool.sensitivity === 'confirm' && !writable) continue

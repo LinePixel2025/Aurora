@@ -65,6 +65,13 @@ export const BUILTIN_COMMANDS: readonly SlashItem[] = [
     description: '把历史压成摘要，降低后续请求的上下文占用',
   },
   {
+    id: 'command:plan',
+    kind: 'command',
+    name: 'plan',
+    label: '计划模式',
+    description: '先只读调研并给出实施计划，批准后再执行（/plan off 退出）',
+  },
+  {
     id: 'command:computer',
     kind: 'command',
     name: 'computer',
@@ -106,6 +113,26 @@ export const SLASH_STOP_COMMAND: SlashItem = {
 export function slashQueryOf(value: string): string | null {
   const matched = /^\/([A-Za-z0-9_-]*)$/.exec(value)
   return matched === null ? null : (matched[1] ?? '')
+}
+
+/**
+ * `/plan` 命令前缀解析（与 App.vue 的 `computerUseTaskOf` 同款口径）。
+ *
+ * - `/plan` → `''`（只进入计划模式）；
+ * - `/plan off` → `'off'`（退出，不发送）；
+ * - `/plan <任务>` → 任务正文（进入计划模式后作为普通用户消息发送）；
+ * - `/planning` / 其它 → `null`（按普通文本处理）。
+ *
+ * 返回空串与 `'off'` 都是**命令本身**，不是任务文本；调用方必须先分支再决定是否发送。
+ */
+export function planTaskOf(text: string): string | null {
+  const prefix = '/plan'
+  const value = text.trimStart()
+  if (!value.startsWith(prefix)) return null
+  const rest = value.slice(prefix.length)
+  if (rest !== '' && !/^\s/.test(rest)) return null
+  const trimmed = rest.trim()
+  return trimmed.toLowerCase() === 'off' ? 'off' : trimmed
 }
 
 /**

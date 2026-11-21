@@ -94,6 +94,8 @@ export function toolLabelOf(name: string, input: unknown): ToolLabel | null {
     case 'set_appearance':
       // 外观三件套（v32）：先摘明暗档位、再摘强调色 —— 两者都能一眼说清"改成了什么"
       return { verb: '调整外观', object: pickObject(input, ['theme', 'accent']) }
+    case 'submit_plan':
+      return { verb: '提交实施计划' }
     case 'center_status':
       return { verb: '查询 Center 状态' }
     case 'center_send_file':

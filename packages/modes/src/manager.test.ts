@@ -11,7 +11,6 @@ import {
 import { ModeManager } from './manager.js'
 import { createClassroomMode } from './classroom.js'
 import { createWorkMode } from './work.js'
-import { createCodeMode } from './code.js'
 
 interface Harness {
   manager: ModeManager
@@ -58,7 +57,6 @@ function createHarness(settings: Settings = createDefaultSettings()): Harness {
   const manager = new ModeManager(logger)
   manager.register(createClassroomMode())
   manager.register(createWorkMode())
-  manager.register(createCodeMode())
   return { manager, ctx, settings, guideRequests, logger }
 }
 
@@ -68,7 +66,7 @@ describe('ModeManager 注册与摘要', () => {
     expect(() => manager.currentId()).toThrowError(/尚未初始化/)
   })
 
-  it('init 装配三个模式并按 MODE_IDS 顺序返回（ClassRoom 在前）', async () => {
+  it('init 装配两个模式并按 MODE_IDS 顺序返回（ClassRoom 在前）', async () => {
     const { manager, ctx } = createHarness()
     const list = await manager.init(ctx)
     // 与 docs/07 §2.5、docs/08 §3「ClassRoom 推荐」一致：首发模式排在最前
@@ -88,7 +86,7 @@ describe('ModeManager 注册与摘要', () => {
       placeholder: false,
       guideResumeable: true,
     })
-    expect(list.find((m) => m.id === 'code')?.placeholder).toBe(true)
+    expect(list).toHaveLength(2)
   })
 
   it('重复注册被忽略', async () => {
@@ -116,7 +114,8 @@ describe('ModeManager 注册与摘要', () => {
 
   it('未注册的当前模式只告警', async () => {
     const settings = createDefaultSettings()
-    settings.modes.current = 'code'
+    // 运行时故意写一个不在 MODE_IDS 里的值：验证「配置坏了也不阻塞启动」的降级路径
+    settings.modes.current = 'gaming' as never
     const manager = new ModeManager()
     const { ctx } = createHarness(settings)
     await manager.init(ctx)
@@ -241,14 +240,15 @@ describe('ModeManager 引导状态', () => {
     expect(guideRequests).toHaveLength(1)
   })
 
-  it('占位模式也有可比对的引导状态', async () => {
+  it('两个模式都有可比对的引导状态', async () => {
     const { manager, ctx, settings } = createHarness()
     await manager.init(ctx)
+    expect(manager.isGuideCompleted('classroom')).toBe(false)
+    manager.completeGuide('classroom')
+    expect(settings.modes.classroom.guideCompleted).toBe(true)
     expect(manager.isGuideCompleted('work')).toBe(false)
     manager.completeGuide('work')
     expect(settings.modes.work.guideCompleted).toBe(true)
-    manager.completeGuide('code')
-    expect(settings.modes.code.guideCompleted).toBe(true)
   })
 
   it('systemPrompt 返回当前模式片段', async () => {

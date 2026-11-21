@@ -80,14 +80,14 @@ describe('buildClientStatus · 语音能力位（docs/12 §6.4，v0.3.2）', () 
 
 describe('checkRemotePatch · 远程配置白名单', () => {
   it('白名单内的路径放行（含 agent.tools 子路径）', () => {
-    expect(checkRemotePatch({ 'modes.current': 'code' }).ok).toBe(true)
+    expect(checkRemotePatch({ 'modes.current': 'work' }).ok).toBe(true)
     expect(
       checkRemotePatch({ 'agent.tools.enabled': false, 'agent.tools.search.enabled': true }).ok,
     ).toBe(true)
   })
 
   it('白名单外整条拒绝并点名首个非法路径', () => {
-    const check = checkRemotePatch({ 'modes.current': 'code', 'llm.active': 'evil' })
+    const check = checkRemotePatch({ 'modes.current': 'work', 'llm.active': 'evil' })
     expect(check.ok).toBe(false)
     expect(check.forbiddenPath).toBe('llm.active')
 
@@ -110,12 +110,12 @@ describe('applyWhitelistedPaths · 补丁落草稿', () => {
     const draft = createDefaultSettings()
     expect(
       applyWhitelistedPaths(draft, {
-        'modes.current': 'code',
+        'modes.current': 'work',
         'agent.tools.enabled': false,
         'agent.tools.terminal.enabled': false,
       }),
     ).toBe(true)
-    expect(draft.modes.current).toBe('code')
+    expect(draft.modes.current).toBe('work')
     expect(draft.agent.tools.enabled).toBe(false)
     expect(draft.agent.tools.terminal.enabled).toBe(false)
   })

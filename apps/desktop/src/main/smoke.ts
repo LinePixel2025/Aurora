@@ -26,6 +26,10 @@ export function smokeScript(
   stubModel: string,
   watchDir: string,
   pluginDir: string,
+  planStubMarker: string,
+  planExecutedMarker: string,
+  planTitle: string,
+  planSubmittedMarker: string,
 ): string {
   return String.raw`
 (async () => {
@@ -36,6 +40,11 @@ export function smokeScript(
   const PLUGIN_DIR = ${JSON.stringify(pluginDir)}
   // 终端工具场景的提问标记（标记之后那一行就是命令）：与桩 LLM 共用同一个常量，避免两处各写一份
   const RUN_COMMAND_MARKER = ${JSON.stringify(RUN_COMMAND_MARKER)}
+  // 计划模式场景标记（docs/06 §29）：与桩 LLM / 夹具共用同一份常量
+  const PLAN_MARKER = ${JSON.stringify(planStubMarker)}
+  const PLAN_EXECUTED_MARKER = ${JSON.stringify(planExecutedMarker)}
+  const PLAN_TITLE = ${JSON.stringify(planTitle)}
+  const PLAN_SUBMITTED_MARKER = ${JSON.stringify(planSubmittedMarker)}
   // 期望的配置版本由主进程注入（不再写死数字：Schema 升版时这里必须跟着走，否则自测会假 FAIL）
   const EXPECTED_CONFIG_VERSION = ${CONFIG_VERSION}
   const results = []
@@ -774,7 +783,7 @@ export function smokeScript(
 
     // 4. 模式与引导
     const modes = expectOk('mode.list', await window.aurora.mode.list())
-    record('mode.list 返回三个模式', Array.isArray(modes) && modes.length === 3, modes ? modes.map((m) => m.id).join(',') : '')
+    record('mode.list 返回两个模式', Array.isArray(modes) && modes.length === 2, modes ? modes.map((m) => m.id).join(',') : '')
     // 自测前置已配好感知文件夹与科目，因此 classroom 初始即为就绪
     record('classroom 初始就绪（已配置感知文件夹 + 科目）', modes?.find((m) => m.id === 'classroom')?.ready === true, JSON.stringify(modes?.find((m) => m.id === 'classroom')?.readinessHint ?? null))
     record('当前模式为 classroom', modes?.find((m) => m.active)?.id === 'classroom', modes?.find((m) => m.active)?.id ?? '')
@@ -2283,6 +2292,142 @@ export function smokeScript(
       typeof openLogs === 'object' && openLogs !== null && typeof openLogs.ok === 'boolean',
       JSON.stringify(openLogs && { ok: openLogs.ok }),
     )
+
+    // ─────────── 计划模式 /plan（docs/06 §29） ───────────
+    // 端到端：进入计划模式 → 桩模型调用 submit_plan → 写 md + meta → 列表 / 正文可读
+    // → 批准 → 执行轮启动并收尾 → 文件索引变 approved。
+    const planSessionId = 'main'
+    const planEvents = []
+    const offPlanEvents = window.aurora.chat.onEvent((event) => {
+      if (event.sessionId === planSessionId) planEvents.push(event)
+    })
+    const enteredPlan = expectOk(
+      'chat.setSessionPlanMode(true)',
+      await window.aurora.chat.setSessionPlanMode({ sessionId: planSessionId, active: true }),
+    )
+    record('计划模式：进入成功', enteredPlan !== null && enteredPlan.active === true, JSON.stringify(enteredPlan))
+    const planSend = expectOk(
+      'chat.send(/plan 夹具)',
+      await window.aurora.chat.send({
+        sessionId: planSessionId,
+        text: PLAN_MARKER + ' 给登录加一个失败重试',
+        origin: 'chat',
+      }),
+    )
+    if (planSend !== null) {
+      await waitFor(
+        async () => planEvents.some((event) => event.type === 'done' && event.requestId === planSend.requestId),
+        (done) => done === true,
+        30000,
+      )
+    }
+    const planDone = planSend !== null && planEvents.some(
+      (event) => event.type === 'done' && event.requestId === planSend.requestId,
+    )
+    record('计划模式：提交轮收尾（含 submit_plan 工具轮）', planDone === true, 'done=' + String(planDone))
+    record(
+      '计划模式：桩服务确实提交过计划',
+      planEvents.some(
+        (event) =>
+          event.type === 'tool' && event.call && event.call.name === 'submit_plan' && event.call.state === 'success',
+      ),
+      planEvents.filter((event) => event.type === 'tool').map((event) => event.call.name).join(','),
+    )
+    const planStatus = expectOk(
+      'chat.planStatus',
+      await window.aurora.chat.planStatus({ sessionId: planSessionId }),
+    )
+    const planRecord = planStatus === null || planStatus.record === undefined ? null : planStatus.record
+    record(
+      '计划模式：状态为 active + pending',
+      planStatus !== null && planStatus.active === true && planRecord !== null && planRecord.status === 'pending',
+      JSON.stringify(planStatus),
+    )
+    const planFiles = expectOk('plans.list', await window.aurora.plans.list({ sessionId: planSessionId }))
+    const planFile =
+      planRecord === null || !Array.isArray(planFiles)
+        ? undefined
+        : planFiles.find((item) => item.id === planRecord.id)
+    record(
+      '计划文件：已写入并进入侧栏列表（标题来自 # 标题）',
+      planFile !== undefined && planFile.title === PLAN_TITLE && planFile.status === 'pending',
+      JSON.stringify(planFiles),
+    )
+    const planContent =
+      planRecord === null
+        ? null
+        : expectOk(
+            'plans.read',
+            await window.aurora.plans.read({ sessionId: planSessionId, planId: planRecord.id }),
+          )
+    record(
+      '计划文件：plans.read 返回 Markdown 正文',
+      planContent !== null &&
+        typeof planContent.markdown === 'string' &&
+        planContent.markdown.indexOf(PLAN_TITLE) !== -1,
+      String(planContent && planContent.markdown ? planContent.markdown.slice(0, 40) : ''),
+    )
+    const approved =
+      planRecord === null
+        ? null
+        : expectOk(
+            'chat.approvePlan',
+            await window.aurora.chat.approvePlan({ sessionId: planSessionId, planId: planRecord.id }),
+          )
+    record(
+      '计划模式：批准后状态 approved 且返回执行 requestId',
+      approved !== null &&
+        approved.plan.active === false &&
+        approved.plan.record.status === 'approved' &&
+        typeof approved.requestId === 'string',
+      JSON.stringify(approved && { active: approved.plan.active, status: approved.plan.record.status }),
+    )
+    if (approved !== null) {
+      await waitFor(
+        async () => planEvents.some((event) => event.type === 'done' && event.requestId === approved.requestId),
+        (done) => done === true,
+        30000,
+      )
+    }
+    record(
+      '计划模式：执行轮已启动并收尾（桩回执行标记）',
+      approved !== null &&
+        planEvents.some(
+          (event) =>
+            event.type === 'text' &&
+            event.requestId === approved.requestId &&
+            String(event.delta || '').indexOf(PLAN_EXECUTED_MARKER) !== -1,
+        ),
+      'requestId=' + String(approved && approved.requestId),
+    )
+    const planFilesAfter = expectOk(
+      'plans.list(批准后)',
+      await window.aurora.plans.list({ sessionId: planSessionId }),
+    )
+    const planFileAfter =
+      planRecord === null || !Array.isArray(planFilesAfter)
+        ? undefined
+        : planFilesAfter.find((item) => item.id === planRecord.id)
+    record(
+      '计划文件：批准后索引状态同步为 approved',
+      planFileAfter !== undefined && planFileAfter.status === 'approved',
+      JSON.stringify(planFileAfter),
+    )
+    // 再进入 / 退出一次，覆盖「退出后 active=false、记录标 exited」的 IPC 路径
+    expectOk(
+      'chat.setSessionPlanMode(true)#2',
+      await window.aurora.chat.setSessionPlanMode({ sessionId: planSessionId, active: true }),
+    )
+    const exitedPlan = expectOk(
+      'chat.setSessionPlanMode(false)',
+      await window.aurora.chat.setSessionPlanMode({ sessionId: planSessionId, active: false }),
+    )
+    record(
+      '计划模式：退出后 active=false（计划正文保留）',
+      exitedPlan !== null && exitedPlan.active === false,
+      JSON.stringify(exitedPlan),
+    )
+    offPlanEvents()
 
     // 11. 清理自测写入的配置
     //     （"密文确实落库且可解密"由 hasSecret#smoke / update(llm#stub) 两条断言覆盖：

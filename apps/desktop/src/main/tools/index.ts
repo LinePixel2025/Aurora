@@ -883,3 +883,6 @@ export function registerComputerUseTools(deps: ComputerUseToolsDeps): { sync(): 
     },
   }
 }
+
+// 计划模式（docs/06 §29）：submit_plan 的注册入口
+export { PLAN_TOOL_NAMES, registerPlanTool } from './plan-tool.js'

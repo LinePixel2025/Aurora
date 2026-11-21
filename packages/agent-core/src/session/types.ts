@@ -9,6 +9,7 @@ import type {
   AskSettleOutcome,
   ChatDisplayImage,
   PermissionMode,
+  SessionPlan,
   SessionUsageStats,
   SubagentSnapshot,
 } from '@aurora/shared'
@@ -88,8 +89,9 @@ export interface StoredMessage {
  * 左栏会话列表按空间分三区，每区工作目录互不相同：
  * - `'agent'` → Agent对话（含未标记的历史会话与 `quick`），工作目录固定 `%USERPROFILE%\Desktop\Aurora`；
  * - `'work'` → 工作目录对话（Work 模式专属），工作目录 = `modes.work.workspaceDir`；
- * - 绑定了 `projectId` 的会话是**项目对话**（不需要 space 字段，projectId 优先于 space）；
- * - `'code'` 为 Code Mode 预留取值，当前不产生。
+ * - 绑定了 `projectId` 的会话是**项目对话**（不需要 space 字段，projectId 优先于 space）。
+ *
+ * 历史注释里的 `'code'` 预留取值已随 Code Mode 删除（v45）一并退役。
  */
 export type SessionSpace = 'agent' | 'work'
 
@@ -221,6 +223,14 @@ export interface SessionMeta {
    * 重启后上下文仍然是压缩后的口径。同样是会话数据，零迁移。
    */
   compact?: SessionCompact
+  /**
+   * 会话级计划模式（`/plan`，docs/06 §29）：`active` + 最近一次 `submit_plan` 的记录。
+   *
+   * 这是**会话数据**不是配置：不进 `config.json`、不进 `CONFIG_VERSION` 迁移链；
+   * 读取侧按白名单宽容归化（缺字段 = 未进入计划模式）。计划正文同时落
+   * `<userData>/plans/` 的 Markdown 文件，供右栏「计划」面板只读查看。
+   */
+  plan?: SessionPlan
 }
 
 /** `userData/sessions/<sessionId>.json` 的结构（v1 无 `meta`，读取侧必须容忍） */

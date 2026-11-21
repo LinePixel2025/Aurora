@@ -82,6 +82,8 @@ export * from './tools/screenshot.js'
 export * from './tools/todo.js'
 export * from './tools/task.js'
 export * from './tools/ask-user.js'
+// 计划模式（docs/06 §29）：submit_plan 只负责校验与端口调用，文件 / 状态落盘在主进程。
+export * from './tools/submit-plan.js'
 // AI 修改自身配置（docs/06 §12）：同上，真实配置读写由主进程端口注入。
 export * from './tools/settings.js'
 // 外观三件套的语义化入口（v32，docs/06 §12.1）：复用同一个 SettingsToolPort。

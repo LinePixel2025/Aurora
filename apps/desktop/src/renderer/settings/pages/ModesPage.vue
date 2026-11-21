@@ -1,11 +1,11 @@
 <script setup lang="ts">
 /**
- * 模式设置页（docs/07 §2.5，BetaV2 六页 IA）：三模式卡片 + 引导状态。
+ * 模式设置页（docs/07 §2.5，BetaV2 六页 IA）：两模式卡片 + 引导状态。
  *
  * 页面下半部分**只渲染当前模式**的内容：
  * - ClassRoom → 完整配置区（`ClassroomSection`）；
- * - Work → 办公工作目录（`WorkSection`，BetaV2 实装）；
- * - Code → 占位实现说明，不得出现任何 `modes.classroom.*` / `modes.work.*` 控件（docs/05 §2）。
+ * - Work → 办公工作目录（`WorkSection`，BetaV2 实装）。
+ * 不得出现另一模式的 `modes.*` 控件（docs/05 §2）。
  * 卡片上的「重新引导 / 标记完成」是次级操作，默认收起，避免与「启用」抢视觉重心。
  */
 import { computed, ref } from 'vue'
@@ -175,7 +175,7 @@ async function markDone(id: ModeId): Promise<void> {
       </article>
     </div>
 
-    <!-- 只渲染当前模式的内容：ClassRoom 与 Work 各有配置区，Code 仍是占位 -->
+    <!-- 只渲染当前模式的内容：ClassRoom 与 Work 各有配置区 -->
     <ClassroomSection v-if="currentMode === 'classroom'" />
     <WorkSection v-else-if="currentMode === 'work'" />
     <section
@@ -184,7 +184,7 @@ async function markDone(id: ModeId): Promise<void> {
       :data-empty="`modes.${currentMode}`"
     >
       <h2 class="section-title">{{ currentLabel }} 暂无可配置项</h2>
-      <p class="section-desc">该模式仍是占位实现：对话可用，但没有专属设置项。</p>
+      <p class="section-desc">该模式当前没有专属设置项，对话与 Agent 能力不受影响。</p>
       <div class="row">
         <AppButton size="sm" :disabled="busy !== null" @click="choose('classroom')">
           切换到 ClassRoom

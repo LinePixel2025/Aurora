@@ -6,16 +6,17 @@
  * 单测覆盖同一份判据（`ctxTabsCore.test.ts`）。
  *
  * 三个关键口径：
- * - **首个实例沿用种类名做 id**（`context` / `files` / `terminal` / `browser`）：
+ * - **首个实例沿用种类名做 id**（`context` / `plans` / `files` / `terminal` / `browser`）：
  *   `data-field="chat.ctx-tab-<id>"` 因此与旧的四个固定 tab **逐字一致**，旧探针零改动；
  *   追加实例是 `files-2` / `browser-2`…。
- * - **「上下文」是单例**：任务面板 + 模式感知栏收在它里面，重复开只会激活已有的那个。
+ * - **「上下文」与「计划」是单例**：任务面板 + 模式感知栏收在上下文里；
+ *   计划面板只是当前会话计划文件的只读列表，重复开一份没有意义。
  * - **溢出 = 固定数量 + 「＋N」菜单**（用户口径）：标签不缩窄（固定 CTX_TAB_WIDTH），
  *   可见数量由标签条实测宽度算出；激活标签永远落在可见区（滑动窗口，浏览器同款）。
  */
 
 /** 右栏标签种类（同时也是「首个实例」的 id） */
-export type CtxTabKind = 'context' | 'files' | 'terminal' | 'browser' | 'plugin'
+export type CtxTabKind = 'context' | 'plans' | 'files' | 'terminal' | 'browser' | 'plugin'
 
 /** 插件面板标签的归属（docs/14 §3.4，P3）：同一个面板只开一个标签 */
 export interface PluginTabInfo {
@@ -33,11 +34,18 @@ export interface CtxTab {
 }
 
 /** 开新标签菜单的条目顺序（也是标签默认顺序；插件面板由菜单里的插件分组追加） */
-export const CTX_TAB_KINDS: readonly CtxTabKind[] = ['context', 'files', 'terminal', 'browser']
+export const CTX_TAB_KINDS: readonly CtxTabKind[] = [
+  'context',
+  'plans',
+  'files',
+  'terminal',
+  'browser',
+]
 
 /** 面板上报标题之前的默认展示名（面板上报空串时回落到它） */
 export const CTX_TAB_DEFAULT_TITLE: Record<CtxTabKind, string> = {
   context: '上下文',
+  plans: '计划',
   files: '文件',
   terminal: '终端',
   browser: '浏览器',
@@ -106,8 +114,8 @@ export function openCtxTab(
   kind: CtxTabKind,
   options: { title?: string; plugin?: PluginTabInfo } = {},
 ): CtxTabOpenResult | null {
-  if (kind === 'context') {
-    const existing = tabs.find((tab) => tab.kind === 'context')
+  if (kind === 'context' || kind === 'plans') {
+    const existing = tabs.find((tab) => tab.kind === kind)
     if (existing !== undefined) return { tabs: [...tabs], tab: existing, created: false }
   } else if (kind === 'plugin' && options.plugin !== undefined) {
     const target = options.plugin

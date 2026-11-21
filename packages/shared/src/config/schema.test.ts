@@ -53,7 +53,7 @@ function paramsFor(model: string, table: Record<string, unknown>) {
 
 describe('SettingsSchema / defaults 一致性', () => {
   it('MODE_IDS 顺序 ClassRoom 在前（docs/07 §2.5、docs/08 §3 推荐 ClassRoom）', () => {
-    expect([...MODE_IDS]).toEqual(['classroom', 'work', 'code'])
+    expect([...MODE_IDS]).toEqual(['classroom', 'work'])
   })
 
   it('默认配置必须通过 Schema 校验', () => {

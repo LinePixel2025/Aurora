@@ -145,7 +145,10 @@
 |---|---|---|
 | **ClassRoom** | 完整实现 | 智慧感知文件夹、科目自动分类、ClassIsland 课表、课前提醒、对话式引导 |
 | **Work** | BetaV2 | Office 结构化读写、PDF 导出、剪贴板、文件与项目上下文 |
-| **Code** | 接口预留 | 模式框架与能力位已就绪，功能实现待后续版本 |
+
+> **Plan Mode（v45）**：输入 `/plan` 进入会话级只读规划，Agent 先产出 Markdown 实施计划，
+> 用户批准后再执行；计划文件存 `<userData>/plans/`，可在右栏「计划」面板查看。
+> Code Mode 已于 v45 删除（原为接口预留，无独有能力）。
 
 ### 扩展与系统能力
 
@@ -243,7 +246,7 @@ apps/desktop/
 packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式 / 窗口类型、
                      桌面与 Center Web 共用的渲染器与设计令牌
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
-packages/modes/      IMode 框架、ClassRoom 完整实现、Work（BetaV2）/ Code 占位
+packages/modes/      IMode 框架、ClassRoom 完整实现、Work（BetaV2）
 packages/center/     Aurora Center 服务器 + CLI + Web UI（可跨端 Node 服务）
 skills/              内置 SKILL.md（automation / create-skill / file-classify / office-work / system-status / timetable）
 integrations/        ClassIsland 桥接插件源码（C# / .NET 8）
@@ -280,7 +283,7 @@ flowchart LR
 
   subgraph Core["纯 Node 内核（不依赖 Electron / DOM）"]
     AC[agent-core：LLM · 会话 · 工具循环 · Skill · MCP]
-    MD[modes：ClassRoom · Work · Code]
+    MD[modes：ClassRoom · Work]
     SH[shared：Schema · IPC 契约 · 类型]
   end
 
@@ -372,7 +375,7 @@ Aurora 不做遥测。数据位置、出网场景与权限清单见 [docs/11-pri
 | [02 系统架构](./docs/02-architecture.md) | 进程 / 模块 / IPC / 数据流 |
 | [03 技术选型](./docs/03-tech-stack.md) | 技术栈与关键决策记录（ADR） |
 | [04 实现路径](./docs/04-roadmap.md) | 阶段、里程碑与逐轮实现记录 |
-| [05 模式系统](./docs/05-mode-system.md) | ClassRoom / Work / Code 与分类管线 |
+| [05 模式系统](./docs/05-mode-system.md) | ClassRoom / Work 与分类管线（Plan Mode 见 06 §29） |
 | [06 Agent 内核](./docs/06-agent-core.md) | LLM、会话、循环、Skill、MCP、感知、Computer Use |
 | [07 界面规格](./docs/07-ui-spec.md) | 窗口体系、设计令牌、动效与验收探针 |
 | [08 设置与引导](./docs/08-settings-onboarding.md) | 配置 Schema、存储安全、首次引导 |

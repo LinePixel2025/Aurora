@@ -1471,6 +1471,35 @@ const migrateV43ToV44: Migration = {
   },
 }
 
+/**
+ * v44 → v45：移除已下线的 Code Mode（占位实现删除，docs/05）。
+ *
+ * 两件事，各自幂等：
+ * ① 删 `modes.code`（占位配置组，Schema 已无此键）—— 与 v24 → v25 删
+ *    `projects.current` 同一口径：**删键**而不是留着等 Zod strip；
+ * ② `modes.current === 'code'` 归一为 `'classroom'`（出厂默认 / 推荐首发模式）。
+ *    不写这一步的话，老配置会在 `SettingsSchema.parse` 失败后走字段级回退，
+ *    结果一样但会多一条 sanitizeIssue，且「静默换模式」无从归因。
+ * `modes` 分组缺失时不凭空造对象（交默认配置兜底）。
+ */
+const migrateV44ToV45: Migration = {
+  from: 44,
+  to: 45,
+  describe: 'v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const modes = asRecord(raw['modes'])
+    if (modes !== undefined) {
+      const { code: _code, ...rest } = modes
+      const normalized: Record<string, unknown> = { ...rest }
+      if (normalized['current'] === 'code') normalized['current'] = 'classroom'
+      next['modes'] = normalized
+    }
+    next['version'] = 45
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1516,6 +1545,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV41ToV42,
   migrateV42ToV43,
   migrateV43ToV44,
+  migrateV44ToV45,
 ]
 
 export interface MigrationOutcome {

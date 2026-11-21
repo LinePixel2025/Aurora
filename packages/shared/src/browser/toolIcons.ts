@@ -10,6 +10,7 @@ import {
   Bell,
   Bot,
   ClipboardCopy,
+  ClipboardList,
   FilePenLine,
   FileDown,
   FileText,
@@ -65,6 +66,8 @@ const TOOL_ICONS: Record<string, Component> = {
   // 内核工具
   todo_write: ListChecks,
   todo_read: ListChecks,
+  // 计划模式：提交实施计划（与任务清单区分：这是「交出去供审批的计划」）
+  submit_plan: ClipboardList,
   task: Bot,
   // 向用户提问（docs/06 §21）：对话气泡（「问了一句」的语义），与 notify_user 的铃铛区分开
   ask_user: MessageSquare,

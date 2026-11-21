@@ -202,7 +202,7 @@ export interface LlmProvider {
   写入 / 清除走 `SessionStore.setProject`（幂等 + await 落盘，惯例与 `setArchived` 全同）。
   解析链与消费方见 §5.1 的「会话级项目」段。
 - **会话空间（2026-09-30，主界面左栏三分）**：`meta` 新增可选
-  `space?: 'agent' | 'work'`（`SessionSpace`；`'code'` 为 Code Mode 预留取值，当前不产生）。
+  `space?: 'agent' | 'work'`（`SessionSpace`；历史注释里的 `'code'` 预留取值已随 Code Mode 删除）。
   它把左栏会话列表分成三个**工作目录互不相同**的分区（docs/07 §2.3）：
   **项目对话**（绑定了 `projectId`，工作目录 = 项目根）/** 工作目录对话**（`space: 'work'`，
   Work 模式专属，工作目录 = `modes.work.workspaceDir`）/** Agent对话**（`space: 'agent'` 或未标记，
@@ -506,9 +506,9 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
   项目根不存在 / 被删除 / 不可读时**降级为无项目**：不抛错、不影响对话，
   但界面必须有**可见**提示（设置页项目行标红 + 右栏卡片显示「项目目录不可用」），
   只在日志里 warn 会让用户以为 AGENTS.md 生效了却什么都没发生。
-- **与 Code Mode 的关系**：`docs/05 §4.2` 给 Code Mode 预留的能力位里有一条「工作区项目识别」。
+- **与已删除 Code Mode 的关系**：`docs/05 §4` 曾给 Code Mode 预留「工作区项目识别」能力位。
   本节的机制把它**兑现成了与模式无关的通用能力**（任何模式下都可以有当前项目）；
-  Code Mode 那条预留位里剩下的「Git 状态感知」仍待后续版本。
+  Code Mode 删除后，其预留位里的「Git 状态感知」不再有归属；若要做，应作为独立工具能力接入。
 - **实现落点**：`packages/agent-core/src/config/project.ts`（`resolveProject` / `resolveProjectRootById`，
   纯函数，id 对不上即降级）、
   `config/effectiveWorkspace.ts`（`effectiveWorkspaceDir`：**会话项目根 > 项目根 > `agent.tools.workspaceDir` > 主目录**）、
@@ -645,6 +645,7 @@ interface RunProfile {
   persona?: string                  // 替换 BASE_PERSONA（系统提示词的第一段）
   runContext?: string               // 渲染成「## 本次运行」小节
   hiddenTools?: readonly string[]   // 本次运行从工具面摘除的工具名
+  allowedTools?: readonly string[]  // 白名单：只列出这些工具（与 hiddenTools 叠加时都生效）
 }
 interface AgentHostDeps {
   runProfileFor?(context: { sessionId: string; origin: string }): RunProfile | undefined
@@ -664,9 +665,12 @@ interface AgentHostDeps {
   **原注册表不动**（注册表是进程级、`sync()` 按时重建的，而"哪些工具能用"是请求级的）。
   视图在 `agentHost` 组装请求时现造，提示词工具清单 / 工具使用规范 / 循环执行**三处消费
   同一个来源**（否则会出现"提示词里有、请求体里没有"这类两处不同口径）。
+- **`allowedTools` = 请求级白名单**：与 `hiddenTools` 同一套 `ToolSource` 视图机制（先取白名单、
+  再应用隐藏项）。计划模式（§29）用它表达「只读工具面」：新工具（插件 / MCP / 未来内置）默认
+  不可见，只读工具必须显式加入白名单。
 - **工具面每轮现取（v39.1）**：`KernelAgentHost` 通过 `AgentLoopOptions.onRoundStart`
   在**每一轮发出请求前**按运行档重算一次工具视图，循环则在每轮重新 `toLlmTools()`。
-  于是"请求内建立的能力"下一轮就能用 —— 唯一消费方是 Computer Use：Agent 调
+  于是"请求内建立的能力"下一轮就能用 —— 典型消费方是 Computer Use：Agent 调
   `computer_start` 后，6 个动作工具 + `computer_stop` 在**同一次请求的下一轮**进入请求体，
   不需要用户再发一条消息。
   - **提示词仍按请求开始时的快照定稿**：人设、「## 本次运行」、工具清单都在请求开始时算好，
@@ -680,10 +684,16 @@ interface AgentHostDeps {
 - **失败一律降级为「无运行档」**：`runProfileFor` 抛错时记一条 warn
   （「运行档解析失败，已按默认档继续」）并退回默认人设与完整工具面 ——
   运行档是提示词层面的定制，不是请求的前置条件。
-- **唯一消费方是自动化触发的会话**（`origin === 'automation'` 或 `auto-` 前缀会话 id，
-  含 `-sub` 子代理会话；判据与实现在主进程 `main/automation/run-profile.ts`，
-  业务口径见 docs/13 §7.1）。普通会话（`chat-*` / `quick` / `center-*`）返回 `undefined`，
-  提示词与工具面与从前逐字相同。
+- **消费方（v45 起四个，全部经 `main/index.ts` 的 `runProfileFor` 用
+  `composeRunProfiles` 合成）**：
+  1. 自动化触发的会话（`origin === 'automation'` 或 `auto-` 前缀；`main/automation/run-profile.ts`，
+     业务口径见 docs/13 §7.1）——换人设 + 摘写类自动化工具；
+  2. 文件自感知会话（`awareness-` 前缀）——空工具面；
+  3. Computer Use（`computerUseRunProfile`）——未授权只留 `computer_start`、授权后动作工具；
+  4. 计划模式（`planModeRunProfile`，§29）——未进入只隐藏 `submit_plan`，进入后只读白名单。
+  合成规则：`persona` 取第一个、`runContext` 拼接、`hiddenTools` 取并集、
+  **`allowedTools` 取交集**（多个白名单同时存在时按最严格的那个）。普通会话没有任何档位
+  命中时，提示词与工具面与从前逐字相同。
 
 ### 5.3 运行中插话（排队发送，2026-10-17）
 
@@ -749,9 +759,9 @@ interface AgentHostDeps {
   `maxChars` 按 `name + description + JSON.stringify(parameters)` 累加，与单测同一口径。
 - `syncToolRegistries()` 结束时测一次：超出只在**跨阈值时** `warn` 一次，回到预算内 `info` 一次；
   **只告警，不阻断请求、不改注册集合**。
-- `apps/desktop/src/main/tools/toolFaceBudget.test.ts` 对内置全量（含 `use_skill`）断言；
+- `apps/desktop/src/main/tools/toolFaceBudget.test.ts` 对内置全量（含 `use_skill`、`submit_plan`）断言；
   插件 / MCP 不计入该测试，插件侧上限仍按 docs/14（单插件 32 / 全部 128）。
-- 2026-11 基线：全量 62 个（含 `use_skill`）按本口径 **34,272 字符**；42k 留约 7.7k 余量。
+- 2026-11 基线（v45）：全量 63 个（新增 `submit_plan`）按本口径 **约 35k 字符**；42k 留约 7k 余量。
   **抬高阈值必须同时改本节与常量**，并在评审里说明新增的是哪一类能力。
 
 ## 6. Skill 系统
@@ -911,7 +921,7 @@ interface AgentHostDeps {
   打扰性由用户侧的 ClassIsland 提醒设置决定），**不受 `agent.tools.enabled` 门控**，
   且**按可用性注册**：桥接未配置时该工具不进工具表（模型看不到就不会承诺），
   配好后经 `settings:changed` 自动补上，无需重启。
-- 未完成项：Work / Code Mode 的日程与待办类新触发器（P7）。
+- 未完成项：Work Mode 的日程与待办类新触发器（P7）。
   ClassIsland 联动的**课程变更**仍走 30s 轮询而非事件推送：桥接 v3 确实新增了反向的
   **提醒命令**通道（Aurora → ClassIsland），但那是"让它弹一条通知"的一次性命令，
   不是"课表变了推给我"的订阅 —— 课表仍然是 Aurora 轮询读取的那份快照。
@@ -3180,3 +3190,42 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   设置）的 `launch` 可能不产生新 HWND（交给现有实例）—— 5s 内检测不到时**不是失败**，
   返回「先截图确认，不要重复 launch」；原生系统指针始终保留
   （虚拟光标是光环 + 拖尾，不替换系统光标）；截图会发送给模型，可能包含敏感屏幕内容。
+
+## 29. Plan Mode（会话级只读规划，v45）
+
+- **定位**：让 Agent 先只读调研、产出可审阅的 Markdown 实施计划，用户批准后再恢复工具面执行。
+  它是**会话级运行态**，不是 `IMode`：不进 `MODE_IDS`、不写 `config.json`、不升 `CONFIG_VERSION`。
+- **入口**：`/plan`（进入）、`/plan <任务>`（进入并立即发送任务）、`/plan off`（退出）；
+  输入区显示「计划模式 / 计划待批准」芯片（`chat.plan-mode`）。v1 不做 Shift+Tab。
+- **状态**：`sessions/<id>.json` 的 `meta.plan = { active, record? }`，零迁移
+  （`SessionStore.planOf` / `planOfSync` / `setPlan`）。`record.id` = `submit_plan` 的 toolCallId。
+- **文件**：每次 `submit_plan` 成功都写入 `<userData>/plans/<sessionId>/<yyyyMMdd-HHmmss>-<planId>.md`
+  并更新同目录 `index.json`（标题 / 时间 / 状态，最多 200 条；索引损坏时扫描 md 重建）。
+  正文不写项目工作区；会话真删除时 best-effort 删除该目录。
+- **工具面**：`planModeRunProfile` 在请求级给出白名单（`main/plan/policy.ts`）：
+  `read_file` / `list_dir` / `grep` / `glob` / `office_read` / `office_help` / `web_fetch` /
+  `browser_open|snapshot|read|wait|screenshot|close` / `view_image` / `screenshot` /
+  `clipboard_read` / `clipboard_read_image` / `use_skill` / `awareness_*` / `center_status` /
+  `todo_read` / `todo_write` / `ask_user`，外加 `submit_plan`。**不含** `task`（子代理工具面来自
+  全局注册表，`permission: 'write'` 可绕过只读约束）、`run_command`、写盘 / Office 写 /
+  设置 / 通知 / 展示 / 自动化 / Computer Use / `browser_act` / `browser_eval` / 插件 / MCP。
+  未进入计划模式时运行档只 `hiddenTools: ['submit_plan']`，普通会话工具面不变。
+- **`submit_plan`**（内核工具，`sensitivity: 'safe'`）：参数 `{ plan: string }`，要求 `#` 开头、
+  ≤ 32,000 字符；端口由主进程实现「先写 md + index、再写 meta」（文件写失败不更新 meta，
+  meta 写失败回滚文件）。同轮 / 后续提交新计划时旧 pending 记录在索引里标 `superseded`。
+- **批准**（`chat:approvePlan`）：用户点计划卡「开始执行」→ 主进程**先**把 `active` 置 false
+  （保证执行轮拿到正常工具面）→ 再 `agent.send('开始执行计划', extraContext=已批准计划)`；
+  send 失败 / 会话恰好忙则 `restorePending` 回滚为待批准。批准**不改变** `agent.permissionMode`。
+- **运行中守卫**：进入 / 退出 / 批准都要求会话空闲（`E_BUSY`）。原因是 `onRoundStart` 每轮重算
+  工具面 —— 运行中退出会让同一请求的下一轮突然获得写工具。
+- **侧边栏**：右栏新增单例标签 `plans`（`PlanPanel.vue`）：**多计划时**顶部横向 chips 选择条
+  （`chat.plan-chip`），下方是**单个只读阅读区**（`chat.plan-preview` + `chat.plan-preview-body`）；正文渲染时去掉开头的一级标题
+  （标题已在 header 显示，避免重复）。一个计划时不渲染选择条，避免「列表标题 + 预览标题」
+  两份重复。旧版垂直列表已被 2026-11-21 重做移除。左栏固定入口「计划」（`chat.plans-entry`，待批准时带圆点）；计划卡头部
+  「在侧边栏查看」（`chat.plan-open`）。不自动抢焦点切右栏。
+- **IPC**：`chat:planStatus` / `chat:setSessionPlanMode` / `chat:approvePlan` +
+  `plans:list` / `plans:read`。计划模式只在本机 chat 窗口生效，Center 不暴露计划状态 / 文件。
+- **测试**：`submit-plan.test.ts`、`session/store.test.ts`（plan meta）、`plan/service.test.ts`、
+  `plan/files.test.ts`、`plan/run-profile.test.ts`、`slashCommands.test.ts`；冒烟覆盖
+  「提交 → 文件 / 列表 / 正文 → 批准 → 执行轮 → 索引状态」，主进程侧读桩请求体断言工具面；
+  截图场景 `chat-plan-mode` / `chat-plan-card` / `chat-plan-panel`。

@@ -90,13 +90,7 @@ import {
   type ChatTurnChangesPayload,
   type ChangedFileInfo,
 } from '@aurora/shared'
-import {
-  GuideRunner,
-  ModeManager,
-  createClassroomMode,
-  createCodeMode,
-  createWorkMode,
-} from '@aurora/modes'
+import { GuideRunner, ModeManager, createClassroomMode, createWorkMode } from '@aurora/modes'
 import { FileLogger } from './logger.js'
 import { createSafeStorageCrypto } from './crypto.js'
 import { WindowManager } from './window-manager.js'
@@ -193,6 +187,12 @@ import {
   WRITE_FILE_CONTENT,
   WRITE_FILE_MARKER,
   STUB_API_KEY,
+  PLAN_STUB_DONE_MARKER,
+  PLAN_EXECUTED_MARKER,
+  PLAN_STUB_MARKER,
+  PLAN_STUB_MARKER_2,
+  PLAN_STUB_TITLE,
+  PLAN_STUB_TITLE_2,
   STUB_MARKER,
   STUB_MODEL,
   startStubLlmServer,
@@ -229,6 +229,12 @@ import {
   chatStreamBurstAct,
   chatStreamBurstCheck,
   chatStreamCheck,
+  CHAT_PLAN_MODE_ACT,
+  CHAT_PLAN_MODE_CHECK,
+  chatPlanCardAct,
+  chatPlanCardCheck,
+  chatPlanPanelAct,
+  chatPlanPanelCheck,
   defaultCapturePlan,
   failedCaptureFiles,
   filterCapturePlan,
@@ -247,6 +253,7 @@ import {
 import {
   registerAgentCoreTools,
   registerAutomationTools,
+  registerPlanTool,
   registerAwarenessTools,
   registerCenterTools,
   registerClassIslandTools,
@@ -269,6 +276,11 @@ import { ComputerUseService } from './computer-use/service.js'
 import { ComputerUseInputHost } from './computer-use/input-host.js'
 import { DesktopComputerUsePort } from './computer-use/port.js'
 import { composeRunProfiles, computerUseRunProfile } from './computer-use/run-profile.js'
+// 计划模式（/plan，docs/06 §29）：会话状态 + Markdown 文件 + 请求级只读运行档
+import { createPlanFileStore } from './plan/files.js'
+import { createPlanService, type PlanService } from './plan/service.js'
+import { planModeRunProfile } from './plan/run-profile.js'
+import { PLAN_DENIED_TOOL_NAMES } from './plan/policy.js'
 import { canHoldComputerUseSession } from './computer-use/session-policy.js'
 import { shouldBringAuroraToFront } from './computer-use/foreground.js'
 // 插件系统（docs/14）：贡献在清单里声明，运行在独立 utilityProcess（非 OS 沙箱）
@@ -546,6 +558,8 @@ let disposeIpc: (() => void) | undefined
 let terminalService: TerminalService | undefined
 /** 工具表与电脑操控装配器提到模块级：`runSmokeTest` 要在真实进程里断言它们（docs/06 §11） */
 let tools: ToolRegistry | undefined
+/** 计划模式服务（/plan，docs/06 §29）：IPC 与运行档都读它，单测 / 冒烟直接拿生产实例 */
+let planService: PlanService | undefined
 /**
  * 三档权限的确认判定（v13，docs/06 §11.2）：同样提到模块级 ——
  * `runSmokeTest` 要拿**注入内核的那个实例**断言「auto 档完全权限 / confirm 档仍走确认」，
@@ -1210,7 +1224,7 @@ async function bootstrap(): Promise<void> {
   }
   modes.register(createClassroomMode())
   modes.register(createWorkMode())
-  modes.register(createCodeMode())
+
   await modes.init(modeContext)
   const guides = new GuideRunner({
     manager: modes,
@@ -1239,6 +1253,17 @@ async function bootstrap(): Promise<void> {
     dir: join(userData, 'sessions'),
     logger: logger.child('session'),
     onWriteError: (error) => logger?.error('会话写入失败', { error: error.message }),
+  })
+  // 计划模式（/plan，docs/06 §29）：状态存会话 meta，正文落 <userData>/plans/。
+  // `isBusy` 用闭包读 `agent`（agent 在下方才构造）：工具执行 / 批准时早已就位。
+  planService = createPlanService({
+    sessions,
+    files: createPlanFileStore({
+      dir: join(userData, 'plans'),
+      logger: logger.child('plan-files'),
+    }),
+    isBusy: (sessionId) => agent?.isBusy(sessionId) === true,
+    logger: logger.child('plan'),
   })
   tools = new ToolRegistry()
   // 7.0 插件系统（docs/14）：清单优先 —— 先把已安装 / 开发目录插件的贡献读进内存并注册，
@@ -2024,6 +2049,21 @@ async function bootstrap(): Promise<void> {
     // 标题落盘成功后才广播：渲染层看到标题时，重启 / Center 再拉列表也一定读得到。
     onTitle: (event) => windows?.sendTo('chat', IPC.chat.sessionTitleChanged, event),
   })
+  registerPlanTool({
+    tools,
+    logger: logger.child('tools'),
+    // 工具端口要求 `{ok, plan|error}` 形状；PlanService 以抛错表达失败，
+    // 这里做一层薄适配（错误文案原样回给模型，不能静默吞掉计划没落盘）。
+    port: {
+      submit: async (input) => {
+        try {
+          return { ok: true, plan: await planService!.submit(input) }
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) }
+        }
+      },
+    },
+  })
   agentCoreTools = registerAgentCoreTools({
     tools,
     logger: logger.child('tools'),
@@ -2298,6 +2338,9 @@ async function bootstrap(): Promise<void> {
           authorized: computerUseService?.isAuthorized(context.sessionId) === true,
           eligible: canHoldComputerUseSession(context.sessionId),
         }),
+        // 计划模式（docs/06 §29）：未进入时只摘 submit_plan；进入后 allowedTools 取交集，
+        // 只读白名单压过其它档位新增的工具。
+        planModeRunProfile({ active: planService?.isActiveSync(context.sessionId) === true }),
       ),
   })
   agent = new DesktopAgentHost({
@@ -3387,6 +3430,8 @@ async function bootstrap(): Promise<void> {
     pluginMarketplace,
     sessions,
     sessionTitles,
+    // 计划模式（docs/06 §29）：chat:plan* 与 plans:* 的唯一服务实例
+    ...(planService === undefined ? {} : { plan: planService }),
     readDisplayImage: async ({ sessionId, imageId }) => {
       const image = await sessions!.displayImageOf(sessionId, imageId)
       if (image === undefined) throw new Error('图片不存在或已被会话清理')
@@ -3961,6 +4006,30 @@ async function runCapture(dir: string): Promise<void> {
     settleMs: 200,
   }
 
+  // 计划模式（docs/06 §29）：进入现场 / 计划卡 / 右栏计划面板。
+  // 三条都走离线桩（useCaptureStub）；计划卡场景按内容标记让桩服务返回 submit_plan。
+  const chatPlanModeTarget: CaptureTarget = {
+    name: 'chat',
+    file: 'chat-plan-mode.png',
+    prepare: useCaptureStub,
+    act: CHAT_PLAN_MODE_ACT,
+    check: CHAT_PLAN_MODE_CHECK,
+  }
+  const chatPlanCardTarget: CaptureTarget = {
+    name: 'chat',
+    file: 'chat-plan-card.png',
+    prepare: useCaptureStub,
+    act: chatPlanCardAct(PLAN_STUB_MARKER),
+    check: chatPlanCardCheck(PLAN_STUB_TITLE),
+  }
+  const chatPlanPanelTarget: CaptureTarget = {
+    name: 'chat',
+    file: 'chat-plan-panel.png',
+    prepare: useCaptureStub,
+    act: chatPlanPanelAct(PLAN_STUB_MARKER, PLAN_STUB_MARKER_2, PLAN_STUB_TITLE, PLAN_STUB_TITLE_2),
+    check: chatPlanPanelCheck(PLAN_STUB_TITLE, PLAN_STUB_TITLE_2),
+  }
+
   const chatComputerUseTarget: CaptureTarget = {
     // Computer Use 授权入口（v39，2026-10-31 改为斜杠命令）：先打开总开关 + 当前模型 vision，
     // 再在输入框敲 `/computer` 唤起候选。只验证入口与候选，不真的 start（start 会占用会话）。
@@ -4026,6 +4095,9 @@ async function runCapture(dir: string): Promise<void> {
       chatBurstTarget,
       chatAutoTitleTarget,
       chatParallelTarget,
+      chatPlanModeTarget,
+      chatPlanCardTarget,
+      chatPlanPanelTarget,
       chatComputerUseTarget,
       // 记忆库独立窗口放在性能场景之后：多一个可见渲染窗口会污染 burst 的帧间隔读数。
       {
@@ -4521,6 +4593,10 @@ async function runSmokeTest(userData: string): Promise<void> {
         STUB_MODEL,
         watchDir,
         existsSync(pluginExampleDir) ? pluginExampleDir : '',
+        PLAN_STUB_MARKER,
+        PLAN_EXECUTED_MARKER,
+        PLAN_STUB_TITLE,
+        PLAN_STUB_DONE_MARKER,
       ),
       true,
     )) as typeof payload
@@ -4624,6 +4700,26 @@ async function runSmokeTest(userData: string): Promise<void> {
       '工具清单里含 notify_banner（流光提醒）',
       allTools.includes('notify_banner'),
       `${allTools.length} 个工具`,
+    )
+  }
+  // 计划模式（docs/06 §29）：读**桩服务真实收到的请求体**，确认只读白名单落到请求上。
+  // 只筛 systemPrompt 含 "Plan Mode" 的请求（执行轮是普通工具面，不能混进来）。
+  {
+    const planRequests = stub
+      .getRecordedRequests()
+      .filter((request) => request.systemPrompt.includes('Plan Mode'))
+    const planTools = planRequests.flatMap((request) =>
+      request.tools.map((tool) => String(tool.function?.name ?? '')),
+    )
+    const forbidden = PLAN_DENIED_TOOL_NAMES.filter((name) => planTools.includes(name))
+    record(
+      '计划模式工具面：只读白名单 + submit_plan，且不含写 / 命令 / task',
+      planRequests.length > 0 &&
+        planTools.includes('submit_plan') &&
+        planTools.includes('read_file') &&
+        planTools.includes('grep') &&
+        forbidden.length === 0,
+      `requests=${planRequests.length} tools=${planTools.length} forbidden=${forbidden.join(',')}`,
     )
   }
   // 分类管线确实调用过模型（低置信文件走了 LLM 分支）

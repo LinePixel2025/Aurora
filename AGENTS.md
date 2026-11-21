@@ -23,7 +23,7 @@ packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式/窗口�
   src/main/automation/ 自动化引擎：调度（trigger 评估）、操作组件执行、定义与历史存储、
                      内置自动化（课前提醒 / 课前打开科目文件夹，docs/13）
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
-packages/modes/      IMode 框架、ClassRoom 完整实现、Work 初步实装（BetaV2）/ Code 占位
+packages/modes/      IMode 框架、ClassRoom 完整实现、Work 初步实装（BetaV2）
                      packages/modes/src/capabilities.ts：模式能力矩阵（docs/05 §6）
 packages/center/     Aurora Center 服务器 + `aurora-center` CLI + Web UI（docs/12），
                      纯 Node 可跨端；构建 = tsc + vite（web/ → dist-web/）
@@ -57,8 +57,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、297 条断言应当全绿（2026-11-18 实测 `SUMMARY 297/297 passed`；
-  2026-11-07 实测 283/283；v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
+  **全量约 40 秒、308 条断言应当全绿（2026-11-21 实测 `SUMMARY 308/308 passed`；v45 计划模式 +11；
+  2026-11-18 实测 297/297；2026-11-07 实测 283/283；v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
   v36 插件系统 +24、小组件与推送 +4、v37 小组件层级 / 材质 +4、插件配置窗口 +1、
   流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1、小组件不可激活 / 固定 +3、
   v39 Computer Use +5、v40 智慧提醒 §2.5 +6、v41 轮终改动汇总 / 任务完成提醒 +2、
@@ -93,20 +93,20 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   2026-11-12 文件面板重做新增 `chat-file-office`（Office 正文 / 搜索排序 / 信息卡 + 自动系统打开）
   与 `chat-file-layout`（版式页图 + 翻页，无 OfficeCLI / Edge 时**显式跳过**）2 个场景；
   2026-11-14 统一缩放新增 `settings-zoom` / `settings-zoom-reset` 2 个场景）：
-  **全量 125 条 checks** ——
-  本机全量单轮 116 条（四窗 101 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
+  **全量 128 条 checks** ——
+  本机全量单轮 119 条（四窗 104 + 插件配置窗口 1 + Computer Use 4 + 流光提醒 2 +
   提醒设置页 5 + 多会话并行 1 + 统一缩放 2）
   + onboarding 6 + memory/awareness-glow 3。
-  四窗 101 含 v36 插件场景 `chat-plugin-panel` /
+  四窗 104 含 v36 插件场景 `chat-plugin-panel` /
   `chat-plugin-page` / `settings-plugins-installed` / `settings-plugins-detail`（设置列表 + 配置入口）/
   `settings-plugins-marketplace`、设置页 `settings-plugins`、v37 新增的 `settings-llm-default`
   （AI 模型页默认模型下拉）与 `plugin-config`（独立插件配置窗口）。
   桌面 widget 窗口不在 `WindowName` 里，走 `captureWindows` 的 `widgetWindow` 现取。
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 125 条：
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 128 条：
   `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config,banner-card,banner-glow,computer-use-overlay,computer-use-hud'`
-  （116 checks，仅
+  （119 checks，仅
   `chat-model-picker` 红；**两个 Computer Use 内部窗口必须显式列进 `AURORA_CAPTURE_WINDOWS`** ——
   按 `target.name` 精确过滤，漏了它们只会得到 109 条，看起来「少了两张」）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
@@ -114,7 +114,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **2026-11-10 新增插件临时对话框**：`plugin-dialog`（声明式，真实键入 + 确定）与
   `plugin-dialog-page`（自定义 HTML / CSS，页面内提交）2 个场景，`target.name` 都是 `dialog`；
   定向验收用 `AURORA_CAPTURE_WINDOWS=dialog AURORA_CAPTURE_ONLY=plugin-dialog`（2 条全绿）。
-  它们**不在**上面四窗默认名单里，纳入全量单轮时要把 `dialog` 加进该列表（116 → 118 条）。
+  它们**不在**上面四窗默认名单里，纳入全量单轮时要把 `dialog` 加进该列表（119 → 121 条）。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
   （只按 `pass === false` 会把纯截图场景误判成失败）。`AURORA_CAPTURE_ONLY` 是**子串**匹配
   （`'chat.png'` 连带命中 `theme-chat.png`），且**每轮必须写独立目录**（同目录会覆盖上一轮 `report.json`）。
@@ -152,7 +152,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **绝不允许裸 `v-html` 模型原文**；链接 scheme 走 markdown-it `validateLink`（`javascript:` 拒绝）；
   外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接（生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件 / 命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 44`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 45`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 - **界面文案口径**（用户连续两轮点名「冗杂」）：区组说明段 **≤45 汉字**、字段 hint **≤40 汉字**，各只写 1 句；
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。
@@ -232,6 +232,13 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **虚拟光标是 Agent 自己的光标**（2026-10-31）：位置只由 `service.moveCursor()`（显示器内 DIP，60fps 插值）驱动，**不得轮询真实指针**——用户晃鼠标时光环停在原地；只在进入操作态时用真实指针播一次种子。**先移动再点击**：点击 / 滚轮先**只滑虚拟光标**（这段滑行里系统指针原地不动，别把用户的鼠标拽着走），到位停 60ms 后指针才瞬移到落点并立刻 `SendInput`（Windows 只能在指针处点击，这一下瞬移省不掉）；拖拽时虚拟光标跟到终点；涟漪按显示器内 DIP，不是图片像素。别改回「指针跟着一起滑」或「原地瞬移 + 30fps 跟随」。
 - **Computer Use 受保护目标不可配置**（Aurora 自身 / 终端 / 任务管理器 / UAC / 锁屏）；`allowedApps` 为空 = 除保护目标与 deny 外允许，deny 优先；`launch` 只接受 `.exe` / `.com`。
 - **Computer Use 浮层**：每显示器一扇透明窗（虚拟光标 + **顶部光谱流光带**，与「流光提醒」同款，v39.2 收到 48px）+ **顶部状态胶囊**（窗口 520×88、贴在显示器顶边 6px、卡片按内容自适应（宽 ≤520、高 36–54）），必须 `focusable:false`、鼠标穿透、`showInactive()`；**禁止 `setContentProtection`**（RustDesk / 远程桌面 / 屏幕共享会完全看不到）。进入操作模式后**持续在场、每个动作实时更新**，不要为截图隐藏（模型截图会带上浮层，这是「一直在场」的取舍；截图结果里已说明胶囊 / 光环是 Aurora 自己的浮层）。用户手动移动鼠标 / 键盘**不得**自动暂停或停止；停止入口 = 状态条 / 托盘 / 快捷键 / 配置变化 / 锁屏 / 退出 / Agent 调 `computer_stop`。胶囊只有两行：当前步骤（带步数、连续同动作 `×N`）+ 可选的「下一步」计划，**不列历史步骤**；**不显示运行时长 / 坐标 / 矩形 / 尺寸 / 输入文字**。每一步带语义图标（图标只在 `packages/shared/src/browser/icons.ts` 登记），状态条按 `lastActionKind` 显示图标。
+- **Plan Mode（v45，06 §29）**：状态在会话 `meta.plan`（零迁移），**不是 `IMode`**、不进 `MODE_IDS` / `config.json`；
+  请求级只读靠 `planModeRunProfile` 的 `allowedTools` 白名单（**不含 `task`**、`run_command`、写盘 / 设置 / Computer Use），
+  未进入时只 `hiddenTools: ['submit_plan']`。`submit_plan` 必须**先写 `<userData>/plans/` 的 md + index、再写 meta**
+  （文件写失败不更新 meta）；批准必须**先退出计划模式、再 `agent.send`**（否则执行轮自己也被只读限制），
+  send 失败回滚为待批准；进入 / 退出 / 批准在会话运行中一律 `E_BUSY`。
+  计划面板是**多计划 chips + 单阅读区**：一个计划时不渲染选择条，正文是唯一纵向滚动区；
+  **不要恢复垂直列表 / 第二份预览头**（旧版在窄栏下会半行裁切并重复标题）。
 - **`agent.browser` 整组在 `SETTINGS_READONLY_PREFIXES`**，AI 不得改；关闭能力（或切只读档）时必须结束全部 Agent 浏览器会话，别留下 Agent 徽章。
 - **插件贡献必须写在 `manifest.json`**（工具 / Skill / 命令 / 自动化 / 面板 / 主题 / 配置），
   运行期不得动态注册；工具最终名必须 `plugin.<id>.<name>`（≤ 64），默认 `confirm`，

@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CTX_TABS_DEFAULT,
   CTX_TABS_MAX,
+  CTX_TAB_DEFAULT_TITLE,
   CTX_TAB_BUTTONS_WIDTH,
   CTX_TAB_GAP,
   CTX_TAB_WIDTH,
@@ -56,6 +57,18 @@ describe('openCtxTab', () => {
     expect(result?.created).toBe(false)
     expect(result?.tab.id).toBe('context')
     expect(result?.tabs).toHaveLength(CTX_TABS_DEFAULT.length)
+  })
+
+  it('「计划」也是单例：首次新建（标题「计划」），再次打开只激活已有项', () => {
+    expect(CTX_TAB_DEFAULT_TITLE.plans).toBe('计划')
+    const first = openCtxTab(CTX_TABS_DEFAULT, 'plans')
+    expect(first?.created).toBe(true)
+    expect(first?.tab.id).toBe('plans')
+    expect(first?.tab.title).toBe('计划')
+    const second = openCtxTab(first!.tabs, 'plans')
+    expect(second?.created).toBe(false)
+    expect(second?.tab.id).toBe('plans')
+    expect(second?.tabs).toHaveLength(CTX_TABS_DEFAULT.length + 1)
   })
 
   it('到上限返回 null（调用方据此给提示）', () => {

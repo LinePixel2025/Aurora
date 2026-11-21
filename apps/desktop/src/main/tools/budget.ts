@@ -6,7 +6,10 @@
  * MCP 是异步注册的，不在启动那次测量的即时覆盖内；下一次 sync 时会一并纳入。
  */
 
-/** 内置全量工具面的预算（ratchet）：当前 62 个 / 34,272 字符，留约 7.7k 余量。 */
+/**
+ * 内置全量工具面的预算（ratchet）：当前 63 个（含 use_skill / submit_plan），
+ * 字符数见 `toolFaceBudget.test.ts` 的实测；上限 42,000 留约 7k 余量。
+ */
 export const TOOL_FACE_BUDGET = { maxTools: 65, maxChars: 42_000 } as const
 
 export interface ToolFaceEntry {
