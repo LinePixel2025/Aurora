@@ -29,7 +29,7 @@ GitHub 仓库侧按社区档案（community profile）拉齐，均为一次性�
 |---|---|---|
 | 社区文件 | 已提供 | `CODE_OF_CONDUCT.md` / `CONTRIBUTING.md` / `SECURITY.md` / `README` / `LICENSE` / `CODEOWNERS` / 三类 Issue 表单 / PR 模板 |
 | 私密漏洞报告 | 开启 | Security → Report a vulnerability，见 `SECURITY.md` |
-| Dependabot 告警 | 开启 | 依赖漏洞提醒；升级 PR 由 `dependabot.yml` 每月分组创建（Electron / electron-builder 大版本除外） |
+| Dependabot 告警 | 关闭（2026-11 移除） | 已删除 `dependabot.yml` 与全部 `dependabot/*` 分支；不再自动开依赖 PR / 漏洞告警 |
 | Code scanning | 开启 | `codeql.yml` 每周扫描，结果进 Security → Code scanning |
 | Discussions | 开启 | 用法问答与想法交流，不占用 Issue |
 | 合并后删除分支 | 开启 | 与 §2「squash 合并后删分支」一致，不需要手动 `--delete-branch` |
@@ -97,9 +97,8 @@ CodeQL 另有每周一次的定时扫描（同样不跟随 push / PR）：
 
 手动发起：Actions 页面 → **Run workflow**，或 `gh workflow run ci.yml`。
 
-> 另有 `dependabot.yml`：每月自动开分组依赖 PR（开发 / 生产依赖分开，不自动合并），
-> **Electron / electron-builder 的大版本不自动提 PR**（构建链与打包产物需要人工协同）；
-> 合并前仍按本地检查验收。除此之外没有自动任务，运维入口只有这两个。
+> 2026-11 起已移除 Dependabot：`dependabot.yml`、仓库侧告警与全部 `dependabot/*` 分支都已删除；
+> 依赖升级改为手动。除上表三个 workflow 外没有其它自动任务。
 
 **为什么默认不自动跑**：单人项目；PR 只用于高风险改动自审、不构成强制门禁
 （GitHub 的 branch protection 需 Pro），
