@@ -399,3 +399,61 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
     ])
   })
 })
+
+/**
+ * 子代理的固定模型（v46，docs/06 §19.6）：**显式目标 > 会话覆盖 > 全局**。
+ *
+ * 关键不是"优先级对"，而是**不可用时必须回落而不是打挂**：子代理配置是可以漂移的
+ * （用户删了 provider / 换了 Key），一次调研不该因为一个过期模型选择直接失败。
+ * 回落事实由 `task` 工具比对实际模型后写进结果与快照（内核单测已钉）。
+ */
+describe('createProviderFactory · 子代理固定模型（v46）', () => {
+  it('显式模型优先于会话覆盖与全局档', () => {
+    const settings = settingsWith()
+    settings.llm.providers['p-agent'] = provider('m-agent', ['m-agent'])
+    const factory = build(settings, { providerId: 'p-session', model: 'm-session' })
+    const config = factory.create({
+      sessionId: 's-1',
+      model: { providerId: 'p-agent', model: 'm-agent' },
+    })
+    expect(config?.provider.id).toBe('p-agent')
+    expect(config?.model).toBe('m-agent')
+  })
+
+  it('显式 provider 已删：回落会话覆盖（不是全局）', () => {
+    const factory = build(settingsWith(), { providerId: 'p-session', model: 'm-session' })
+    const config = factory.create({
+      sessionId: 's-1',
+      model: { providerId: 'p-gone', model: 'm-x' },
+    })
+    expect(config?.provider.id).toBe('p-session')
+    expect(config?.model).toBe('m-session')
+  })
+
+  it('显式模型空串 / 只给一半：视为未指定，走会话 / 全局链', () => {
+    const factory = build(settingsWith())
+    expect(factory.create({ sessionId: 's-1', model: { providerId: '', model: '' } })?.model).toBe(
+      'm-global',
+    )
+    expect(
+      factory.create({ sessionId: 's-1', model: { providerId: 'p-session', model: '  ' } })?.model,
+    ).toBe('m-global')
+  })
+
+  it('显式模型所在 provider 取不到 Key：回落全局档（不返回 undefined）', () => {
+    // 直接把第三个 provider 加进已构造好的配置：`settingsWith({providers})` 会整表替换，
+    // 这里要的是"在既有 p-global / p-session 之外再加一个"。
+    const settings = settingsWith()
+    settings.llm.providers['p-agent'] = provider('m-agent', ['m-agent'])
+    const factory = createProviderFactory(
+      storeOf(settings, { 'llm.providers.p-agent.apiKey': '' }),
+      createMemoryLogger(),
+    )
+    const config = factory.create({
+      sessionId: 's-1',
+      model: { providerId: 'p-agent', model: 'm-agent' },
+    })
+    expect(config?.provider.id).toBe('p-global')
+    expect(config?.model).toBe('m-global')
+  })
+})

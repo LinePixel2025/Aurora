@@ -189,10 +189,10 @@
   font-size: 0.94em;
 }
 
-/* ───────── 折叠分组（BetaV2 区组共用，ClassroomSection 同款结构） ─────────
- * 页面拆并成 6 页后，「区组 = 可折叠的 section-card」成了各页的通用骨架：
- * 收起时靠 group-summary 显示摘要，展开后 group-body 承载字段。
- * ClassroomSection 自带同款 scoped 样式（值一致，二者并存不冲突）。
+/* ───────── 折叠分组（Classroom / 语音 / 智能体内部表单共用） ─────────
+ * 设置页各页通用骨架：「区组 = section-card」；带 `.group-head` 的仍可折叠
+ * （ClassroomSection / TtsSection / SttSection 自带同款 scoped 样式，二者并存不冲突）。
+ * 2026-11 拆页后，Agent 五个页面的区组改为 `.group-head.static` 常显。
  */
 .group {
   padding: 0;
@@ -213,6 +213,16 @@
 
 .group-head:hover {
   background: var(--fill-1);
+}
+
+/* 静态区组头（2026-11 拆页起，各页的区组不再折叠）：
+ * 没有点击行为，所以不显示 hover 底色、指针保持默认 —— 否则会被读成「可以展开」。 */
+.group-head.static {
+  cursor: default;
+}
+
+.group-head.static:hover {
+  background: none;
 }
 
 .chevron {
@@ -261,16 +271,6 @@
   background: none;
   color: var(--text-muted);
   font-size: var(--text-sm);
-}
-
-/* ───────── 「智能与工具」页（AgentPage，.page-agent）专属 ─────────
- * collapse 动画的 enter-to / leave-from 上限（theme.css 全局 70vh）对这页不够用：
- * 三个区组的展开内容都可远超 70vh，收起再展开时会在动画收尾从上限突跳到实际高度
- * （2026-09 收拢轮实测）。只在 `.page-agent` 内把上限抬高，其它窗口 / 其它页的同名
- * 动画观感不变；AgentPage 根元素挂 `page-agent` 类。 */
-.settings .page-agent .collapse-enter-to,
-.settings .page-agent .collapse-leave-from {
-  max-height: 400vh;
 }
 
 /* 区组内的添加 / 新建表单块：浅填充块标示「尚未保存的临时输入」 */

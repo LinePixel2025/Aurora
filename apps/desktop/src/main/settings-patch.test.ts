@@ -559,3 +559,37 @@ describe('mergeSettingsPatch · agent.browser 分组（v35）', () => {
     expect(draft.agent.snapshots.enabled).toBe(true)
   })
 })
+
+describe('mergeSettingsPatch · agent.subagents 分组（v46）', () => {
+  it('agent 顶层浅合并：只传 subagents 时其它 agent 子组原样保留', () => {
+    const draft = createDefaultSettings()
+    draft.agent.tools.enabled = false
+    draft.agent.browser.maxSessions = 3
+
+    const custom = [
+      {
+        id: 'reviewer',
+        name: 'Reviewer',
+        description: '审代码',
+        instructions: '只看不写',
+        enabled: true,
+        access: 'read' as const,
+        model: { providerId: '', model: '' },
+        builtin: false,
+      },
+    ]
+    mergeSettingsPatch(draft, { agent: { subagents: custom } })
+
+    expect(draft.agent.subagents).toEqual(custom)
+    // 同组的 tools / browser 不被牵连（设置页只回传改动的键）
+    expect(draft.agent.tools.enabled).toBe(false)
+    expect(draft.agent.browser.maxSessions).toBe(3)
+  })
+
+  it('数组整体权威：不在数组里的子代理 = 删除（含内置预设）', () => {
+    const draft = createDefaultSettings()
+    const kept = draft.agent.subagents.filter((item) => item.id !== 'coder')
+    mergeSettingsPatch(draft, { agent: { subagents: kept } })
+    expect(draft.agent.subagents.map((item) => item.id)).toEqual(['searcher'])
+  })
+})

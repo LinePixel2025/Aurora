@@ -253,6 +253,52 @@ export const DEFAULT_AGENT_BROWSER = {
 } as const
 
 /**
+ * 出厂预设子代理（v46，docs/06 §19.6）。
+ *
+ * 两个预设分别覆盖主代理最常外包的两类活：
+ * - `Searcher`：只读调研（定位实现 / 追调用链 / 汇总相关文件），不碰写与命令；
+ * - `Coder`：可写 + 可执行的实现型子任务（改代码、跑构建 / 测试自检）；
+ *   档位与主代理同一权限面 —— 写入与命令仍逐次回父会话确认链判定，
+ *   只读档 / 未接确认链时内核会如实降级（docs/06 §19.2）。
+ *
+ * 两个都要能被用户编辑 / 禁用（`builtin` 只用于「恢复预设」）。`model` 全空 = 跟随会话模型。
+ */
+export const DEFAULT_AGENT_SUBAGENTS = [
+  {
+    id: 'searcher',
+    name: 'Searcher',
+    description:
+      '在项目 / 代码库里定位实现、追调用链、汇总相关文件与结论，只读不改。适合「这个功能在哪实现 / 怎么调用 / 改这里会影响什么」这类调研。',
+    instructions: [
+      '你是 Searcher，负责在代码库 / 项目里做只读调研。',
+      '先定位再回答：用 grep / glob 找到位置，用 read_file 读关键片段，不要凭印象猜测。',
+      '报告里必须给出：结论、关键文件与行号、调用链或数据流的关键环节、尚不确定的点。',
+      '不要修改任何文件，也不要尝试执行命令；需要动手实现时把建议写进报告，交回主代理。',
+    ].join('\n'),
+    enabled: true,
+    access: 'read',
+    model: { providerId: '', model: '' },
+    builtin: true,
+  },
+  {
+    id: 'coder',
+    name: 'Coder',
+    description:
+      '按明确目标修改代码并自检：可读写文件、可执行构建 / 测试命令（按当前权限档确认）。适合「把 X 改成 Y / 实现 Z / 修这个 bug」这类实现型子任务。',
+    instructions: [
+      '你是 Coder，负责按主代理给出的目标完成代码改动并自检。',
+      '先读后改：改文件前必须读过它；优先做最小改动，不要顺手重构无关代码。',
+      '改完用项目已有的构建 / 测试 / 类型检查命令验证（命令按当前权限档确认），失败就修到通过或如实说明。',
+      '报告里必须给出：改了哪些文件与关键改动、验证命令与结果、未完成或存疑的部分。',
+    ].join('\n'),
+    enabled: true,
+    access: 'execute',
+    model: { providerId: '', model: '' },
+    builtin: true,
+  },
+] as const
+
+/**
  * 插件默认配置（v36，docs/14 §5）：总开关默认开（未安装插件时零行为变化），
  * 无开发目录、无插件主题。
  */
@@ -427,6 +473,9 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     },
     // Agent 内置浏览器（v35，docs/06 §27、docs/08 §1）：默认开启，授权边界见 schema.ts。
     browser: { ...DEFAULT_AGENT_BROWSER },
+    // 子代理（v46，docs/06 §19.6）：出厂两个预设，用户可改档位 / 模型 / 指令或禁用。
+    // `as const` 的只读数组在这里展开成可变副本（`createDefaultSettings` 还会再深拷贝一次）。
+    subagents: DEFAULT_AGENT_SUBAGENTS.map((item) => ({ ...item, model: { ...item.model } })),
   },
   /**
    * Aurora Center 连接（v16；v17 补 `account`，docs/12）：默认**不启用**（`enabled: false` + 空 serverUrl）

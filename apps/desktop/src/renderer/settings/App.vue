@@ -1,12 +1,18 @@
 <script setup lang="ts">
 /**
- * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏多页
- * 通用 / 会话管理 / 模式 / 提醒 / AI 模型 / 语音 / Agent 设置 / 文件自感知 / Aurora Center / 插件 / 系统。
- * （BetaV2 由 8 页合并而来，spec §9；v37 新增「提醒」页 —— 默认提醒方式，docs/07 §4。）
+ * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏多页。
  *
- * 合并去向：TtsPage → voice（与 STT 同页）；SkillsPage / McpPage → agent；
- * AdvancedPage 的勿扰时段 → general。旧深链（`?page=tts|skills|mcp`）经
- * `LEGACY_PAGE_ALIASES` 映射到新页，截图核对工具与新老调用方都不受影响。
+ * 2026-11 信息架构（Agent 独立栏目）：左栏四组 —— 本机（通用 / 会话管理 / 模式 / 提醒）/
+ * 智能（AI 模型 / 语音 / Computer Use / 文件自感知）/ **Agent**（电脑操控 / 内置浏览器 /
+ * 子代理 / 技能 / MCP 服务器）/ 系统（Aurora Center / 插件 / 系统）。共 16 页。
+ * 原「Agent 设置」单页的五个可折叠区组各拆成一页，字段锚点与保存语义不变。
+ *
+ * 合并去向：TtsPage → voice（与 STT 同页）；AdvancedPage 的勿扰时段 → general。
+ * 旧深链经 `LEGACY_PAGE_ALIASES` 单向映射：`?page=tts → voice`、
+ * `?page=agent → agent-tools`、`?page=skills → agent-skills`、`?page=mcp → agent-mcp`。
+ *
+ * 侧栏 16 项在默认窗口高度下放不下，因此 `nav` 是独立滚动区；切页时内容区回到顶部，
+ * 深链或导航定位后把当前条目滚入可视范围（不改变窗口几何）。
  *
  * 本窗无系统标题栏（`frame: false`），拖动能力由 `useWindowDrag('settings')` 统一提供
  * （docs/07 §1）：窗口顶部一条完整的 32px 标题带，滚动内容始终不会盖住它。
@@ -15,7 +21,7 @@
  * 「关闭」= 隐藏窗口，`Esc` 等效；不退出应用，退出只走托盘菜单。
  * 侧栏导航条目为图标 + 单行文字（旧两行说明文案已删，docs/07 §2.5）。
  */
-import { computed, onMounted, onUnmounted, ref, type Component } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, type Component } from 'vue'
 import AppToast from '../shared/components/AppToast.vue'
 import GeneralPage from './pages/GeneralPage.vue'
 import SessionsPage from './pages/SessionsPage.vue'
@@ -23,7 +29,11 @@ import ModesPage from './pages/ModesPage.vue'
 import NotificationsPage from './pages/NotificationsPage.vue'
 import LlmPage from './pages/LlmPage.vue'
 import VoicePage from './pages/VoicePage.vue'
-import AgentPage from './pages/AgentPage.vue'
+import AgentToolsPage from './pages/AgentToolsPage.vue'
+import AgentBrowserPage from './pages/AgentBrowserPage.vue'
+import AgentSubagentsPage from './pages/AgentSubagentsPage.vue'
+import AgentSkillsPage from './pages/AgentSkillsPage.vue'
+import AgentMcpPage from './pages/AgentMcpPage.vue'
 import CenterPage from './pages/CenterPage.vue'
 import AdvancedPage from './pages/AdvancedPage.vue'
 import FileAwarenessPage from './pages/FileAwarenessPage.vue'
@@ -38,7 +48,9 @@ import {
   AudioLines,
   Bell,
   Blocks,
+  Bot,
   Cpu,
+  Globe,
   House,
   LayoutGrid,
   FolderSearch,
@@ -46,6 +58,8 @@ import {
   MonitorSmartphone,
   Puzzle,
   SettingsGear,
+  Terminal,
+  Wrench,
 } from '@aurora/shared/browser'
 
 type PageId =
@@ -55,7 +69,11 @@ type PageId =
   | 'notifications'
   | 'llm'
   | 'voice'
-  | 'agent'
+  | 'agent-tools'
+  | 'agent-browser'
+  | 'agent-subagents'
+  | 'agent-skills'
+  | 'agent-mcp'
   | 'computer-use'
   | 'awareness'
   | 'center'
@@ -77,7 +95,12 @@ const nav: NavItem[] = [
   { id: 'notifications', label: '提醒', icon: Bell },
   { id: 'llm', label: 'AI 模型', icon: Cpu },
   { id: 'voice', label: '语音', icon: AudioLines },
-  { id: 'agent', label: 'Agent 设置', icon: Puzzle },
+  // Agent 独立栏目（2026-11）：原「Agent 设置」单页的五个区组各拆成一页
+  { id: 'agent-tools', label: '电脑操控', icon: Terminal },
+  { id: 'agent-browser', label: '内置浏览器', icon: Globe },
+  { id: 'agent-subagents', label: '子代理', icon: Bot },
+  { id: 'agent-skills', label: '技能', icon: Puzzle },
+  { id: 'agent-mcp', label: 'MCP 服务器', icon: Wrench },
   { id: 'computer-use', label: 'Computer Use', icon: MousePointer2 },
   { id: 'awareness', label: '文件自感知', icon: FolderSearch },
   { id: 'center', label: 'Aurora Center', icon: MonitorSmartphone },
@@ -86,15 +109,19 @@ const nav: NavItem[] = [
 ]
 
 /**
- * 侧栏分组（2026-10-31 收敛为三组）：本机（行为与界面）/ 智能（AI 能力）/ 系统（连接、扩展与运维）。
+ * 侧栏分组（2026-11 四组）：本机（行为与界面）/ 智能（AI 能力）/ Agent（Agent 能力面）/
+ * 系统（连接、扩展与运维）。
  *
- * 旧版是「基础 / 智能 / 连接 / 扩展 / 系统」五组 12 项：单个条目也占一行分组标题，
- * 侧栏被切得很碎。连接与扩展各只有一项，合并进「系统」后分组标题从 5 个降到 3 个，
- * 条目顺序不变（截图 / 探针按 DOM 顺序读，标签与原来一致）。
+ * 2026-10-31 曾收敛为三组 12 项；2026-11 把「Agent 设置」从「智能」里提出来独立成组，
+ * 五个设置项各占一条。条目顺序即截图 / 探针读取的 DOM 顺序，改顺序要同步 docs/07。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
   { title: '本机', ids: ['general', 'sessions', 'modes', 'notifications'] },
-  { title: '智能', ids: ['llm', 'voice', 'agent', 'computer-use', 'awareness'] },
+  { title: '智能', ids: ['llm', 'voice', 'computer-use', 'awareness'] },
+  {
+    title: 'Agent',
+    ids: ['agent-tools', 'agent-browser', 'agent-subagents', 'agent-skills', 'agent-mcp'],
+  },
   { title: '系统', ids: ['center', 'plugins', 'advanced'] },
 ]
 
@@ -116,7 +143,11 @@ const pages: Record<PageId, Component> = {
   notifications: NotificationsPage,
   llm: LlmPage,
   voice: VoicePage,
-  agent: AgentPage,
+  'agent-tools': AgentToolsPage,
+  'agent-browser': AgentBrowserPage,
+  'agent-subagents': AgentSubagentsPage,
+  'agent-skills': AgentSkillsPage,
+  'agent-mcp': AgentMcpPage,
   'computer-use': ComputerUsePage,
   awareness: FileAwarenessPage,
   center: CenterPage,
@@ -125,13 +156,15 @@ const pages: Record<PageId, Component> = {
 }
 
 /**
- * 旧版 8 页的深链兼容映射（spec §9）：`?page=tts` 等老链接落到合并后的新页。
- * 只做单向映射；6 个新 id 直接生效，不在表里的值回落「通用」。
+ * 旧深链兼容映射：老链接落到拆分 / 合并后的新页。
+ * 只做单向映射；新 id 直接生效，不在表里的值回落「通用」。
+ * `agent` / `skills` / `mcp` 是 2026-11 Agent 栏目拆分前的页面 id。
  */
 const LEGACY_PAGE_ALIASES: Record<string, PageId> = {
   tts: 'voice',
-  skills: 'agent',
-  mcp: 'agent',
+  agent: 'agent-tools',
+  skills: 'agent-skills',
+  mcp: 'agent-mcp',
 }
 
 /**
@@ -152,11 +185,24 @@ const active = ref<PageId>(initialPage())
 const settingsStore = useSettingsStore()
 const windowStore = useWindowStore()
 const perception = usePerceptionStore()
+/** 侧栏导航滚动区 / 内容滚动区：切页复位与当前项滚入视口都要用（见 `select()`） */
+const navRef = ref<HTMLElement | null>(null)
+const contentRef = ref<HTMLElement | null>(null)
 /** 本窗可拖（docs/07 §1 / §2.5）：拖动区见模板里的 `.titlebar-drag`（含品牌锁up）；
  *  WindowCaption 的按钮自带 no-drag（组件内部显式挂类），这里不再需要 noDragClass */
 const { dragClass } = useWindowDrag('settings')
 
 const needsOnboarding = computed(() => settingsStore.needsOnboarding)
+
+/**
+ * 把当前 nav 条目滚入侧栏可视区（`block: 'nearest'` 只动最近的滚动祖先 `nav`）。
+ * 16 项在默认窗口中放不下，深链直开靠后的页面（如 `?page=agent-mcp`）时不处理就会
+ * 看不见当前项。
+ */
+function revealActive(): void {
+  const current = navRef.value?.querySelector<HTMLElement>('.nav-item.active')
+  current?.scrollIntoView({ block: 'nearest' })
+}
 
 async function closeSettings(): Promise<void> {
   await windowStore.hide('settings')
@@ -169,14 +215,24 @@ function onKeydown(event: KeyboardEvent): void {
 onMounted(() => {
   void perception.refresh()
   window.addEventListener('keydown', onKeydown)
+  // 首帧后再滚：深链页面在挂载时才知道哪个条目是 active
+  void nextTick(revealActive)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
 })
 
+/**
+ * 切页：先换当前页，再在下一帧把内容区滚回顶部（否则从长页切到短页会停在上一页的
+ * 滚动位置），并让当前导航条目保持可见。页面本身仍由 `<component :key>` 重新挂载。
+ */
 function select(id: PageId): void {
   active.value = id
+  void nextTick(() => {
+    contentRef.value?.scrollTo({ top: 0 })
+    revealActive()
+  })
 }
 </script>
 
@@ -198,7 +254,7 @@ function select(id: PageId): void {
       <WindowCaption window="settings" class="window-caption" />
     </div>
     <aside class="sidebar glass-shell rail-surface anim-shell-left">
-      <nav>
+      <nav ref="navRef">
         <template v-for="group in grouped" :key="group.title">
           <p class="nav-group">{{ group.title }}</p>
           <button
@@ -229,7 +285,7 @@ function select(id: PageId): void {
       </div>
     </aside>
 
-    <main class="content anim-pane">
+    <main ref="contentRef" class="content anim-pane">
       <AppToast v-if="needsOnboarding" tone="warn" class="banner">
         尚未完成 AI 模型配置：主功能不可用，请前往「AI 模型」页配置。
       </AppToast>
@@ -325,6 +381,8 @@ function select(id: PageId): void {
   padding: var(--space-3) var(--space-3) var(--space-3);
   grid-column: 1;
   grid-row: 2;
+  /* 2026-11：16 项导航默认高度放不下，nav 自己滚；侧栏本身不滚，底部版本行固定 */
+  min-height: 0;
 }
 
 /* 发行线路徽标：9.5px 小字 + 胶囊描边，只做标识，不与品牌名抢层级 */
@@ -342,15 +400,26 @@ function select(id: PageId): void {
   white-space: nowrap;
 }
 
+/* 侧栏导航（2026-11 Agent 独立栏目后共 16 项）：默认窗口高度放不下，nav 独立滚动，
+ * 底部版本号行固定；分组标题与条目都不可被 flex 收缩，否则条目会被压扁。
+ * 滚动条走 thin 档：208px 宽的侧栏里常规滚动条太抢眼。 */
 nav {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-bottom: var(--space-1);
 }
 
-/* 分组标题：小字号 + 弱色 + 中文不做大写字距，只承担分层，不与可点条目抢注意力 */
+/* 分组标题：小字号 + 弱色 + 中文不做大写字距，只承担分层，不与可点条目抢注意力。
+ * 四组时上边距收一档（--space-4 → --space-3），让 Agent 组在 640px 高窗口里尽量完整。 */
 .nav-group {
-  margin: var(--space-4) 0 var(--space-1);
+  flex: none;
+  margin: var(--space-3) 0 var(--space-1);
   padding: 0 var(--space-2);
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
@@ -372,6 +441,7 @@ nav > .nav-group:first-child {
   flex-direction: row;
   align-items: center;
   gap: var(--space-2);
+  flex: none;
   height: 34px;
   padding: 0 var(--space-2) 0 10px;
   border-radius: var(--radius-sm);
@@ -434,6 +504,7 @@ nav > .nav-group:first-child {
 }
 
 .foot {
+  flex: none;
   margin-top: auto;
   padding: var(--space-2) var(--space-2) 0;
   border-top: 1px solid var(--border-subtle);

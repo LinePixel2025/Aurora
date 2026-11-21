@@ -474,6 +474,60 @@ describe('runAgentLoop', () => {
     expect(sent[3]?.toolCallId).toBe('c9')
   })
 
+  it('历史里 assistant(toolCalls) 缺结果：组装请求时补齐，避免服务端 400', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider([{ text: '继续完成' }])
+    // 模拟「上一轮中途停止 / 进程被杀」后落盘的半组历史：assistant 有两条调用，只落了一条结果
+    const history: StoredMessage[] = [
+      { id: 'h1', role: 'user', content: '旧提问', createdAt: '' },
+      {
+        id: 'h2',
+        role: 'assistant',
+        content: '',
+        createdAt: '',
+        toolCalls: [
+          { id: 'c1', name: 'echo', arguments: '{}', state: 'success' },
+          {
+            id: 'c2',
+            name: 'echo',
+            arguments: '{}',
+            state: 'error',
+            outputSummary: '已取消未执行',
+          },
+        ],
+      },
+      { id: 'h3', role: 'tool', content: 'c1 结果', createdAt: '', toolCallId: 'c1' },
+    ]
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: '继续',
+        history,
+        tools: registryWithEcho(),
+        sessionId: 'quick',
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+
+    const sent = provider.calls[0]?.messages ?? []
+    expect(sent.map((item) => item.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'user',
+    ])
+    expect(sent[3]?.toolCallId).toBe('c1')
+    // 缺失的 c2 被补成失败结果，`role:'tool'` 的条数与 tool_calls 对齐
+    expect(sent[4]?.toolCallId).toBe('c2')
+    expect(sent[4]?.content).toContain('未返回结果')
+    expect(sent[4]?.content).toContain('已取消未执行')
+  })
+
   /**
    * 请求形状回归（docs/06 §21）：
    * 系统提示词稳居首位、历史依次紧随、本轮输入与易变上下文都在尾部，
@@ -779,7 +833,7 @@ describe('runAgentLoop', () => {
       })
     })
 
-    it('流中断时已产出的正文照旧落盘，且不会再发起工具执行', async () => {
+    it('流中断时已产出的正文照旧落盘，且为未执行的调用补失败结果（不会触发 400）', async () => {
       const rec = createRecorder()
       const executed = { count: 0 }
       const provider = createFakeProvider([
@@ -804,10 +858,16 @@ describe('runAgentLoop', () => {
       )
 
       expect(executed.count).toBe(0)
-      expect(rec.messages.some((message) => message.role === 'tool')).toBe(false)
       const assistant = rec.messages.find((message) => message.role === 'assistant')
       expect(assistant?.content).toBe('部分正文')
       expect(assistant?.toolCalls?.[0]?.state).toBe('error')
+      // assistant(tool_calls) 已落盘 ⇒ 必须配一条 tool 结果；否则下一次请求会被
+      // OpenAI 兼容服务以「insufficient tool messages」400 拒绝
+      const toolMessages = rec.messages.filter((message) => message.role === 'tool')
+      expect(toolMessages).toHaveLength(1)
+      expect(toolMessages[0]?.toolCallId).toBe('c1')
+      expect(toolMessages[0]?.content).toContain('未返回结果')
+      expect(toolMessages[0]?.content).toContain('流中断未执行')
     })
 
     it('流中断且 signal 已 abort（用户点停止）：按 aborted 暂停收尾，不是 error', async () => {
@@ -907,8 +967,12 @@ describe('runAgentLoop', () => {
       expect(byId.get('c1')?.state).toBe('success')
       expect(byId.get('c2')?.state).toBe('error')
       expect(byId.get('c2')?.outputSummary).toBe('已取消未执行')
-      // 第 2 个没有产生 tool 结果消息（没有半组配对之外的伪结果）
-      expect(rec.messages.filter((message) => message.role === 'tool')).toHaveLength(1)
+      // 未执行的第 2 个调用也要补一条失败 tool 结果：assistant(tool_calls) 已落盘，
+      // 缺结果会让下一次请求（点「继续」或发新消息）被服务端 400 拒绝
+      const toolMessages = rec.messages.filter((message) => message.role === 'tool')
+      expect(toolMessages).toHaveLength(2)
+      expect(toolMessages.map((message) => message.toolCallId)).toEqual(['c1', 'c2'])
+      expect(toolMessages[1]?.content).toContain('已取消未执行')
     })
   })
 

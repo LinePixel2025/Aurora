@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createDefaultSettings,
+  DEFAULT_AGENT_SUBAGENTS,
   DEFAULT_TOOLCHAIN_CONFIG,
   DEFAULT_TTS,
   PROVIDER_PRESETS,
@@ -11,12 +12,15 @@ import {
   CONFIG_VERSION,
   DEFAULT_SUBJECT_NAMES,
   LLM_MODEL_PARAM_DEFAULTS,
+  MAX_SUBAGENTS,
   MODE_IDS,
   McpServerSchema,
   RESOURCE_NAME_PATTERN,
   RESOURCE_NAME_RULE,
   SETTINGS_READONLY_PREFIXES,
   SettingsSchema,
+  SUBAGENT_ACCESS_LEVELS,
+  SubagentsSchema,
   TTS_FORMATS,
   canWriteSettingPath,
   debugSchemaSpecs,
@@ -983,5 +987,59 @@ describe('资源名称约定（P1-07，docs/08 §1.3）', () => {
     expect(RESOURCE_NAME_PATTERN.test('a.b')).toBe(false)
     expect(RESOURCE_NAME_PATTERN.test('a-b_c1')).toBe(true)
     expect(RESOURCE_NAME_RULE).toContain('不能含')
+  })
+})
+describe('子代理定义（v46，docs/06 §19.6）', () => {
+  const base = {
+    id: 'searcher',
+    name: 'Searcher',
+    description: '只读调研',
+    instructions: '只读',
+    enabled: true,
+    access: 'read' as const,
+    model: { providerId: '', model: '' },
+    builtin: true,
+  }
+
+  it('出厂预设两个：Searcher 只读 / Coder 可执行，id 唯一且都启用', () => {
+    const subagents = createDefaultSettings().agent.subagents
+    expect(subagents.map((item) => item.id)).toEqual(['searcher', 'coder'])
+    expect(subagents[0]).toMatchObject({ name: 'Searcher', access: 'read', enabled: true })
+    expect(subagents[1]).toMatchObject({ name: 'Coder', access: 'execute', enabled: true })
+    expect(subagents.every((item) => item.builtin)).toBe(true)
+    expect(DEFAULT_AGENT_SUBAGENTS.map((item) => item.id)).toEqual(['searcher', 'coder'])
+    expect(DEFAULT_TOOLCHAIN_CONFIG.agent.subagents).toHaveLength(2)
+    // 关键：默认配置必须自洽（id 唯一 + Schema 通过）
+    expect(SettingsSchema.safeParse(createDefaultSettings()).success).toBe(true)
+  })
+
+  it('access 只接受三档；id 走资源名规则（禁点）；必填文本不能空', () => {
+    for (const access of SUBAGENT_ACCESS_LEVELS) {
+      expect(SubagentsSchema.safeParse([{ ...base, access }]).success, access).toBe(true)
+    }
+    expect(SubagentsSchema.safeParse([{ ...base, access: 'full' }]).success).toBe(false)
+    expect(SubagentsSchema.safeParse([{ ...base, id: 'a.b' }]).success).toBe(false)
+    expect(SubagentsSchema.safeParse([{ ...base, name: '  ' }]).success).toBe(false)
+    expect(SubagentsSchema.safeParse([{ ...base, description: '' }]).success).toBe(false)
+  })
+
+  it('重复 id 被数组级校验拒绝；条数超过上限也拒绝', () => {
+    expect(SubagentsSchema.safeParse([base, { ...base, name: '另一个' }]).success).toBe(false)
+    // 大小写不同也算重复（runtime 解析不区分大小写，配置面必须与之一致）
+    expect(SubagentsSchema.safeParse([base, { ...base, id: 'SEARCHER' }]).success).toBe(false)
+    const tooMany = Array.from({ length: MAX_SUBAGENTS + 1 }, (_, index) => ({
+      ...base,
+      id: `a-${index}`,
+    }))
+    expect(SubagentsSchema.safeParse(tooMany).success).toBe(false)
+    expect(SubagentsSchema.safeParse(tooMany.slice(0, MAX_SUBAGENTS)).success).toBe(true)
+  })
+
+  it('agent.subagents 在只读黑名单里：AI 不得自行加子代理 / 放宽档位', () => {
+    expect(SETTINGS_READONLY_PREFIXES).toContain('agent.subagents')
+    expect(canWriteSettingPath('agent.subagents')).toBe(false)
+    expect(canWriteSettingPath('agent.subagents.0.access')).toBe(false)
+    expect(canWriteSettingPath('agent.subagents.0.model.model')).toBe(false)
+    expect(settingsReadonlyReason('agent.subagents.0.access')).toContain('子代理')
   })
 })

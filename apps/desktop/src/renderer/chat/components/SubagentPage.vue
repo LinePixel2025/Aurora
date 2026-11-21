@@ -22,6 +22,7 @@ import {
   Clock,
   FilePenLine,
   MessageSquare,
+  PanelRight,
   ShieldCheck,
 } from '@aurora/shared/browser'
 import SubagentTrace from '../../shared/components/SubagentTrace.vue'
@@ -35,6 +36,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'back'): void
+  /** 在右栏打开这次运行（v46，docs/07 §2.3）：与对话里点标识徽章同一条链路 */
+  (event: 'open-panel', run: { callId: string; taskId: string }): void
 }>()
 
 /** 已展开「对话」的运行（默认收起：轨迹与报告才是主体） */
@@ -54,9 +57,18 @@ function toggle(key: string): void {
     : [...openedRuns.value, key]
 }
 
-/** 权限档（老快照没有该字段 → 按只读显示，与 `task` 工具的缺省一致） */
+/** 权限档（v46 三档；老快照没有 `access` 时按 `permission` 推断） */
+function accessLevelOf(run: SubagentRun): 'read' | 'write' | 'execute' {
+  return run.access ?? run.permission ?? 'read'
+}
+
 function isWriteGranted(run: SubagentRun): boolean {
-  return run.permission === 'write'
+  return accessLevelOf(run) !== 'read'
+}
+
+function accessLabelOf(run: SubagentRun): string {
+  const level = accessLevelOf(run)
+  return level === 'execute' ? '可执行' : level === 'write' ? '可读写' : '只读'
 }
 
 const runningCount = computed(() => props.runs.filter((run) => run.status === 'running').length)
@@ -127,8 +139,11 @@ function statusLabel(status: SubagentRun['status']): string {
       >
         <div class="run-head">
           <span class="run-dot" :class="run.status" aria-hidden="true" />
+          <span v-if="run.agentName" class="run-agent" data-field="chat.subagent-agent">
+            {{ run.agentName }}
+          </span>
           <span class="run-title">{{ run.description }}</span>
-          <!-- 本次授予的权限（2026-09）：只读 / 可读写文件，一眼看清它能碰什么 -->
+          <!-- 本次授予的权限（2026-09；v46 起含「可执行」）：一眼看清它能碰什么 -->
           <span
             class="perm-chip"
             data-field="chat.subagent-perm"
@@ -140,13 +155,29 @@ function statusLabel(status: SubagentRun['status']): string {
               :stroke-width="1.8"
               aria-hidden="true"
             />
-            {{ isWriteGranted(run) ? '可读写' : '只读' }}
+            {{ accessLabelOf(run) }}
           </span>
           <span class="tiny run-status">{{ statusLabel(run.status) }}</span>
-          <span class="tiny muted run-meta">{{ run.toolCalls }} 次工具调用</span>
+          <span class="tiny muted run-meta">
+            {{ run.toolCalls }} 次工具调用
+            <template v-if="run.model">
+              · {{ run.model.providerId }}/{{ run.model.model }}
+            </template>
+          </span>
           <span class="grow" />
           <Clock :size="12" :stroke-width="1.6" aria-hidden="true" class="muted" />
           <span class="tiny muted">{{ formatTime(run.startedAt) }} · {{ elapsedOf(run) }}</span>
+          <!-- 在右栏看（v46）：与对话里点标识徽章同一条链路，页面 / 侧栏两个入口都通 -->
+          <button
+            type="button"
+            class="run-toggle"
+            data-action="chat.subagent-open-panel"
+            title="在侧栏查看对话"
+            aria-label="在侧栏查看对话"
+            @click="emit('open-panel', { callId: run.callId, taskId: run.taskId })"
+          >
+            <PanelRight :size="13" :stroke-width="1.8" aria-hidden="true" />
+          </button>
           <button
             type="button"
             class="run-toggle"
@@ -330,6 +361,21 @@ function statusLabel(status: SubagentRun['status']): string {
   white-space: nowrap;
   font-weight: var(--weight-medium);
   color: var(--text-primary);
+}
+
+/* 具名子代理（v46）：名字比任务简述更靠前、更轻，扫一眼知道是谁在干 */
+.run-agent {
+  flex: 0 0 auto;
+  max-width: 22%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 18px;
 }
 
 .run-status {

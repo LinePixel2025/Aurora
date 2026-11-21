@@ -1534,6 +1534,54 @@ export function smokeScript(
       'taskCards=' + multiTool.length,
     )
 
+    // 9.4c 具名子代理 + 侧栏面板（v46，docs/06 §19.6 / docs/07 §2.3）：
+    //      父对话派一次带「agent: searcher」的 task → 快照必须带 agentId / agentName /
+    //      access / model；随后从**对话里的标识徽章**打开右栏单例面板，断言实时对话可见。
+    const agentEvents = []
+    const offAgent = window.aurora.chat.onEvent((event) => agentEvents.push(event))
+    const sentAgent = expectOk(
+      'chat.send(具名子代理)',
+      await window.aurora.chat.send({
+        sessionId: 'smoke-subagent-agent',
+        text: 'STUB_AGENT_TASK_MARKER 派一个具名子代理',
+        origin: 'edge-bar',
+      }),
+    )
+    if (sentAgent) {
+      for (
+        let i = 0;
+        i < 400 && !agentEvents.some((e) => e.type === 'done' || e.type === 'error');
+        i += 1
+      ) {
+        await wait(50)
+      }
+    }
+    offAgent()
+    const agentSnapshots = agentEvents
+      .filter((e) => e.type === 'subagent' && e.subagent)
+      .map((e) => e.subagent)
+    const agentFinal = agentSnapshots[agentSnapshots.length - 1]
+    record(
+      '具名子代理：快照带 agentId / agentName / access / 实际模型',
+      agentFinal?.agentId === 'searcher' &&
+        agentFinal?.agentName === 'Searcher' &&
+        agentFinal?.access === 'read' &&
+        (agentFinal?.model?.model ?? '') !== '',
+      JSON.stringify({
+        agentId: agentFinal?.agentId,
+        access: agentFinal?.access,
+        model: agentFinal?.model,
+      }),
+    )
+    record(
+      '具名子代理：报告照常回传（人设叠加不影响子循环）',
+      (agentFinal?.report ?? '').includes('STUB_SUB_OK'),
+      'report=' + (agentFinal?.report ?? '').slice(0, 24),
+    )
+    // 说明：右栏面板的 DOM 链路由截图探针「chat-subagent-panel」覆盖（种子里有两条具名运行，
+    // 能同时验证"单例标签 + 换焦点"）；这里刻意不碰 DOM —— 本轮 send 用的是独立会话，
+    // 渲染层当前视图不一定是它，点徽章会落空（错误的判据比少一条更糟）。
+
     // 9.5 免确认命令模式（docs/06 §11.7，v12）：命中列表 → 直接执行、不弹卡片；未命中 → 仍然弹卡片。
     //     两条断言必须成对：只断言「没收到卡片」证明不了什么 —— 整条链路没走（工具压根没被调用、
     //     或走了 enabled() 为假的那条更宽的放行路径）同样收不到卡片，负对照才是这条断言的本体。

@@ -63,7 +63,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1、小组件不可激活 / 固定 +3、
   v39 Computer Use +5、v40 智慧提醒 §2.5 +6、v41 轮终改动汇总 / 任务完成提醒 +2、
   统一缩放 +3、v42 自定义提示音 §2.4.1 +4、v43 TTS +7、v44 智慧提醒延迟投递 +2、
-  v0.7.2 Win10 材质降级 +2 条断言；
+  v0.7.2 Win10 材质降级 +2、v46 具名子代理 +2 条断言（合计 **310**，提交轮全量实测确认）；
   示例插件缺席等环境差异会少 3 条，以当轮 SUMMARY 为准）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
@@ -152,7 +152,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **绝不允许裸 `v-html` 模型原文**；链接 scheme 走 markdown-it `validateLink`（`javascript:` 拒绝）；
   外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接（生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件 / 命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 45`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 46`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 - **界面文案口径**（用户连续两轮点名「冗杂」）：区组说明段 **≤45 汉字**、字段 hint **≤40 汉字**，各只写 1 句；
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。
@@ -216,6 +216,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   `pnpm typecheck` / `pnpm test` 报 `TS2307: Cannot find module '@aurora/shared'`。CI 已内置这一步（2026-11-14 实测）。
 - **`task` 子代理并行**：`task` 声明 `parallel`，同轮多个 `task` 走 `SUBAGENT_MAX_PARALLEL = 3` / 会话的内核限流，写入类子代理**整段串行**（同会话写锁）。别只改 `parallel` 不加锁：会交错读改写同一文件、并让渲染层单槽位确认卡互相覆盖。上限是内核常量（与 512 同属防失控），不要加配置项。
 - **`permission: 'write'` 只是请求**：实际授予看子表里是否真的进了 `write_file` / `edit_file`；快照 `permission` 与 UI 徽章必须按实际结果落（只读档父表根本没有写工具，不许显示「可读写」）。`subagentToolNames` 是内核预留钩子，**生产装配当前未注入**，别把它当已生效的额外闸门。
+- **子代理定义只在 `agent.subagents`（v46，06 §19.6）**：整组在 `SETTINGS_READONLY_PREFIXES`（AI 不得自建子代理 / 放宽档位 / 换模型）。`task.agent` 只认**启用项**（id 或名称），未知 id 一律 `isError` 不静默回落；工具描述的名册在**每次 `syncToolRegistries()`** 时按配置重建，别写成构造时常量。模型优先级固定为 **子代理配置 > 会话覆盖 > 全局**，不可用时回落并由 `task` 把"已回退"写进结果与快照。三档 access（`read`/`write`/`execute`）里**可变更环境的（write + execute）共用同一把写锁整段串行**；`run_command` 只走 `SUBAGENT_EXECUTE_TOOLS` 固定白名单，MCP / `task` / `ask_user` / `submit_plan` 任何档位都拿不到。
 - **改 `packages/shared/src/browser/**`（渲染器 / 令牌 / 图标）= 同时改桌面与 Center Web**：两端截图都要跑。
 - **CSP**：`main/index.ts` 的两条都要有 `media-src 'self' blob:`；`onHeadersReceived` 的注入**只作用自家窗口的页面**（按 `webContentsId` 判定）。
 - **探针字符串**（`apps/desktop/src/main/capture.ts`）不写反引号（注释用「」），能不用带反斜杠的正则就别用；**判据只写一份**、**量矩形不量存在**。

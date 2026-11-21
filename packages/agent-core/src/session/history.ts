@@ -6,7 +6,7 @@
  * 只留一半会让 OpenAI 兼容服务直接拒绝请求（tool_call_id 无对应调用）。
  */
 import type { ChatRequestMessage, LlmImageResolver } from '../llm/types.js'
-import type { StoredMessage } from './types.js'
+import type { StoredMessage, StoredToolCall } from './types.js'
 
 /**
  * 历史消息的图片分片（多模态输入，docs/06 §3.1）：`images` 是**路径**，解析成内容要有解析器。
@@ -91,6 +91,117 @@ function toolCallOwners(messages: readonly StoredMessage[]): Array<number | null
     result.push(index)
   }
   return result
+}
+
+/**
+ * 为缺失的工具结果合成一条失败结果（只在**组装请求**时用，不写回会话）。
+ *
+ * 文案要明确「没有结果」而不是编造内容：模型看到后可以决定重试或换方案；
+ * 空内容 / 只写「error」都会让模型误以为工具真的返回过。`outputSummary` 是会话里
+ * 已经记下的失败原因（流中断 / 用户取消 / 工具执行失败），优先用它。
+ */
+function syntheticToolResult(call: StoredToolCall, host: StoredMessage): StoredMessage {
+  const reason = call.outputSummary?.trim()
+  const detail =
+    reason !== undefined && reason !== ''
+      ? reason
+      : call.state === 'running'
+        ? '未执行'
+        : call.state === 'error'
+          ? '执行失败'
+          : '结果未落盘'
+  return {
+    // 只用于本次请求的内存形状：加前缀避免与真实消息 id 撞车
+    id: `repaired-tool-${host.id}-${call.id}`,
+    role: 'tool',
+    content: `工具 "${call.name}" 未返回结果（${detail}），已按失败处理。`,
+    createdAt: host.createdAt,
+    toolCallId: call.id,
+  }
+}
+
+/**
+ * 修复工具调用配对，保证可以安全地发给 OpenAI 兼容服务。
+ *
+ * 为什么需要：服务端要求「assistant(tool_calls) 之后必须紧跟每个 tool_call_id 各自的
+ * tool 消息」。但会话历史在以下情形可能是半组：
+ * - 流在 `[DONE]` 之前中断：`appendAssistant` 已落盘 toolCalls，工具却从未执行；
+ * - 用户在工具轮次中途点「停止」：只执行了一部分调用（或一个都没跑）就结束；
+ * - 进程被强杀 / 旧版本会话文件：assistant 与 tool 结果之间只落了前一半。
+ * 直接重放会得到 HTTP 400「insufficient tool messages following tool_calls message」，
+ * 也就是「执行过一次中断的任务后，再发任何消息都报错」。
+ *
+ * 处置口径：
+ * - 有宿主 assistant 的调用：按 `toolCalls` 顺序补齐缺失结果（合成失败结果，见上）；
+ * - 孤儿 tool 消息（没有宿主 / id 不在宿主的 toolCalls 里 / 重复结果）：直接丢弃；
+ * - 其余消息原样保留（`system` 也保留，交给各转换函数自行过滤）。
+ *
+ * 这是**请求组装层的兜底**：循环在中断 / 流失败时已经会补落盘（见 `agentLoop`），
+ * 这里再兜住崩溃 / 历史文件损坏与旧版本数据。不改写会话，不会让历史越修越长。
+ */
+export function repairToolCallPairs(messages: readonly StoredMessage[]): StoredMessage[] {
+  const out: StoredMessage[] = []
+  let index = 0
+  while (index < messages.length) {
+    const message = messages[index]
+    if (message === undefined) {
+      index += 1
+      continue
+    }
+
+    // 孤儿 tool 结果：它前面没有携带对应 toolCallId 的 assistant，整条丢弃
+    if (message.role !== 'assistant' || (message.toolCalls ?? []).length === 0) {
+      if (message.role !== 'tool') out.push(message)
+      index += 1
+      continue
+    }
+
+    const calls = message.toolCalls ?? []
+    out.push(message)
+
+    // 收集紧跟其后的连续 tool 结果（按 id 归属；同 id 重复只保留第一条）
+    const results = new Map<string, StoredMessage>()
+    const unkeyed: StoredMessage[] = []
+    let cursor = index + 1
+    while (cursor < messages.length && messages[cursor]?.role === 'tool') {
+      const tool = messages[cursor]
+      if (tool !== undefined) {
+        const callId = tool.toolCallId
+        if (typeof callId === 'string' && callId !== '') {
+          if (!results.has(callId)) results.set(callId, tool)
+        } else {
+          // 旧会话可能没有 toolCallId：按出现顺序补给缺少 id 的调用（仅作兼容）
+          unkeyed.push(tool)
+        }
+      }
+      cursor += 1
+    }
+
+    const used = new Set<StoredMessage>()
+    for (const call of calls) {
+      let result = results.get(call.id)
+      if (result === undefined) {
+        const fallback = unkeyed.find((item) => !used.has(item))
+        if (fallback !== undefined) result = fallback
+      }
+      if (result === undefined) {
+        out.push(syntheticToolResult(call, message))
+        continue
+      }
+      used.add(result)
+      // 旧会话的 tool 结果可能没有 toolCallId：补上归属，否则线上消息仍缺
+      // `tool_call_id`，服务端同样会判配对不完整
+      out.push(
+        result.toolCallId === undefined || result.toolCallId === ''
+          ? { ...result, toolCallId: call.id }
+          : result,
+      )
+    }
+
+    // 走到这里时 cursor 指向下一个非 tool 消息；被丢弃的 keyed / unkeyed 结果不再输出
+    index = cursor
+  }
+  return out
 }
 
 /**
@@ -307,9 +418,11 @@ export function trimForSummary(messages: readonly StoredMessage[]): StoredMessag
   const excludeTail = options.excludeTail ?? 0
   const slice =
     excludeTail > 0 ? messages.slice(0, Math.max(0, messages.length - excludeTail)) : messages
+  // 请求组装层兜底：历史可能是半组（流中断 / 中途停止 / 进程被杀 / 旧会话文件），
+  // 直接发给 OpenAI 兼容服务会 400；这里补齐缺失的 tool 结果并丢弃孤儿结果。
   const out: ChatRequestMessage[] = []
 
-  for (const message of slice) {
+  for (const message of repairToolCallPairs(slice)) {
     switch (message.role) {
       case 'system':
         continue

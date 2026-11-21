@@ -15,6 +15,7 @@ import {
 } from './schema.js'
 import {
   DEFAULT_AGENT_BROWSER,
+  DEFAULT_AGENT_SUBAGENTS,
   DEFAULT_AGENT_TOOLS,
   DEFAULT_CLASSIFICATION,
   DEFAULT_CLASSISLAND_SCHEDULE,
@@ -1500,6 +1501,31 @@ const migrateV44ToV45: Migration = {
   },
 }
 
+/**
+ * v45 → v46：新增 `agent.subagents`（子代理定义 / 权限档 / 独立模型，docs/06 §19.6）。
+ *
+ * 只做一件事：`agent.subagents` 不是数组时写入出厂预设（Searcher / Coder）。
+ * - 已有合法数组时**原样保留**（幂等：重复执行结果一致）；
+ * - `agent` 分组缺失时不凭空造对象（与 v17 → v18、v33 → v34 同一口径，交默认配置兜底）。
+ */
+const migrateV45ToV46: Migration = {
+  from: 45,
+  to: 46,
+  describe: 'v45 → v46：新增 agent.subagents（子代理定义 / 权限档 / 独立模型）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const agent = asRecord(raw['agent'])
+    if (agent !== undefined && !Array.isArray(agent['subagents'])) {
+      next['agent'] = {
+        ...agent,
+        subagents: DEFAULT_AGENT_SUBAGENTS.map((item) => ({ ...item, model: { ...item.model } })),
+      }
+    }
+    next['version'] = 46
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1546,6 +1572,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV42ToV43,
   migrateV43ToV44,
   migrateV44ToV45,
+  migrateV45ToV46,
 ]
 
 export interface MigrationOutcome {

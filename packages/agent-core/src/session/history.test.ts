@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   compressHistory,
   filterMessagesWithinWindow,
+  repairToolCallPairs,
   truncateHistory,
   toChatRequestMessages,
 } from './history.js'
@@ -153,6 +154,112 @@ describe('toChatRequestMessages', () => {
       expect('reasoning' in message).toBe(false)
     }
     expect(converted[0]).toEqual({ role: 'assistant', content: '上一轮回复' })
+  })
+
+  it('历史半组：缺失的 tool 结果在组装时补成失败结果（防服务端 400）', () => {
+    const messages: StoredMessage[] = [
+      msg({ id: 'u1', role: 'user', content: '开始' }),
+      msg({
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'c1', name: 'echo', arguments: '{}', state: 'success' },
+          {
+            id: 'c2',
+            name: 'echo',
+            arguments: '{}',
+            state: 'error',
+            outputSummary: '已取消未执行',
+          },
+        ],
+      }),
+      msg({ id: 't1', role: 'tool', content: 'c1 结果', toolCallId: 'c1' }),
+      msg({ id: 'u2', role: 'user', content: '继续' }),
+    ]
+    const converted = toChatRequestMessages(messages)
+    expect(converted.map((item) => item.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'user',
+    ])
+    expect(converted[2]?.toolCallId).toBe('c1')
+    expect(converted[3]?.toolCallId).toBe('c2')
+    expect(converted[3]?.content).toContain('未返回结果')
+    expect(converted[3]?.content).toContain('已取消未执行')
+  })
+})
+
+describe('repairToolCallPairs', () => {
+  it('按 toolCalls 顺序补齐缺失结果、丢弃孤儿 tool 结果', () => {
+    const messages: StoredMessage[] = [
+      msg({ id: 'u', role: 'user', content: 'q' }),
+      msg({
+        id: 'a',
+        role: 'assistant',
+        content: '',
+        createdAt: '2025-01-01T00:00:01.000Z',
+        toolCalls: [
+          { id: 'c1', name: 'echo', arguments: '{}', state: 'success' },
+          {
+            id: 'c2',
+            name: 'echo',
+            arguments: '{}',
+            state: 'error',
+            outputSummary: '流中断未执行',
+          },
+        ],
+      }),
+      msg({ id: 't1', role: 'tool', content: 'c1 结果', toolCallId: 'c1' }),
+      // id 不在宿主 toolCalls 里：孤儿，必须丢弃
+      msg({ id: 'orphan', role: 'tool', content: '无主结果', toolCallId: 'missing' }),
+      msg({ id: 'u2', role: 'user', content: '继续' }),
+    ]
+    const repaired = repairToolCallPairs(messages)
+    expect(repaired.map((item) => item.id)).toEqual(['u', 'a', 't1', 'repaired-tool-a-c2', 'u2'])
+    const synthetic = repaired[3]
+    expect(synthetic?.role).toBe('tool')
+    expect(synthetic?.toolCallId).toBe('c2')
+    expect(synthetic?.content).toContain('未返回结果')
+    expect(synthetic?.content).toContain('流中断未执行')
+  })
+
+  it('重复结果只保留一条；无宿主的 tool 消息整条丢弃', () => {
+    const messages: StoredMessage[] = [
+      msg({ id: 't0', role: 'tool', content: '无主', toolCallId: 'c0' }),
+      msg({
+        id: 'a',
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}', state: 'success' }],
+      }),
+      msg({ id: 't1', role: 'tool', content: '第一次', toolCallId: 'c1' }),
+      msg({ id: 't2', role: 'tool', content: '重复', toolCallId: 'c1' }),
+    ]
+    const repaired = repairToolCallPairs(messages)
+    expect(repaired.map((item) => item.id)).toEqual(['a', 't1'])
+  })
+
+  it('旧会话没有 toolCallId 时按出现顺序补给缺 id 的调用（兼容），不产生重复结果', () => {
+    const messages: StoredMessage[] = [
+      msg({
+        id: 'a',
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'c1', name: 'echo', arguments: '{}', state: 'success' },
+          { id: 'c2', name: 'echo', arguments: '{}', state: 'success' },
+        ],
+      }),
+      msg({ id: 'legacy', role: 'tool', content: '旧结果' }),
+      msg({ id: 't2', role: 'tool', content: 'c2 结果', toolCallId: 'c2' }),
+    ]
+    const repaired = repairToolCallPairs(messages)
+    expect(repaired.map((item) => item.id)).toEqual(['a', 'legacy', 't2'])
+    expect(repaired[1]?.toolCallId).toBe('c1')
+    expect(repaired[2]?.toolCallId).toBe('c2')
   })
 })
 

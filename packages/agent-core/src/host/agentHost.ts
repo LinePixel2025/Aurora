@@ -64,6 +64,12 @@ export interface LoadedImage {
   image?: LlmImageInput
 }
 
+/** 显式指定模型（v46，docs/06 §19.6）：子代理配置里选定的 `(providerId, model)` */
+export interface ProviderModelTarget {
+  providerId: string
+  model: string
+}
+
 export interface AgentProviderFactory {
   /**
    * 每次请求即时构造（保证设置页改 Key 后立即生效）。
@@ -76,8 +82,17 @@ export interface AgentProviderFactory {
    * 构造；未覆盖 / 覆盖失效（provider 已删）时回落全局档 —— 回落由装配层的实现负责，
    * 内核只传 id。**刻意是同步的**：调用点在 `send()` 的 `E_BUSY` 检查与 `active.set` 之间，
    * 那里不能出现 await（否则防双跑守卫失效）。缺省不传 = 全局档，与从前逐字一致。
+   *
+   * `model`（v46，docs/06 §19.6 子代理独立模型）：**优先级最高的显式目标**，
+   * 用于「这个子代理固定用这个模型」。不可用（provider 已删 / 未配 Key / 官方模型下线）
+   * 时由装配层回落会话 / 全局档并记日志，**不把整次请求打挂** —— 子代理是可选增强，
+   * 配置漂移不该让一次调研直接失败；回落事实由 `task` 工具比对实际模型后写进结果与快照。
    */
-  create(options?: { allowFallback?: boolean; sessionId?: string }): ProviderConfig | undefined
+  create(options?: {
+    allowFallback?: boolean
+    sessionId?: string
+    model?: ProviderModelTarget
+  }): ProviderConfig | undefined
 }
 
 /**

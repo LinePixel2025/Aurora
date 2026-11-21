@@ -14,6 +14,7 @@ import {
   type ConfirmDecision,
   type LoopProvider,
   type ProviderConfig,
+  type ProviderModelTarget,
   type SessionModelOverride,
 } from '@aurora/agent-core'
 import { createLlmProvider } from './llm-provider.js'
@@ -443,8 +444,31 @@ export function createProviderFactory(
     create(createOptions?: {
       allowFallback?: boolean
       sessionId?: string
+      model?: ProviderModelTarget
     }): ProviderConfig | undefined {
       const llm: LlmSettings = settings.get().llm
+      // 子代理的固定模型（v46，docs/06 §19.6）：**优先级最高**的显式目标。
+      // 不可用（provider 已删 / model 空 / 未配 Key / 官方模型下线）时**回落**会话 / 全局档，
+      // 不把整次派生打挂：配置漂移不该让一次调研直接失败，回落事实由 `task` 工具比对后写进结果。
+      const explicit = normalizeModelTarget(createOptions?.model)
+      if (explicit !== undefined) {
+        const explicitConfig: LlmProviderConfig | undefined = llm.providers[explicit.providerId]
+        if (explicitConfig !== undefined) {
+          const builtExplicit = build(
+            explicit.providerId,
+            { ...explicitConfig, model: explicit.model },
+            false,
+            createOptions?.sessionId,
+          )
+          if (builtExplicit !== undefined) return builtExplicit
+        }
+        logger.debug('子代理指定模型不可用，回落会话 / 全局档', {
+          ...(createOptions?.sessionId === undefined ? {} : { sessionId: createOptions.sessionId }),
+          providerId: explicit.providerId,
+          model: explicit.model,
+          providerExists: explicitConfig !== undefined,
+        })
+      }
       // 会话级覆盖（docs/06 §3）：判据收在 shared 的 `resolveSessionModel`（唯一口径，
       // 渲染层与 Center 网页端同用一份）—— 这里只负责「拿它算出来的 (pid, model) 去构造」，
       // 构造不出来（Key 没配 / baseUrl 空）再回落全局档，绝不把会话拖成 E_NO_MODEL。
@@ -550,6 +574,19 @@ function firstModelOf(provider: LlmProviderConfig): string {
     if (model !== '') return model
   }
   return provider.model.trim()
+}
+
+/**
+ * 子代理固定模型（v46）的归一：providerId 与 model 都非空才算"给了显式目标"，
+ * 任一为空（含 `{providerId:'', model:''}` = 跟随会话模型）返回 undefined。
+ */
+function normalizeModelTarget(
+  target: ProviderModelTarget | undefined,
+): ProviderModelTarget | undefined {
+  if (target === undefined) return undefined
+  const providerId = target.providerId.trim()
+  const model = target.model.trim()
+  return providerId === '' || model === '' ? undefined : { providerId, model }
 }
 
 /** 只有显式要求自愈时才回退：普通调用（如设置页「测试连接」）必须如实报告失败。 */

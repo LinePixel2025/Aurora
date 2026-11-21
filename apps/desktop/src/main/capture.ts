@@ -46,11 +46,13 @@ import { buildDocxFixture } from './capture-office-fixture.js'
 /**
  * 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致。
  *
- * BetaV2 六页 IA（spec §9）：8 页合并为 6 页 —— TtsPage 并入 voice（与 STT 同页）、
- * SkillsPage / McpPage 并入 agent。旧深链（`?page=tts|skills|mcp`）由渲染层的
- * `LEGACY_PAGE_ALIASES` 单向映射到新页，深链清单本身只保留新 id；
- * 别名映射由 `settings-legacy-tts-alias.png` 场景单独钉住（见 defaultCapturePlan）。
- * v0.2.0 起新增 Aurora Center 页共 7 页（docs/07 §2.5）。
+ * 2026-11 Agent 独立栏目：原 `agent` 单页拆成五页 —— `agent-tools`（电脑操控）/
+ * `agent-browser`（内置浏览器）/ `agent-subagents`（子代理）/ `agent-skills`（技能）/
+ * `agent-mcp`（MCP 服务器），左栏新增独立「Agent」分组。
+ * 旧深链（`?page=agent|skills|mcp`）由渲染层 `LEGACY_PAGE_ALIASES` 单向映射到新页，
+ * 深链清单本身只保留新 id；`?page=tts → voice` 与 `?page=agent → agent-tools`
+ * 分别由 `settings-legacy-tts-alias.png` / `settings-legacy-agent-alias.png` 场景钉住。
+ * Computer Use 页仍不进本循环，由 `settings-computer-use.png` 单列场景拍（避免同名重复）。
  */
 export const SETTINGS_PAGE_IDS = [
   'general',
@@ -61,7 +63,12 @@ export const SETTINGS_PAGE_IDS = [
   'notifications',
   'llm',
   'voice',
-  'agent',
+  // 2026-11：Agent 独立栏目（原 agent 单页拆分）
+  'agent-tools',
+  'agent-browser',
+  'agent-subagents',
+  'agent-skills',
+  'agent-mcp',
   'awareness',
   'center',
   'plugins',
@@ -1824,7 +1831,7 @@ export function captureMissingProjectRoot(userData: string): string {
 /**
  * 种一份**真实**的文件快照（v14，docs/06 §11.8），供快照相关场景断言
  * （`chat-snapshot-card-removed.png`：主界面右栏不再有快照卡；
- * `settings-snapshot-list.png`：设置页 Agent 页的备份列表）。
+ * `settings-snapshot-list.png`：设置页「Agent → 电脑操控」页的备份列表）。
  *
  * 走真实端口（`createNodeFileSnapshotPort` 的默认实现）而不是手写 `index.json`：
  * 手写的夹具只能证明"界面会渲染 json"，证明不了"写文件时真的会留底"。
@@ -2240,7 +2247,7 @@ export const SETTINGS_SESSIONS_CHECK = `(() => {
 })()`
 
 /**
- * "文件备份"卡移出主界面的探针（2026-09 UI 收拢，回滚 UI 迁设置页 Agent 页）。
+ * "文件备份"卡移出主界面的探针（2026-09 UI 收拢，回滚 UI 迁设置页「Agent → 电脑操控」页）。
  *
  * `prepare` 仍然种一份**真实**快照（见 `seedSnapshotFixture`）—— 反例现场必须有数据：
  * 即便备份存在，主界面右栏也不该再出现任何快照卡（`chat.snapshot-card`）。
@@ -2268,7 +2275,7 @@ export const CHAT_SNAPSHOT_CARD_REMOVED_CHECK = `(async () => {
 })()`
 
 /**
- * 设置页"文件备份"列表探针（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）。
+ * 设置页"文件备份"列表探针（2026-09，回滚 UI 自主界面右栏迁入「Agent → 电脑操控」页）。
  *
  * `prepare` 已种好一份真实快照（见 `seedSnapshotFixture`），这里断言：
  * 列表在、至少一条记录、条目的文件名与来源都渲染出来了，并且点一次"回滚"只停在
@@ -5086,6 +5093,119 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
     if (back !== null) back.click()
     await wait(250)
     result.restored = document.querySelector('[data-field="chat.subagent-page"]') === null
+    result.pass = result.pass === true && result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 「子代理侧栏面板」探针（v46，docs/07 §2.3）：从**对话里的子代理标识徽章**打开右栏查看器。
+ *
+ * 前置：主会话的助手消息里有两条 `task` 工具卡（seed 里带 `agentName`），且它们所在的
+ * 轨迹要展开才有行首徽章（折叠态 `.tool-row` 不渲染）。因此 act 先把含徽章的轨迹点开，
+ * 再点「Coder」那枚 → 断言右栏出现单例 `subagent` 标签与面板、对话有轮次 / 工具行、
+ * 容器只读；随后点「Searcher」换成焦点，断言**标签数仍是 1**、标题跟着换 —— 这两条一起
+ * 钉住"查看器只换焦点、不刷标签"的口径。
+ *
+ * 收尾：关掉该标签（后续场景按初始四标签集断言）。
+ */
+export const CHAT_SUBAGENT_PANEL_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    // 展开所有折叠的轨迹，直到徽章出现（不知道 task 卡在哪个请求分组里）
+    const traces = Array.from(document.querySelectorAll('.trace'))
+    for (const trace of traces) {
+      if (document.querySelector('[data-action="chat.subagent-open-panel"]') !== null) break
+      if (trace.classList.contains('open') === false) {
+        const head = trace.querySelector('.trace-head')
+        if (head !== null) head.click()
+        await wait(250)
+      }
+    }
+    const chips = Array.from(document.querySelectorAll('[data-action="chat.subagent-open-panel"]'))
+    if (chips.length === 0) return { clicked: false, reason: 'no subagent chip' }
+    const coder =
+      chips.find((chip) => (chip.textContent || '').includes('Coder')) ?? chips[0]
+    coder.click()
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (document.querySelector('[data-field="chat.subagent-panel"]') !== null) break
+      await wait(50)
+    }
+    await wait(250)
+    return { clicked: true, chips: chips.length }
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_SUBAGENT_PANEL_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    // 单例判据按**唯一 tab id** 算：「data-tab-kind」会在「被折叠标签」菜单里再出现一次
+    // （菜单 v-show 常驻 DOM），直接数元素会把同一枚标签数成两个。
+    const subagentIds = () =>
+      Array.from(new Set(
+        Array.from(document.querySelectorAll('[data-tab-id]'))
+          .map((el) => el.getAttribute('data-tab-id') || '')
+          .filter((id) => id === 'subagent' || id.indexOf('subagent-') === 0),
+      ))
+    const panel = document.querySelector('[data-field="chat.subagent-panel"]')
+    const titleEl = () => document.querySelector('[data-field="chat.subagent-panel-title"]')
+    const modelEl = document.querySelector('[data-field="chat.subagent-panel-model"]')
+    const conv = document.querySelector(
+      '[data-field="chat.subagent-panel"] [data-field="chat.subagent-conversation"]',
+    )
+    const result = {
+      panel: panel !== null,
+      tabs: subagentIds().length,
+      title: titleEl() === null ? '' : (titleEl().textContent || '').trim(),
+      model: modelEl === null ? '' : (modelEl.textContent || '').trim(),
+      turns: count('[data-field="chat.subagent-panel"] .conv-turn'),
+      tools: count('[data-field="chat.subagent-panel"] .conv-tool'),
+      readonly:
+        conv === null
+          ? false
+          : conv.querySelector('textarea, input, [contenteditable="true"]') === null,
+    }
+    // 单例 + 换焦点：点另一枚标识，标签不该变多、标题应切到另一个子代理
+    const chips = Array.from(document.querySelectorAll('[data-action="chat.subagent-open-panel"]'))
+    if (chips.length >= 2) {
+      const other =
+        chips.find((chip) => (chip.textContent || '').includes('Searcher')) ?? chips[1]
+      other.click()
+      await wait(400)
+    }
+    result.switchedTitle = titleEl() === null ? '' : (titleEl().textContent || '').trim()
+    result.tabsAfter = subagentIds().length
+    result.tabIds = subagentIds()
+    result.pass =
+      result.panel === true &&
+      result.tabs === 1 &&
+      result.title.includes('Coder') &&
+      result.model.includes('deepseek') &&
+      result.turns >= 3 &&
+      result.tools >= 2 &&
+      result.readonly === true &&
+      result.tabsAfter === 1 &&
+      result.switchedTitle.includes('Searcher')
+    // 收尾：关掉子代理标签（关闭按钮在悬停 / 激活时显形，「.click()」与可见性无关），
+    // 再把「上下文」标签切回激活态 —— 关闭会按浏览器口径激活左邻（这里是浏览器），
+    // 而后续场景（ClassIsland 卡片 / 右栏任务面板）都假设上下文标签在前台。
+    // 注意：标签被折叠时它在＋N 菜单里（同一 data-field），因此**不限定 .ctx-tab-list**。
+    const close = document.querySelector('[data-field="chat.ctx-tab-close-subagent"]')
+    if (close !== null) close.click()
+    await wait(250)
+    const contextTab = document.querySelector('[data-field="chat.ctx-tab-context"]')
+    if (contextTab !== null) contextTab.click()
+    await wait(350)
+    // 点完之后**重新查**：折叠 / 展开会让标签在列表与＋N 菜单之间搬家，旧引用会变成游离节点。
+    const contextActive =
+      document.querySelector('[data-field="chat.ctx-tab-context"].active') !== null
+    result.restored =
+      document.querySelector('[data-field="chat.subagent-panel"]') === null && contextActive
     result.pass = result.pass === true && result.restored === true
     return result
   } catch (error) {
@@ -11140,7 +11260,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     const projectsEmpty = emptyStates.indexOf('projects.list') !== -1
     // 本页**预期**会出现的 data-empty：只剩"提示条停用"那一条（项目区组已于 2026-09-30
     // 迁"会话管理"页，它的空态不在这页）。
-    // 其余任何空态出现都是回归（照 SETTINGS_AGENT_FIELDS_SCRIPT 的白名单口径）。
+    // 其余任何空态出现都是回归（照 SETTINGS_AGENT_TOOLS_FIELDS_SCRIPT 的白名单口径）。
     // ⚠️ 这里曾留下一行多余的")"（删项目白名单时的残渣）：整段探针字符串是 template
     // literal，语法错**不经过 tsc**，症状是运行时 Script failed to execute、
     // 而 pnpm typecheck / pnpm test 全绿（capture.probe-strings.test.ts 的第一条只查
@@ -11194,39 +11314,26 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * "Agent 设置"（原"智能与工具"）设置页门控探针（docs/08 §6.1、step 5；BetaV2 六页 IA）。
+ * "电脑操控"设置页门控探针（docs/07 §2.5 / §5.3、docs/08 §6.1）。
+ *
+ * 2026-11 Agent 独立栏目：原「Agent 设置」页拆成五页，本脚本只守 `agent-tools`
+ * （工具 / 快照 / 循环 + 只读档摘要）。技能 / MCP / 子代理 / 内置浏览器各有自己的探针，
+ * 这里额外断言它们的字段**不**出现在本页（拆页后串页 = 用户以为配置丢了）。
  *
  * 与 `SETTINGS_FIELDS_SCRIPT` 同一套路：`data-field` 计数 + `data-empty` 列表，
- * 但这里要额外读**总开关的实际状态**——`agent.tools.enabled` 为 false 时三个分栏控件
- * 本来就该整块消失（只剩总开关与工作目录两个常显字段）。
+ * 但这里要额外读**总开关的实际状态**——`agent.tools.enabled` 为 false 时终端 / 文件 /
+ * 检索 / 打开四个分栏本来就该整块消失（只剩总开关与工作目录两个常显字段）。
  *
- * ⚠️ BetaV2 变更（spec §9）：技能页与 MCP 页并入本页，"空配置下 emptyStates 为空"的旧断言
- * 不再成立 —— MCP 无服务器时整页**必然**多出 `data-empty="mcp.servers"`（空状态卡整块替换
- * 列表），技能一个都没发现时还会有 `data-empty="skills.disabled"`。所以断言改成：
- * 这两个**预期**空状态允许出现（MCP 必须二选一：空状态或服务器行），
- * 之外的任何 `data-empty` 都算回归（比如 agent.tools.* 的分栏空态在总开关开启时不该出现）。
+ * 本页区组已改为常显（`group-head.static`），不再需要先点开折叠体。
  *
- * ⚠️ 2026-09 收拢轮（docs/07 §2.5）：技能与 MCP 区组**默认收起**，折叠体是 v-if 不渲染 ——
- * 上面的锚点与 `data-empty` 在收起态不在 DOM，直接计数会全 0、探针假 FAIL。所以本脚本改成
- * **async IIFE**：先点开两组（`[data-group]` 组锚点 → `.group-head`），等 Vue 渲染 +
- * collapse 动画（max-height 过渡）走完，再做全部计数与断言。`executeJavaScript` 会 await
- * 这里返回的 Promise（captureWindows 的 check 调用点无需改动）；点击发生在截图**之后**，
- * `settings-agent.png` 拍到的仍是默认收起态。工具组默认展开，无需处理。
- *
- * ⚠️ 2026-09 step 5：终端栏下新增"免确认命令模式"列表（`agent.tools.terminal.allowPatterns`，
- * v12）。探针只数**容器**（`allowPatternsFields === 1`）—— 列表行与输入框都在容器内部且不带
- * 同前缀的 `data-field`，所以这个数在空列表 / 非空列表下都恒为 1；列表的空状态用的是普通
- * 文案元素（**不是** `data-empty`），否则本页会多出一块 `unexpected` 直接 FAIL。
+ * 终端栏下「免确认命令模式」列表（`agent.tools.terminal.allowPatterns`，v12）：
+ * 探针只数**容器**（`allowPatternsFields === 1`）—— 列表行与输入框都在容器内部且不带
+ * 同前缀的 `data-field`，所以这个数在空列表 / 非空列表下都恒为 1；列表的空状态用的是
+ * 普通文案元素（**不是** `data-empty`），否则本页会多出一块 `unexpected` 直接 FAIL。
  */
-export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
+export const SETTINGS_AGENT_TOOLS_FIELDS_SCRIPT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    for (const group of ['skills', 'mcp']) {
-      const head = document.querySelector('[data-group="' + group + '"] .group-head')
-      if (head !== null && head.getAttribute('aria-expanded') === 'false') head.click()
-    }
-    // 等两组的 v-if 渲染 + collapse 折叠动画走完（动画是 max-height 过渡，见 theme.css）
-    await wait(400)
     const count = (selector) => document.querySelectorAll(selector).length
     const toggle = document.querySelector('[data-field="agent.tools.enabled"] input[type="checkbox"]')
     const enabled = toggle === null ? null : toggle.checked
@@ -11235,37 +11342,25 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
     const filesFields = count('[data-field^="agent.tools.files"]')
     const searchFields = count('[data-field^="agent.tools.search"]')
     const openFields = count('[data-field^="agent.tools.open"]')
-    // 免确认命令模式容器（v12，docs/06 §11.7）：**恰好一个** ——
-    // 列表行与输入框都在它内部，都**不带**这个前缀的 data-field，所以这里永远该是 1。
+    // 免确认命令模式容器（v12，docs/06 §11.7）：恰好一个
     const allowPatternsFields = count('[data-field^="agent.tools.terminal.allowPatterns"]')
+    // v14 写前快照：四个字段常显（enabled=false 时三块换成 data-empty="agent.snapshots"）
+    const snapshotFields = count('[data-field^="agent.snapshots."]')
+    // v15 新增、v34 收窄：Agent 循环字段常显（不跟 agent.tools.enabled 门控）
+    const loopFields = count('[data-field^="agent.loop."]')
+    // 拆页隔离：这两个前缀只属于各自页面
+    const browserFields = count('[data-field^="agent.browser."]')
+    const subagentFields = count('[data-field^="agent.subagents."]')
     const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
       el.getAttribute('data-empty'),
     )
-    // 合并区组的预期空状态：MCP 无服务器（空状态）或有服务器（行容器）二选一；
-    // 技能同理（内置技能发现不到才会有 skills.disabled 空状态）
-    const mcpEmpty = emptyStates.indexOf('mcp.servers') !== -1
-    const mcpRows = count('[data-field^="mcp.servers."]')
-    const skillsEmpty = emptyStates.indexOf('skills.disabled') !== -1
-    const skillsRows = count('[data-field^="skills.disabled."]')
-    // v14 写前快照（docs/06 §11.8）：四个字段常显（enabled=false 时三块换成 data-empty="agent.snapshots"）
-    const snapshotFields = count('[data-field^="agent.snapshots."]')
     const snapshotEmpty = emptyStates.indexOf('agent.snapshots') !== -1
-    // v15 新增、v34 收窄：Agent 循环字段常显（不跟 agent.tools.enabled 门控）
-    const loopFields = count('[data-field^="agent.loop."]')
-    const unexpected = emptyStates.filter(
-      (name) =>
-        name !== 'mcp.servers' &&
-        name !== 'skills.disabled' &&
-        // 本页预期空态：关掉文件备份时那一条（默认开启，通常不出现）
-        name !== 'agent.snapshots',
-    )
+    const unexpected = emptyStates.filter((name) => name !== 'agent.snapshots')
     const activeNav = document.querySelector('.nav-item.active')
     const page = activeNav === null ? 'unknown' : (activeNav.textContent || '').trim()
 
     // 只读档摘要（v13，docs/06 §11.2）：切到 readonly 后，区组摘要必须说"仅注册只读工具"，
-    // 且生效工具名集合里不能出现写 / 执行类。这一条是"界面摘要不骗人"的运行时证据 ——
-    // 设置页的摘要与实际注册表是两套代码，只断言主进程注册表的话，摘要写错也没人发现。
-    // 必须走 settings:update（SettingsStore 启动即缓存），收尾还原成出厂默认档（auto）。
+    // 且生效工具名集合里不能出现写 / 执行类。这条是"界面摘要不骗人"的运行时证据。
     let readonlySummary = null
     let readonlyTools = null
     let readonlyRestored = null
@@ -11277,8 +11372,6 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       await wait(400)
       const bodyText = (document.body.textContent || '').replace(/\\s+/g, ' ')
       readonlySummary = bodyText.indexOf('只读模式：仅注册只读工具（不含写入与命令）') !== -1
-      // 只断言"当前生效工具"那一块列出的名字：页面上别处仍会提到写类工具（各个工具箱的标题、
-      // 门控说明），拿整页文本判定会把正常的说明文字当成违规。
       const activeBlock = Array.from(document.querySelectorAll('.sub')).find((el) => {
         const title = el.querySelector('.sub-title')
         return title !== null && (title.textContent || '').indexOf('当前生效工具') !== -1
@@ -11323,25 +11416,19 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       filesFields,
       searchFields,
       openFields,
-      mcpEmpty,
-      mcpRows,
-      skillsEmpty,
-      skillsRows,
+      snapshotFields,
+      snapshotEmpty,
+      loopFields,
+      browserFields,
+      subagentFields,
       unexpected,
       emptyStates,
       readonlySummary,
       readonlyTools,
       readonlyRestored,
-      snapshotFields,
-      snapshotEmpty,
-      loopFields,
-      // 总开关必须在（否则用户再也开不回来）；开着时四个分栏的详情字段都得在
-      // （终端 / 文件 / 文件检索 / 打开），MCP 区组必须给出"空状态或行"之一，
-      // 且不得出现两块预期空态之外的 data-empty。
-      // v12 起终端栏下多一个"免确认命令模式"容器（allowPatternsFields）——
-      // 它挂在终端卡片之后并跟随总开关渲染，所以断言写进 enabled !== true 的那一支；
-      // ⚠️ terminalFields 刻意**不写死数值**（> 0 即可）：这个子前缀下还会继续加字段，
-      // 写死数值会让探针在下一次扩展时无谓变红，而它要守的只是"终端栏的详情字段在不在"。
+      // 总开关必须在（否则用户再也开不回来）；开着时四个分栏的详情字段都得在。
+      // 文件备份：开着时四个字段都在，关掉时是空态（两种形态都算过，不写死数字）。
+      // 循环字段常显；拆页隔离要求浏览器 / 子代理字段为 0。
       pass:
         toggle !== null &&
         (enabled !== true ||
@@ -11350,16 +11437,171 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
             filesFields > 0 &&
             searchFields >= 2 &&
             openFields > 0 &&
-            (mcpEmpty || mcpRows > 0) &&
             unexpected.length === 0)) &&
         readonlySummary === true &&
         readonlyTools === true &&
         readonlyRestored === true &&
-        // 文件备份区组：开着时四个字段都在，关掉时是空态（两种形态都算过，不写死数字）
         (snapshotFields >= 4 || snapshotEmpty === true) &&
-        // v34：Agent 循环只剩「同轮并行上限」一项，且常显（关掉工具总开关也必须在）
         loopFields >= 1 &&
-        unexpected.length === 0,
+        browserFields === 0 &&
+        subagentFields === 0,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * "内置浏览器"设置页门控探针（docs/06 §27、docs/07 §2.5）。
+ *
+ * 六个 `agent.browser.*` 字段必须各恰好一个（关总开关也仍渲染，可先配置后开启）；
+ * 本页不应出现任何 `data-empty`。
+ */
+export const SETTINGS_AGENT_BROWSER_FIELDS_SCRIPT = `(() => {
+  try {
+    const fields = [
+      'agent.browser.enabled',
+      'agent.browser.maxSessions',
+      'agent.browser.idleMinutes',
+      'agent.browser.allowPrivateNetwork',
+      'agent.browser.compatUserAgent',
+      'agent.browser.allowMedia',
+    ]
+    const missing = fields.filter(
+      (name) => document.querySelector('[data-field="' + name + '"]') === null,
+    )
+    const empties = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const title = (((document.querySelector('.page-title') || {}).textContent || '')).trim()
+    return {
+      pageTitle: title,
+      missing,
+      empties,
+      pass: missing.length === 0 && empties.length === 0 && title.indexOf('内置浏览器') !== -1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * "子代理"设置页门控探针（v46，docs/06 §19.6、docs/07 §2.3）。
+ *
+ * 断区组在 + 至少两行预设 + 每行至少 5 个字段 + 区块真的在视口里（页面顶部）。
+ * 不写死行数 / 字段总数：用户可增删自定义子代理。
+ */
+export const SETTINGS_AGENT_SUBAGENTS_FIELDS_SCRIPT = `(() => {
+  try {
+    const group = document.querySelector('[data-field="agent.subagents"]')
+    const rows = document.querySelectorAll(
+      '[data-field^="agent.subagents."][data-field$=".enabled"]',
+    )
+    const fields = document.querySelectorAll('[data-field^="agent.subagents."]')
+    const empties = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const rect = group === null ? null : group.getBoundingClientRect()
+    const visible =
+      rect !== null && rect.height > 0 && rect.top < window.innerHeight && rect.bottom > 0
+    const title = (((document.querySelector('.page-title') || {}).textContent || '')).trim()
+    return {
+      pageTitle: title,
+      group: group !== null,
+      rows: rows.length,
+      fields: fields.length,
+      visible,
+      empties,
+      pass:
+        group !== null &&
+        rows.length >= 2 &&
+        fields.length >= rows.length * 5 &&
+        visible &&
+        empties.length === 0 &&
+        title.indexOf('子代理') !== -1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * "技能"设置页门控探针（docs/06 §11、docs/07 §2.5）。
+ *
+ * `skills.userDir` 常显；技能清单二选一（发现不到 → `data-empty="skills.disabled"`，
+ * 发现到 → 至少一行 `skills.disabled.<name>` 启用 checkbox）。区组已改为常显，
+ * 不需要先点开折叠体。
+ */
+export const SETTINGS_AGENT_SKILLS_FIELDS_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const userDir = count('[data-field="skills.userDir"]')
+    const rows = count('[data-field^="skills.disabled."]')
+    const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const skillsEmpty = emptyStates.indexOf('skills.disabled') !== -1
+    const unexpected = emptyStates.filter((name) => name !== 'skills.disabled')
+    const title = (((document.querySelector('.page-title') || {}).textContent || '')).trim()
+    return {
+      pageTitle: title,
+      userDir,
+      rows,
+      skillsEmpty,
+      unexpected,
+      pass:
+        userDir === 1 &&
+        (skillsEmpty || rows > 0) &&
+        unexpected.length === 0 &&
+        title.indexOf('技能') !== -1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * "MCP 服务器"设置页门控探针（docs/06 §7、docs/07 §2.5）。
+ *
+ * 服务器清单二选一（未配置 → `data-empty="mcp.servers"`，已配置 → 至少一行
+ * `mcp.servers.<name>`）；区组常显后不再需要展开折叠体。
+ */
+export const SETTINGS_AGENT_MCP_FIELDS_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const rows = count('[data-field^="mcp.servers."]')
+    const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const mcpEmpty = emptyStates.indexOf('mcp.servers') !== -1
+    const unexpected = emptyStates.filter((name) => name !== 'mcp.servers')
+    const title = (((document.querySelector('.page-title') || {}).textContent || '')).trim()
+    return {
+      pageTitle: title,
+      rows,
+      mcpEmpty,
+      unexpected,
+      pass: (mcpEmpty || rows > 0) && unexpected.length === 0 && title.indexOf('MCP') !== -1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 旧深链 `?page=agent` 的别名探针（2026-11 Agent 拆分）。
+ *
+ * `agent` 不再是页面 id，必须经渲染层 `LEGACY_PAGE_ALIASES` 落到 `agent-tools`
+ * （电脑操控）：页面标题与 `agent.tools.enabled` 总开关都要在。
+ */
+export const SETTINGS_LEGACY_AGENT_ALIAS_SCRIPT = `(() => {
+  try {
+    const title = (((document.querySelector('.page-title') || {}).textContent || '')).trim()
+    const toggle = document.querySelectorAll('[data-field="agent.tools.enabled"]').length
+    return {
+      pageTitle: title,
+      toolsToggle: toggle,
+      pass: toggle === 1 && title.indexOf('电脑操控') !== -1,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -12095,10 +12337,10 @@ export const SETTINGS_MODES_CLASSROOM_SCRIPT = `(() => {
 })()`
 
 /**
- * 设置页旧深链别名探针（BetaV2）：`?page=tts` 必须经渲染层 `LEGACY_PAGE_ALIASES`
- * 落到合并后的"语音"页 —— TTS 与 STT 两个区组的常显开关都要在。
- * 深链清单（`SETTINGS_PAGE_IDS`）只保留新 id，旧链接的兼容行为由本场景单独钉住；
- * `skills|mcp → agent` 走同一张映射表，机制验证一条即可代表。
+ * 设置页旧深链别名探针（BetaV2 / 2026-11）：`?page=tts` 必须经渲染层 `LEGACY_PAGE_ALIASES`
+ * 落到「语音」页 —— TTS 与 STT 两个区组的常显开关都要在。
+ * 深链清单（`SETTINGS_PAGE_IDS`）只保留新 id；`agent / skills / mcp` 走同一张映射表，
+ * 机制由 `settings-legacy-agent-alias.png` 单独钉住（`?page=agent → agent-tools`）。
  */
 export const SETTINGS_LEGACY_ALIAS_SCRIPT = `(() => {
   try {
@@ -13804,11 +14046,11 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
  * 设置页"安全区"巡检（`settings-overflow.png`，2026-09-29，docs/07 §5.4）。
  *
  * 用户反馈"文字与组件位置没协调好、许多文字冲出组件"时，此前的几何护栏只覆盖了
- * 自动化页（卡片 / 磁贴内不探出边界）。设置页有 9 个页面、几十个区组，是最可能出现
+ * 自动化页（卡片 / 磁贴内不探出边界）。设置页有 16 个页面、几十个区组，是最可能出现
  * "长标签 + 窄控件"的场合，因此单列一条**横向溢出**巡检（纵向滚动是正常行为，不算）：
  * act 依次点开左侧每一个导航项、量当前页内容区（`main.content`）内**每个元素**的矩形，
  * 把探出内容区左右边界超过 1px 的节点记下来；check 断言所有页面都是 0，
- * 且**页数校验**（少于 7 页说明导航没点全，防止"巡检了个寂寞"仍判 PASS）。
+ * 且**页数校验**（少于 15 页说明导航没点全，防止"巡检了个寂寞"仍判 PASS；16 页为当前全量）。
  */
 export const SETTINGS_OVERFLOW_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -13886,7 +14128,7 @@ export const SETTINGS_OVERFLOW_CHECK = `(() => {
       labels: report.map((item) => item.label),
       bad,
       blank,
-      pass: report.length >= 9 && bad.length === 0 && blank.length === 0,
+      pass: report.length >= 15 && bad.length === 0 && blank.length === 0,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -14675,6 +14917,11 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
               startedAt: Date.parse(now),
               endedAt: Date.parse(now) + 4200,
               toolCalls: 2,
+              // v46：具名子代理 + 独立模型 / 三档实际授予（子代理页与侧栏面板的徽章证据）
+              agentId: 'coder',
+              agentName: 'Coder',
+              access: 'write',
+              model: { providerId: 'deepseek', model: 'deepseek-chat' },
               permission: 'write',
               tools: ['edit_file', 'list_dir', 'read_file', 'write_file'],
               steps: [
@@ -14758,6 +15005,11 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
               startedAt: Date.parse(now) + 5_000,
               endedAt: Date.parse(now) + 6_500,
               toolCalls: 1,
+              // v46：只读预设（Searcher）—— 与上一条并排展示「可读写 / 只读」两种徽章
+              agentId: 'searcher',
+              agentName: 'Searcher',
+              access: 'read',
+              model: { providerId: 'deepseek', model: 'deepseek-chat' },
               permission: 'read',
               tools: ['grep', 'read_file'],
               steps: [
@@ -15555,7 +15807,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_SESSION_GROUPS_ACT,
       check: CHAT_SESSION_GROUPS_CHECK,
     },
-    // "文件备份"卡移出主界面（2026-09，回滚 UI 迁设置页 Agent 页）：
+    // "文件备份"卡移出主界面（2026-09，回滚 UI 迁设置页「Agent → 电脑操控」页）：
     // prepare 仍种一份真实快照（反例现场必须有数据）并 reload，check 断言右栏
     // **不再出现**快照卡（chat.snapshot-card / chat.snapshot-restore 均为 0）；
     // 正例断言（列表 + 两段式回滚）见 settings-snapshot-list.png 场景。
@@ -16093,6 +16345,14 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_SUBAGENT_OPEN_ACT,
       check: CHAT_SUBAGENT_OPEN_CHECK,
     },
+    // 子代理侧栏查看器（v46，docs/07 §2.3）：从对话里的标识徽章打开右栏单例标签，
+    // 断言面板 / 对话轮次 / 只读，并验证"再点另一枚只换焦点、不刷标签"。
+    {
+      name: 'chat',
+      file: 'chat-subagent-panel.png',
+      act: CHAT_SUBAGENT_PANEL_ACT,
+      check: CHAT_SUBAGENT_PANEL_CHECK,
+    },
     // Agent 提问卡片（"ask_user"，docs/06 §21）：由 index.ts 注册的 spawner 发起一次真实提问，
     // act 选中第二个选项 → 截图 → check 点"回答"并断言卡片收起 → nativeCheck 断言回执内容。
     {
@@ -16364,6 +16624,24 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     },
     check: APPEARANCE_GLASS_OFF_CHECK,
   })
+  /**
+   * 每页的门控探针（`SETTINGS_PAGE_IDS` 循环用）：没配的页只截图、不计断言。
+   * 2026-11 Agent 拆分后由五条独立脚本接管五个新页面，避免一个探针里混五个页面的锚点。
+   */
+  const settingsPageChecks: Partial<Record<SettingsPageId, string>> = {
+    general: SETTINGS_FIELDS_SCRIPT,
+    modes: SETTINGS_MODES_CLASSROOM_SCRIPT,
+    llm: SETTINGS_LLM_FIELDS_SCRIPT,
+    voice: SETTINGS_VOICE_FIELDS_SCRIPT,
+    center: SETTINGS_CENTER_FIELDS_SCRIPT,
+    notifications: SETTINGS_NOTIFICATIONS_CHECK,
+    'agent-tools': SETTINGS_AGENT_TOOLS_FIELDS_SCRIPT,
+    'agent-browser': SETTINGS_AGENT_BROWSER_FIELDS_SCRIPT,
+    'agent-subagents': SETTINGS_AGENT_SUBAGENTS_FIELDS_SCRIPT,
+    'agent-skills': SETTINGS_AGENT_SKILLS_FIELDS_SCRIPT,
+    'agent-mcp': SETTINGS_AGENT_MCP_FIELDS_SCRIPT,
+    awareness: SETTINGS_AWARENESS_USAGE_CHECK,
+  }
   for (const page of SETTINGS_PAGE_IDS) {
     plan.push({
       name: 'settings',
@@ -16376,9 +16654,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       // 前置 act 展开"课表"分组（默认收起，否则课前提醒字段不在 DOM）；
       // "AI 模型"页（BetaV2）：对话展示开关 + 生图模型区组；
       // "语音"页（BetaV2 合并 TTS + STT）：两个区组各自的常显字段与列表空态二选一；
-      // "Agent 设置"页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT；
-      // 技能 / MCP 区组默认收起（docs/07 §2.5），探针在 check 里自己先展开再计数（async），
-      // 所以这里**不需要**像 modes 页那样配 act —— PNG 拍到的正是默认收起态。
+      // Agent 五页（2026-11 拆分）：各页探针见 `settingsPageChecks`；区组均为常显，
+      // 不需要像 modes 页那样配 act。
       // "AI 模型"页也配一个拍图前置（step-06）：把页面**底部**的生图区组滚进视口 ——
       // 设置窗是固定高度 + 内部滚动，不滚的话这张 PNG 只拍得到页头，而
       // "生图空状态里有可点的『+ 添加生图模型』按钮"正是要在这张图上人工核对的一条。
@@ -16390,33 +16667,23 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
             : page === 'awareness'
               ? SETTINGS_AWARENESS_SCROLL_ACT
               : undefined,
-      check:
-        page === 'general'
-          ? SETTINGS_FIELDS_SCRIPT
-          : page === 'modes'
-            ? SETTINGS_MODES_CLASSROOM_SCRIPT
-            : page === 'llm'
-              ? SETTINGS_LLM_FIELDS_SCRIPT
-              : page === 'voice'
-                ? SETTINGS_VOICE_FIELDS_SCRIPT
-                : page === 'center'
-                  ? SETTINGS_CENTER_FIELDS_SCRIPT
-                  : page === 'notifications'
-                    ? SETTINGS_NOTIFICATIONS_CHECK
-                    : page === 'agent'
-                      ? SETTINGS_AGENT_FIELDS_SCRIPT
-                      : page === 'awareness'
-                        ? SETTINGS_AWARENESS_USAGE_CHECK
-                        : undefined,
+      check: settingsPageChecks[page],
     })
   }
-  // 旧深链别名（BetaV2）："?page=tts" 应映射到"语音"页（TTS + STT 都在）；
-  // skills|mcp → agent 走同一张 LEGACY_PAGE_ALIASES 映射表，机制由本场景代表验证。
+  // 旧深链别名（BetaV2）："?page=tts" 应映射到"语音"页（TTS + STT 都在）。
+  // `agent / skills / mcp` 走同一张 `LEGACY_PAGE_ALIASES` 映射表，机制代表验证；
+  // `?page=agent`（2026-11 拆分前的主页面 id）另拍一张，用标题与总开关钉住落点。
   plan.push({
     name: 'settings',
     file: 'settings-legacy-tts-alias.png',
     query: { page: 'tts' },
     check: SETTINGS_LEGACY_ALIAS_SCRIPT,
+  })
+  plan.push({
+    name: 'settings',
+    file: 'settings-legacy-agent-alias.png',
+    query: { page: 'agent' },
+    check: SETTINGS_LEGACY_AGENT_ALIAS_SCRIPT,
   })
   // 插件（P3，docs/14 §5）：已安装视图 + 市场占位。示例插件由 `runCapture` 预装；
   // 「已安装」页同时钉住主题选择区组与「安装插件包」入口在 DOM 里。
@@ -16559,18 +16826,19 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_SESSIONS_ACT,
     check: SETTINGS_SESSIONS_CHECK,
   })
-  // 设置页"文件备份"列表（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）：
-  // prepare 种一份真实快照（走真实端口 + flush，不是手写 json），随后**带 query 重载**
-  // 设置窗让 SnapshotList 重新挂载并首读（列表只在挂载 / 手动刷新时拉取）；
+  // 设置页"文件备份"列表（2026-09，回滚 UI 自主界面右栏迁入 Agent 页；
+  // 2026-11 Agent 拆页后落在「电脑操控」页）：prepare 种一份真实快照
+  // （走真实端口 + flush，不是手写 json），随后**带 query 重载**设置窗让
+  // SnapshotList 重新挂载并首读（列表只在挂载 / 手动刷新时拉取）；
   // act 点一次"回滚"（两段式的第一下），check 断言列表在、有记录、来源文案、
   // 清理 / 刷新入口与待确认文案。
   plan.push({
     name: 'settings',
     file: 'settings-snapshot-list.png',
-    query: { page: 'agent' },
+    query: { page: 'agent-tools' },
     prepare: async () => {
       await seedSnapshotFixture(userData)
-      await manager.reload('settings', { page: 'agent' })
+      await manager.reload('settings', { page: 'agent-tools' })
     },
     act: SETTINGS_SNAPSHOT_LIST_ACT,
     check: SETTINGS_SNAPSHOT_LIST_CHECK,

@@ -515,7 +515,9 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
     `stepsDone 2→3`、`cursor 2→3`，会话里那条用户消息**仍只有一条**。
   - **明确未做**：**仍无 OS 级沙箱** —— 三档权限与项目根 realpath 前缀校验**不是**沙箱
     （没有作业对象 / 容器 / 受限令牌，`run_command` 仍是当前用户权限）；
-    子代理能力加强、上下文压缩修正**均未开始**（属第二批）；Code Mode 已删除（v45）。
+    子代理能力加强**已于 v46 落地**（自定义子代理 / 预设 Searcher·Coder / 独立模型 /
+    侧栏实时对话，见 [06 §19.6](./06-agent-core.md)）；上下文压缩修正**仍未开始**（属第二批）；
+    Code Mode 已删除（v45）。
     （**多模态输入与 Responses API 已于 2026-10-01 落地**，见下方「2026-10-01 多模态与 Responses API 轮」。）
     另需说明：上面「第二次启动」的续跑验证走的是**自测专用开关**
     `AURORA_SMOKE_WORKSPACE` + `AURORA_SMOKE_PHASE=resume` 拉起的两次启动，

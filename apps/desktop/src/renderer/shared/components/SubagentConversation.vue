@@ -27,7 +27,14 @@ import {
 } from '@aurora/shared/browser'
 import { toolIconOf } from '@aurora/shared/browser'
 
-const props = defineProps<{ snapshot: SubagentSnapshot }>()
+const props = defineProps<{
+  snapshot: SubagentSnapshot
+  /**
+   * 是否渲染顶部元信息行（权限 / 模型 / 可用工具）。
+   * 侧栏面板的头部已经给了同样的徽章，再渲染一遍就是同一段信息说两遍 —— 那里传 false。
+   */
+  showMeta?: boolean
+}>()
 
 /** 展开了结果正文的工具调用 id（默认收起：一眼看到"做了什么"，要看细节再点开） */
 const openedTools = ref<string[]>([])
@@ -51,6 +58,23 @@ const reportMessageId = computed(() => {
 
 const grantedTools = computed(() => props.snapshot.tools ?? [])
 
+/** 具名子代理的名字（v46；通用子代理 / 老快照为空串 = 不渲染名字徽章） */
+const agentName = computed(() => props.snapshot.agentName?.trim() ?? '')
+
+/** 实际模型（v46；老快照没有该字段 = 不渲染） */
+const modelLabel = computed(() => {
+  const model = props.snapshot.model
+  return model === undefined ? '' : `${model.providerId} · ${model.model}`
+})
+
+/** 权限档：`access` 优先（v46 三档），老快照按 `permission` 推断 */
+const accessLevel = computed(() => props.snapshot.access ?? props.snapshot.permission ?? 'read')
+
+const accessLabel = computed(() => {
+  const level = accessLevel.value
+  return level === 'execute' ? '可执行命令' : level === 'write' ? '可读写文件' : '只读'
+})
+
 function isToolOpen(id: string): boolean {
   return openedTools.value.includes(id)
 }
@@ -69,15 +93,26 @@ function stateLabel(state: SubagentTranscriptToolCall['state']): string {
 
 <template>
   <div class="conv" data-field="chat.subagent-conversation">
-    <div class="conv-meta">
-      <span class="conv-chip" :class="snapshot.permission === 'write' ? 'write' : 'read'">
+    <div v-if="props.showMeta !== false" class="conv-meta">
+      <span v-if="agentName !== ''" class="conv-name" data-field="chat.subagent-name">
+        <Bot :size="11" :stroke-width="1.8" aria-hidden="true" />
+        {{ agentName }}
+      </span>
+      <span
+        class="conv-chip"
+        :class="accessLevel === 'read' ? 'read' : 'write'"
+        data-field="chat.subagent-perm"
+      >
         <component
-          :is="snapshot.permission === 'write' ? FilePenLine : ShieldCheck"
+          :is="accessLevel === 'read' ? ShieldCheck : FilePenLine"
           :size="11"
           :stroke-width="1.8"
           aria-hidden="true"
         />
-        {{ snapshot.permission === 'write' ? '可读写文件' : '只读' }}
+        {{ accessLabel }}
+      </span>
+      <span v-if="modelLabel !== ''" class="tiny muted conv-model" data-field="chat.subagent-model">
+        {{ modelLabel }}
       </span>
       <span v-if="grantedTools.length > 0" class="tiny muted conv-tools">
         可用工具：{{ grantedTools.join('、') }}
@@ -220,6 +255,24 @@ function stateLabel(state: SubagentTranscriptToolCall['state']): string {
 .conv-tools {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* 具名子代理（v46）：名字徽章比权限 chip 更靠前，一眼知道是谁在干 */
+.conv-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+
+.conv-model {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conv-empty {

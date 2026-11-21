@@ -2110,6 +2110,20 @@ export interface SubagentSnapshot {
    * **可缺省**：老快照（该字段出现前持久化的）读出来是 undefined，一律按 `'read'` 显示。
    */
   permission?: 'read' | 'write'
+  /**
+   * 实际生效的工具权限档（v46，docs/06 §19.6）：`read` / `write` / `execute`。
+   *
+   * 比 `permission` 多一档 `execute`（含 `run_command`），且**按实际授予**落
+   * （只读档 / 未接确认链时降级）。老快照缺省：界面按 `permission` 推断，
+   * 老消费者继续读 `permission` 不受影响。
+   */
+  access?: 'read' | 'write' | 'execute'
+  /** 派发时使用的子代理定义 id（v46；通用子代理 / 老快照缺省） */
+  agentId?: string
+  /** 派发时的子代理展示名（v46；改名不影响在跑 / 历史运行，界面据此显示） */
+  agentName?: string
+  /** 实际使用的模型（v46；未指定 / 老快照缺省 = 跟随会话模型） */
+  model?: { providerId: string; model: string }
   /** 子代理实际拿到的工具名（过滤后的结果，供界面与排查对齐） */
   tools?: string[]
   /**

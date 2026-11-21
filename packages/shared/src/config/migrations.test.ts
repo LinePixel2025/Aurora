@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { CONFIG_VERSION, SETTINGS_READONLY_PREFIXES, SettingsSchema } from './schema.js'
+import {
+  CONFIG_VERSION,
+  SETTINGS_READONLY_PREFIXES,
+  SettingsSchema,
+  SubagentsSchema,
+} from './schema.js'
 import { MIGRATIONS, migrate, readVersion } from './migrations.js'
 import { createDefaultSettings } from './defaults.js'
 import { createMemoryLogger } from '../utils/logger.js'
@@ -1131,6 +1136,7 @@ describe('配置迁移链', () => {
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
         'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
+        'v45 → v46：v45 → v46：新增 agent.subagents（子代理定义 / 权限档 / 独立模型）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1188,6 +1194,7 @@ describe('配置迁移链', () => {
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
         'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
+        'v45 → v46：v45 → v46：新增 agent.subagents（子代理定义 / 权限档 / 独立模型）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1625,6 +1632,7 @@ describe('配置迁移链', () => {
         'v42 → v43：v42 → v43：tts.providers 各条目补 instructions / language（语气指令与合成语言）',
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
         'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
+        'v45 → v46：v45 → v46：新增 agent.subagents（子代理定义 / 权限档 / 独立模型）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2395,6 +2403,58 @@ describe('配置迁移链', () => {
     })
   })
 
+  describe('v45 → v46（新增 agent.subagents，docs/06 §19.6）', () => {
+    it('缺失时写入出厂预设（Searcher / Coder），已有 agent 字段原样保留', () => {
+      const outcome = migrate({
+        version: 45,
+        agent: { permissionMode: 'confirm' },
+      })
+      expect(outcome.applied.at(-1)).toContain('v45 → v46')
+      const agent = outcome.data['agent'] as Record<string, unknown>
+      expect(agent['permissionMode']).toBe('confirm')
+      const subagents = agent['subagents'] as Array<Record<string, unknown>>
+      expect(subagents.map((item) => item['id'])).toEqual(['searcher', 'coder'])
+      expect(subagents[0]).toMatchObject({ name: 'Searcher', access: 'read', builtin: true })
+      expect(subagents[1]).toMatchObject({ name: 'Coder', access: 'execute', builtin: true })
+      expect(subagents.every((item) => item['enabled'] === true)).toBe(true)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('用户已配置的子代理数组不被覆盖（幂等）', () => {
+      const custom = [
+        {
+          id: 'reviewer',
+          name: 'Reviewer',
+          description: '审代码',
+          instructions: '只看不写',
+          enabled: true,
+          access: 'read',
+          model: { providerId: '', model: '' },
+          builtin: false,
+        },
+      ]
+      const once = migrate({ version: 45, agent: { subagents: custom } })
+      expect((once.data['agent'] as Record<string, unknown>)['subagents']).toEqual(custom)
+      const twice = migrate({ ...once.data, version: 45 })
+      expect((twice.data['agent'] as Record<string, unknown>)['subagents']).toEqual(custom)
+    })
+
+    it('agent 分组缺失时不凭空造对象（交默认配置兜底）', () => {
+      const outcome = migrate({ version: 45 })
+      expect(outcome.data['agent']).toBeUndefined()
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('迁移结果能通过 Schema（预设字段自洽）', () => {
+      const outcome = migrate({ version: 45, agent: { permissionMode: 'auto' } })
+      const agent = outcome.data['agent'] as Record<string, unknown>
+      // 用 AgentSchema 级校验太重（还需要同层其它字段），这里只钉预设结构可被 SubagentSchema 解析。
+      const parsed = SubagentsSchema.parse(agent['subagents'])
+      expect(parsed).toHaveLength(2)
+      expect(parsed[1]?.id).toBe('coder')
+    })
+  })
+
   describe('v44 → v45（移除 Code Mode，docs/05）', () => {
     it('删 modes.code，并把 current=code 归一为 classroom', () => {
       const outcome = migrate({
@@ -2406,8 +2466,10 @@ describe('配置迁移链', () => {
           code: { guideCompleted: true },
         },
       })
-      expect(outcome.applied).toHaveLength(1)
+      // v45 → v46 会接着跑（本用例只钉 Code Mode 那一步的语义），因此这里是前两步。
+      expect(outcome.applied).toHaveLength(2)
       expect(outcome.applied[0]).toContain('v44 → v45')
+      expect(outcome.applied[1]).toContain('v45 → v46')
       const modes = outcome.data['modes'] as Record<string, unknown>
       expect(modes['current']).toBe('classroom')
       expect('code' in modes).toBe(false)

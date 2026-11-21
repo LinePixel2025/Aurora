@@ -307,6 +307,31 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
     // 同组 agent 的既有可写面不受牵连
     expect(port.writable('agent.tools.enabled').ok).toBe(true)
   })
+
+  it('agent.subagents 拒写（子代理的权限档 / 模型是授权边界，v46）', async () => {
+    const { store, port } = setup()
+    // 给自己加一个 execute 档子代理、或把它指向另一个模型，都等于绕过确认链自我扩权 ——
+    // 拒绝理由必须来自 shared 黑名单（不是端口那句泛化的「未知配置路径」）。
+    for (const path of [
+      'agent.subagents',
+      'agent.subagents.0.access',
+      'agent.subagents.0.model.model',
+      'agent.subagents.0.enabled',
+    ]) {
+      const check = port.writable(path)
+      expect(check.ok, path).toBe(false)
+      if (!check.ok) {
+        expect(check.reason, path).toContain('子代理')
+        expect(check.reason, path).not.toBe('未知配置路径')
+      }
+    }
+
+    const outcome = await port.write([{ path: 'agent.subagents.0.access', value: 'execute' }])
+    expect(outcome.ok).toBe(false)
+    expect(outcome.applied).toEqual([])
+    // 盘上的值一字未动；出厂预设仍是只读档
+    expect(store.get().agent.subagents[0]?.access).toBe('read')
+  })
 })
 
 /**

@@ -1,16 +1,16 @@
 <script setup lang="ts">
 /**
- * 技能区组（docs/08 §6）：展示内置 / 用户技能、启用状态与扫描结果。
- * 由原 `SkillsPage.vue` 整体迁入（BetaV2 8 → 6 页，spec §9），锚点与行为原样保留。
+ * 技能区组（docs/06 §11、docs/08 §6）。
  *
- * 2026-09 信息架构收拢（docs/07 §2.5）：默认**收起**（组锚点 `data-group="skills"`，
- * capture 探针先展开再计数）；组头摘要「已启用 x / 共 y」承载状态（收起也能看清）；
- * 技能表 4 列（名称 + 来源徽章 / 适用场景 / 脚本 / 启用），「状态」列与表头双徽章删除
- * （启用 checkbox 即状态）。操作回执不再本地渲染 Toast，统一经 `notify` 事件上抛给
- * 页级 AppToast（本区组默认收起，常驻 Toast 也不可见，更没有本地渲染的理由）。
+ * 2026-11 Agent 独立栏目：原「Agent 设置」页里的技能折叠区组迁入独立「技能」页，
+ * 因此改为**常显**（`group-head.static`，不再折叠）：页面本身就是技能入口，
+ * 默认收起会让人以为没有技能配置。
+ *
+ * 组头摘要「已启用 x / 共 y」承载状态；技能表 4 列（名称 + 来源徽章 / 适用场景 /
+ * 脚本 / 启用），「状态」列与表头双徽章删除（启用 checkbox 即状态）。操作回执经
+ * `notify` 事件上抛给页级 AppToast。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ChevronRight } from '@aurora/shared/browser'
 import type { SkillSummary, SkillsStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -28,9 +28,6 @@ const status = ref<SkillsStatus | null>(null)
 const rescanning = ref(false)
 
 const userDirInput = ref('')
-
-/** 区组折叠状态：默认收起（组头摘要承载状态，docs/07 §2.5） */
-const open = ref(false)
 
 const enabledCount = computed(() => skills.value.filter((skill) => skill.enabled).length)
 
@@ -129,111 +126,102 @@ onMounted(() => {
 </script>
 
 <template>
-  <!-- data-group：capture 探针的组锚点（SETTINGS_AGENT_FIELDS_SCRIPT 据此先展开再计数） -->
+  <!-- data-group：capture 探针的组锚点（按页面分页后仍保留，避免选择器改名） -->
   <section class="group section-card" data-group="skills">
-    <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
-      <ChevronRight
-        class="chevron"
-        :class="{ open }"
-        :size="14"
-        :stroke-width="1.8"
-        aria-hidden="true"
-      />
+    <div class="group-head static">
       <span class="section-title">技能（Skill）</span>
       <span class="group-summary tiny muted grow">
         {{ skills.length === 0 ? '未发现' : `已启用 ${enabledCount} / 共 ${skills.length}` }}
       </span>
-    </button>
+    </div>
 
-    <Transition name="collapse">
-      <div v-if="open" class="group-body">
-        <p class="section-desc">
-          以 <code class="mono">SKILL.md</code> 描述的能力包，存于内置
-          <code class="mono">skills/</code> 与用户技能目录；模型按描述自动匹配，也可
-          <code class="mono">/技能名</code> 或 <code class="mono">@技能名</code> 显式调用。
-        </p>
+    <div class="group-body">
+      <p class="section-desc">
+        以 <code class="mono">SKILL.md</code> 描述的能力包，存于内置
+        <code class="mono">skills/</code> 与用户技能目录；模型按描述自动匹配，也可
+        <code class="mono">/技能名</code> 或 <code class="mono">@技能名</code> 显式调用。
+      </p>
 
-        <SettingField
-          data-field="skills.userDir"
-          label="用户技能目录"
-          :hint="
-            status
-              ? `留空 = 使用默认目录 ｜ 当前生效：${status.userDir}`
-              : '留空 = 使用默认目录（用户数据目录 / skills）'
-          "
-        >
-          <div class="row grow">
-            <input
-              v-model="userDirInput"
-              class="input"
-              type="text"
-              spellcheck="false"
-              placeholder="留空使用默认目录"
-            />
-            <AppButton size="sm" @click="saveUserDir">保存</AppButton>
-          </div>
-        </SettingField>
-
-        <div class="row">
-          <AppButton size="sm" :disabled="rescanning" @click="rescan">
-            {{ rescanning ? '扫描中…' : '重新扫描' }}
-          </AppButton>
-          <AppButton size="sm" variant="ghost" @click="openDir">打开用户技能目录</AppButton>
-          <span v-if="status?.scannedAt" class="tiny muted scan-at">
-            上次扫描：{{ new Date(status.scannedAt).toLocaleString() }}
-          </span>
+      <SettingField
+        data-field="skills.userDir"
+        label="用户技能目录"
+        :hint="
+          status
+            ? `留空 = 使用默认目录 ｜ 当前生效：${status.userDir}`
+            : '留空 = 使用默认目录（用户数据目录 / skills）'
+        "
+      >
+        <div class="row grow">
+          <input
+            v-model="userDirInput"
+            class="input"
+            type="text"
+            spellcheck="false"
+            placeholder="留空使用默认目录"
+          />
+          <AppButton size="sm" @click="saveUserDir">保存</AppButton>
         </div>
+      </SettingField>
 
-        <!-- 空状态：没有技能就没有可启停的对象（skills.disabled 不出现） -->
-        <p v-if="skills.length === 0" class="empty-inline" data-empty="skills.disabled">
-          未发现技能：请确认仓库根目录存在
-          <code class="mono">skills/&lt;name&gt;/SKILL.md</code>，或配置用户技能目录后重新扫描。
-        </p>
-
-        <template v-else>
-          <h3 class="block-title">已发现的技能</h3>
-
-          <!-- 4 列（docs/07 §2.5）：来源并入名称列徽章，状态由启用 checkbox + 组头摘要承载 -->
-          <table class="table">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>适用场景</th>
-                <th>脚本</th>
-                <th>启用</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="skill in skills" :key="skill.name">
-                <td>
-                  <span class="name-row">
-                    <strong>{{ skill.name }}</strong>
-                    <span class="badge">{{ skill.source === 'builtin' ? '内置' : '用户' }}</span>
-                  </span>
-                  <p class="tiny muted clamp-2" :title="skill.description">
-                    {{ skill.description }}
-                  </p>
-                </td>
-                <td class="tiny muted">
-                  <!-- clamp 挂在内层元素上：td 自身被 display:-webkit-box 接管后
-                       会脱离表格单元格布局，两行截断失效、文字溢出（2026-10 实测） -->
-                  <span class="clamp-2" :title="skill.whenToUse ?? ''">
-                    {{ skill.whenToUse ?? '—' }}
-                  </span>
-                </td>
-                <td class="tiny muted">{{ skill.hasScripts ? 'scripts/' : '—' }}</td>
-                <td>
-                  <label class="row tiny enable-cell" :data-field="`skills.disabled.${skill.name}`">
-                    <input type="checkbox" :checked="skill.enabled" @change="toggle(skill)" />
-                    {{ skill.enabled ? '已启用' : '已停用' }}
-                  </label>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </template>
+      <div class="row">
+        <AppButton size="sm" :disabled="rescanning" @click="rescan">
+          {{ rescanning ? '扫描中…' : '重新扫描' }}
+        </AppButton>
+        <AppButton size="sm" variant="ghost" @click="openDir">打开用户技能目录</AppButton>
+        <span v-if="status?.scannedAt" class="tiny muted scan-at">
+          上次扫描：{{ new Date(status.scannedAt).toLocaleString() }}
+        </span>
       </div>
-    </Transition>
+
+      <!-- 空状态：没有技能就没有可启停的对象（skills.disabled 不出现） -->
+      <p v-if="skills.length === 0" class="empty-inline" data-empty="skills.disabled">
+        未发现技能：请确认仓库根目录存在
+        <code class="mono">skills/&lt;name&gt;/SKILL.md</code>，或配置用户技能目录后重新扫描。
+      </p>
+
+      <template v-else>
+        <h3 class="block-title">已发现的技能</h3>
+
+        <!-- 4 列（docs/07 §2.5）：来源并入名称列徽章，状态由启用 checkbox + 组头摘要承载 -->
+        <table class="table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>适用场景</th>
+              <th>脚本</th>
+              <th>启用</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="skill in skills" :key="skill.name">
+              <td>
+                <span class="name-row">
+                  <strong>{{ skill.name }}</strong>
+                  <span class="badge">{{ skill.source === 'builtin' ? '内置' : '用户' }}</span>
+                </span>
+                <p class="tiny muted clamp-2" :title="skill.description">
+                  {{ skill.description }}
+                </p>
+              </td>
+              <td class="tiny muted">
+                <!-- clamp 挂在内层元素上：td 自身被 display:-webkit-box 接管后
+                       会脱离表格单元格布局，两行截断失效、文字溢出（2026-10 实测） -->
+                <span class="clamp-2" :title="skill.whenToUse ?? ''">
+                  {{ skill.whenToUse ?? '—' }}
+                </span>
+              </td>
+              <td class="tiny muted">{{ skill.hasScripts ? 'scripts/' : '—' }}</td>
+              <td>
+                <label class="row tiny enable-cell" :data-field="`skills.disabled.${skill.name}`">
+                  <input type="checkbox" :checked="skill.enabled" @change="toggle(skill)" />
+                  {{ skill.enabled ? '已启用' : '已停用' }}
+                </label>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
+    </div>
   </section>
 </template>
 

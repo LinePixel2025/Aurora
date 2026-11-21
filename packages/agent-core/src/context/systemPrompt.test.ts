@@ -400,10 +400,13 @@ describe('buildToolGuidance', () => {
     expect(guidance).toContain('一次只保留一个 in_progress')
   })
 
-  it('含 task 时附子代理派发规范', () => {
+  it('含 task 时附子代理派发规范（触发式：该派就派，而不是"可以派"）', () => {
     const guidance = buildToolGuidance(['task'])
-    expect(guidance).toContain('派给 task 子代理（上下文隔离，不占当前对话预算）')
-    expect(guidance).toContain('prompt 必须自包含')
+    expect(guidance).toContain('动手前先分流')
+    expect(guidance).toContain('先派只读子代理把结论收回来')
+    expect(guidance).toContain('用 `agent` 参数按名册选型')
+    expect(guidance).toContain('`prompt` 必须自包含')
+    expect(guidance).toContain('同一会话最多 3 个并发')
   })
 
   it('含 run_command 时附命令输出与交互挂起规范', () => {
@@ -487,7 +490,7 @@ describe('buildToolGuidance', () => {
   it('组合工具时各条目都出现', () => {
     const guidance = buildToolGuidance(['todo_write', 'task', 'run_command', 'set_setting'])
     expect(guidance).toContain('todo_write 建立清单')
-    expect(guidance).toContain('task 子代理')
+    expect(guidance).toContain('`agent` 参数按名册选型')
     expect(guidance).toContain('read_file')
     expect(guidance).toContain('确认卡片')
   })

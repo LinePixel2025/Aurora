@@ -492,11 +492,14 @@
     一个标签 = 一个面板实例：**文件 / 终端 / 浏览器可各开多个**（追加实例的 id 为
     `files-2` / `browser-2`…，首个实例沿用种类名），**「上下文」与「计划」是单例**
     （上下文标签收任务面板 + 模式感知上下文栏；计划标签是当前会话计划 md 文件的只读列表，
-    见下方「计划面板」）。
+    见下方「计划面板」；**子代理查看器**（v46）是第三种单例：同一时刻跟一次运行，切换焦点
+    不刷标签，见下方「子代理对话面板」）。
     初始标签集 = **「上下文 / 文件 / 终端 / 浏览器」**（每种一个，**缺省激活「上下文」**
     —— 旧探针读的 DOM 与四个锚点逐字保留）。
     - **开新标签**：「＋」（`chat.ctx-new-tab`）弹出 `chat.ctx-new-menu`（上下文 / 计划 /
       文件 / 终端 / 浏览器；单例已在就切过去、不在则重建），标签总数上限 **12**。
+      子代理查看器**不在这个菜单里** —— 它需要"某次运行"作为目标，入口只有对话里的
+      子代理标识徽章与「子代理」页面运行卡。
     - **标签形制**：图标 + 标题 + 关闭 ✕（`chat.ctx-tab-close-<id>`，悬停 / 激活才显形，
       命中区 ≥ 24×24）。标题由**面板上报**：文件 = 当前目录名或文件名、终端 = cwd 末段、
       浏览器 = 页面标题（`page-title-updated`，回落主机名；Agent 专属标签另前置
@@ -754,8 +757,8 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
     绑定入口收敛为各项目分组头的 `+`（新建即绑定），项目登记与根可用性警示迁到
     设置页「会话管理」（`projects.*` 锚点 + 警示文案，见 08 §7）；
     两卡的缺席由 `chat-agent-prod-overview` 探针回归护栏钉住。
-    **「文件备份」卡已于 v0.2.4 移除**：回滚 / 清理 UI 整体迁入设置页「智能与工具」页的
-    文件备份区组，主界面右栏不再展示快照列表 —— 见下文「文件备份」与 06 §11.8。）
+    **「文件备份」卡已于 v0.2.4 移除**：回滚 / 清理 UI 整体迁入「设置 → Agent → 电脑操控 → 文件备份」，
+    主界面右栏不再展示快照列表 —— 见下文「文件备份」与 06 §11.8。）
 - **麦克风（STT，BetaV2）**：composer 的麦克风按钮（`data-field="chat.mic"`）门控口径同 TTS：
   `stt.enabled && stt.active` 指向 baseUrl / model 齐全的 provider 才渲染按钮，
   **否则连按钮都不渲染**（不是 disabled）；门槛**不含 API Key**（与 `ttsReady` 同款，
@@ -897,6 +900,9 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   （`data-field="chat.todo-card"`：状态圈（待办 ○ / 进行中 ◐ / 完成 ✓）+ 条目 + 进度摘要），
   `task` 渲染为**子代理行**（`data-field="chat.task-card"`：任务简述 + 「可读写」徽章 + 步骤数 +
   展开后的**独立对话视图** `SubagentConversation`）；其余工具为通用行（工具名）。
+  **v46 起行尾多一枚「子代理标识徽章」**（`data-action="chat.subagent-open-panel"`：`Bot` 图标 +
+  `agentName`（未到快照时回落「子代理」），运行中强调色 + 边框呼吸）：点是**在右栏打开 / 聚焦**
+  这次运行的对话面板，与头部展开开关是两个动作（`<button>` 里不嵌按钮）。
   行首一行固定是：状态点 → 工具图标 → 标题 → **结果摘要**（单行省略，悬停 `AppTooltip` 看全文），
   行尾是耗时与 chevron。三条硬口径：
   ① **不再有「执行中 / 完成 / 失败」文字**：状态语义交给**状态点色**（`--status-running` /
@@ -945,6 +951,24 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   - **多运行（2026-10-18）**：同轮多个 `task` 并行时，页面按运行逐张渲染、概览条显示
     「共 N 次运行 / M 个进行中」（`M` 来自 `status === 'running'`），侧栏角标同样是运行数；
     每条运行各有权限徽章与对话折叠，互不干扰。并发上限与写子代理串行见 `06 §19.5`。
+  - **v46 具名子代理**：运行卡头多一枚**名称徽章**（`data-field="chat.subagent-agent"`，
+    取快照的 `agentName`；通用子代理 / 老快照没有该字段时不渲染），权限徽章扩成三档
+    （只读 / 可读写 / 可执行，`access ?? permission`），`run-meta` 追加 `providerId/model`，
+    行尾多一枚「在侧栏查看对话」（`data-action="chat.subagent-open-panel"`）。
+- **子代理对话面板（v46，右栏）**：右栏标签种类 `subagent`（**单例**，`CtxTabKind` 多一项；
+  不在「＋」新建菜单里）。容器锚点 `data-field="chat.subagent-panel"`，头部依次是
+  名称（`chat.subagent-panel-title`）/ 状态（`chat.subagent-panel-status`）/
+  权限徽章（`chat.subagent-panel-access`）/ 模型（`chat.subagent-panel-model`）/ 耗时，
+  下方是两行截断的任务指令，正文复用 `SubagentConversation`（只读口径与页面一致）。
+  空态锚点 `chat.subagent-panel-empty`（切到没派过子代理的会话时）。
+  - **打开 / 聚焦**：`App.vue` 的 `openSubagentPanel({ callId, taskId })` 统一入口 ——
+    `contextOpen = true` → `ensureKind('subagent')` → 写焦点 → `nextTick` 后标题设成子代理名
+    （空名回落种类默认名「子代理」；**不加「子代理 · 」前缀**：88px 标签宽只放得下 4–6 个字）。
+    再点另一枚标识只换焦点（不新建标签），关掉后从同一入口重开。
+  - **实时**：数据源与工具卡 / 子代理页面同一份 `subagentRuns`（实时事件优先、历史快照补齐），
+    运行中打开即随事件刷新；焦点运行消失时回落最近一次运行，没有则空态。
+  - 探针：`chat-subagent-panel` 场景点对话里的标识徽章 → 断言右栏标签与面板出现、
+    对话轮数 > 0、容器内无输入元素；收尾关掉该标签并切回对话。
 - **轨迹 / 工具行的生命周期动效（2026-10-01 重塑后）**：
   轨迹容器折叠 ⇄ 展开走 **grid `0fr ↔ 1fr` 高度过渡**（`--dur-base`，`prefers-reduced-motion`
   降级为瞬时）：终点是 `1fr` —— **每一帧都按当下内容现解**，动画期间内容再长也不会被裁掉
@@ -1268,7 +1292,7 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   不再弹确认卡；项目根只保留为缺省工作目录。
   写盘时**同时写两个字段**（`agent.permissionMode` = 选中档，`advanced.confirmSensitiveTools` =
   `档位 !== 'auto'`）：后者是老开关，两者由 `resolvePermissionMode()` 合成生效档位，
-  分开写会出现「界面选 confirm、实际生效 auto」的错位。与设置页「Agent 设置」页读写的
+  分开写会出现「界面选 confirm、实际生效 auto」的错位。与「设置 → 系统 → 安全」里读写的
   **是同一份配置**，没有第二份来源。
   三个细节是有意的：
   - 放宽权限的档位（完全权限）用**警示色常驻**（不是一闪而过的 toast）——闸门开着这件事必须一直看得见；
@@ -1394,23 +1418,26 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   `projects.current` 指过去 → 断言右栏卡**恰好一张**、文本含项目名与根目录、**不是**警示态 →
   收尾还原成无项目再断言卡消失）；设置页 general 页探针则数 `[data-field^="projects."]`
   并要求「空态或至少一行」，`data-empty` 白名单为 `general.edgeBar` 与 `projects.list`。
-  文件备份（v14 新增；**v0.2.4 起从主界面右栏迁入设置页「智能与工具」页**，共享组件
+  文件备份（v14 新增；**v0.2.4 起从主界面右栏迁入设置页，现为「设置 → Agent → 电脑操控 → 文件备份」**，
+  共享组件
   `shared/components/SnapshotList.vue`）：列表锚点 `agent.snapshot-list`，每条记录一个
   `data-field="agent.snapshot-restore"` 的「回滚」按钮（**两段式**：第一下变「确认回滚？」，
   第二下才执行），另有 `data-field="agent.snapshot-prune"` 的「立即清理」与
   `data-action="agent.snapshot-refresh"` 的手动刷新（清理无 sessionId 时按「全部会话」执行）。
   capture 探针场景相应改为：主界面断言快照卡**不存在**（`chat-snapshot-card-removed`）、
   设置页断言列表在（`settings-snapshot-list`）。
-  设置页「智能与工具」页的文件备份区组字段锚点沿用配置路径原文：`agent.snapshots.enabled` /
+  「设置 → Agent → 电脑操控 → 文件备份」区组的字段锚点沿用配置路径原文：`agent.snapshots.enabled` /
   `agent.snapshots.keepPerFile` / `agent.snapshots.maxSnapshotBytes` / `agent.snapshots.totalBudgetBytes`
   （关掉开关时三个数字字段换成 `data-empty="agent.snapshots"`）。
-  钉住它们的探针场景见 §5.3：`chat-snapshot-card-removed.png` / `settings-snapshot-list.png`（prepare 走**真实快照端口**种一份快照并
+  钉住它们的探针场景见 §5.3：`chat-snapshot-card-removed.png` / `settings-snapshot-list.png`（query 随拆页改为
+  `?page=agent-tools`；prepare 走**真实快照端口**种一份快照并
   `flush()` 落索引 → reload 让卡片重新水合 → act 点一次「回滚」→ 断言卡恰好一张、
   至少一条记录、来源译成「写文件」、按钮停在待确认文案）。
   ⚠️ **2026-09-30 现状：这一条在同一批改动里 FAIL**（`rows: 0` + 空态文案
   「还没有文件备份…」，而 `list` / `prune` / `refresh` 都在）—— 夹具种下的快照没有被列表读到，
   属**快照夹具 / 设置页**范围（与本轮渲染层与自动跟随无关：设置窗口的 DOM 与探针都没被本轮改过）。
   同批还有 `settings-general.png` 的 check 抛异常（`ok:false`，拿不到结果）。两处都留给后续排查。
+  （2026-11 拆页后复跑：`settings-snapshot-list.png`（`?page=agent-tools`）与 `settings-general.png` 均已 PASS。）
   任务面板（v15 新增）：右栏容器 `chat.jobs`（`jobsOpen` 为 false 时整块不渲染）、面板自身
   `chat.job-panel`、每条 `chat.job-item`、「继续」`chat.job-resume`（**仅 `paused` 时渲染**）、
   「取消」`chat.job-cancel`、左栏入口 `chat.jobs-entry`（角标是它内部的 `.jobs-count`，
@@ -1582,18 +1609,22 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
 共享 `SettingField` 内只有按钮时必须用 `as="div"`：`label` 不仅会把点击代理给按钮，还会让整行 hover
 命中 button 的 `:hover`。按钮操作必须命中真实按钮才响应，避免 Center 等页面出现「鼠标未到按钮先响应」。
 
-- 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字；v0.2.0 起新增
-  **Aurora Center** 页；此后又增会话管理 / 文件自感知 / 插件 / **提醒**（v37）共 **11 页**）：
-  侧栏按**三组**排列（2026-10-31 收敛，原为五组）—— **本机**（常规 `general` / 会话管理 `sessions` /
-  模式 `modes` / 提醒 `notifications`）／**智能**（AI 模型 `llm` / 语音 `voice` / Agent 设置 `agent` /
-  Computer Use `computer-use` / 文件自感知 `awareness`）／**系统**（Aurora Center `center` / 插件 `plugins` /
-  高级 `advanced`）。连接与扩展各只有一项，合并进「系统」后分组标题从 5 个降到 3 个；
-  条目顺序与标签不变（截图探针按 DOM 顺序读标签）。
-  `SETTINGS_PAGE_IDS = ['general','sessions','modes','notifications','llm','voice','agent','awareness','center','plugins','advanced']`
-  （数组顺序即截图出图顺序；Computer Use 页由 `settings-computer-use.png` 单列场景拍）。
-  当前项用分层填充 + 左侧**强调色**指示条（不再用品牌渐变）。合并口径：Skill 与 MCP 并入 `agent` 页、
-  STT 并入 `voice` 页、生图模型并入 `llm` 页、勿扰时段并入 `general` 页（全局 + 提示条两组同区）；
-  旧深链兼容映射：`?page=tts→voice`、`?page=skills|mcp→agent`。
+- 单窗口分栏（**2026-11 Agent 栏目拆分后 16 页**；此前为 BetaV2 合并的 6 页、2026-10-31 起的 11 页；
+  2026-09 重构起条目为图标 + 单行文字）：
+  侧栏按**四组**排列 —— **本机**（通用 `general` / 会话管理 `sessions` / 模式 `modes` /
+  提醒 `notifications`）／**智能**（AI 模型 `llm` / 语音 `voice` / Computer Use `computer-use` /
+  文件自感知 `awareness`）／**Agent**（电脑操控 `agent-tools` / 内置浏览器 `agent-browser` /
+  子代理 `agent-subagents` / 技能 `agent-skills` / MCP 服务器 `agent-mcp`）／**系统**
+  （Aurora Center `center` / 插件 `plugins` / 系统 `advanced`）。
+  原「Agent 设置」单页的五个区组各拆成一页，条目顺序与标签即截图探针读取的 DOM 顺序。
+  `SETTINGS_PAGE_IDS = ['general','sessions','modes','notifications','llm','voice','agent-tools','agent-browser','agent-subagents','agent-skills','agent-mcp','awareness','center','plugins','advanced']`
+  （数组顺序即截图出图顺序，共 15 项；Computer Use 页不入循环，由 `settings-computer-use.png` 单列场景拍）。
+  侧栏 16 项在默认窗高下放不下：导航区是独立滚动区，切换页面时内容区回到顶部，
+  深链打开时当前项自动滚入视口。当前项用分层填充 + 左侧**强调色**指示条（不再用品牌渐变）。
+  合并口径：STT 并入 `voice` 页、生图模型并入 `llm` 页、勿扰时段并入 `general` 页（全局 + 提示条两组同区）；
+  技能 / MCP 区组不再是默认收起的折叠卡，改为页面内常显的静态区组（组头摘要仍在）。
+  旧深链兼容映射（渲染层 `LEGACY_PAGE_ALIASES`）：`?page=tts→voice`、`?page=agent→agent-tools`、
+  `?page=skills→agent-skills`、`?page=mcp→agent-mcp`。
 - **设置页视觉收敛（2026-10-31，用户反馈「设置页太冗杂」）**：一页只有**一个页头**
   （`.page > header`：标题 22px + 一句说明 + 下缘发丝线），页面之间靠 `--space-5` 留白；
   区组统一为「标题 / 一句说明 / 字段行列表」三层（`.section-title` 13.5px、`.section-desc` 12.5px 弱色），
@@ -1633,13 +1664,13 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   Esc / 点外部 / 滚动即取消不落盘）。使用处：智慧提醒免打扰时段、勿扰时段（提醒 + 通用两页入口）、
   提示条静默时段、课程表节次起止、自动化 `daily.at`；时长类（分钟 / 毫秒 / 秒）仍是数字框或滑杆。
   `data-field` 锚点留在 `SettingField` 上不变，探针断言对象从 `input` 换成触发器按钮。
-- **「智能与工具（`agent`）」页「内置浏览器」区组（v35，见 06 §27 / 08 §6）**：与
-  `agent.tools.*`、技能、MCP 同页折叠，顺序排「电脑操控」之后；六项锚点
+- **「内置浏览器（`agent-browser`）」页（v35；2026-11 起由 Agent 设置页区组拆为独立页，
+  见 06 §27 / 08 §6）**：六项锚点
   `agent.browser.enabled`（总开关）、`agent.browser.maxSessions`（并发上限，数字）、
   `agent.browser.idleMinutes`（空闲释放分钟数，数字）、`agent.browser.allowPrivateNetwork`
   （内网访问，复选框）、`agent.browser.compatUserAgent`（兼容 UA，复选框）、
   `agent.browser.allowMedia`（网页媒体权限，复选框）。关掉总开关时六项**仍渲染**
-  （可先配置后开启，门控见 08 §6.1），本区组**不新增 `data-empty`**；整组在
+  （可先配置后开启，门控见 08 §6.1），本页**不新增 `data-empty`**；整组在
   `SETTINGS_READONLY_PREFIXES` 里，AI 改不动。
 
 ### 2.6 记忆库窗口
@@ -1725,25 +1756,41 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   切换后 baseURL / 模型名的提示词随之改写 —— 两套接口的字段语义不同，见 docs/06 §15.1）。
   凭据行的展示规则与 AI 模型页一致（只显示「凭据已保存 / 缺少凭据」，密文不进渲染层）。
   字段与门控矩阵见 docs/08 §1 / §6.1。
-- **Agent 设置页（2026-09 信息架构收拢；2026-10 前称「智能与工具」）**：页内三组（电脑操控工具 / 技能 / MCP 服务器）同为可折叠
-  section-card，折叠策略 —— 「电脑操控工具」**默认展开**（本页主配置面，`agent.tools.*` 探针依赖），
-  「技能」「MCP 服务器」**默认收起**（组锚点 `data-group="skills"` / `data-group="mcp"`，
-  capture 探针先点开两组、等渲染与折叠动画走完再计数，见 §5.3）。**组头摘要承载状态**（收起也能看清）：
-  工具组「x / y 个工具生效」（`y` 取 `COMPUTER_TOOL_NAMES.length`、**不写死数字**，当前 8 个；
-  总开关关闭时显示「已停用」）、技能「已启用 x / 共 y」（未发现显示「未发现」）、
-  MCP「n 台服务器 / m 台启用」（未配置显示「未配置」）。
-  **安全文案收敛为一处**：本页操作直接影响真实系统、工作目录不是沙箱（缺省目录与检索缺省根都按
-  06 §5.1 回落链取：Work 模式配了模式工作目录时为模式目录，否则 `agent.tools.workspaceDir` > 主目录；
-  全局 `projects.current` 一级已于 v25 退役）、
-  敏感工具需逐次确认（确认开关在「系统」页，关闭后不经确认直接执行）只在工具组说明里完整表述一次；
-  工作目录长说明、页尾安全提示与原常驻警示 Toast 里与之重复的表述删除，页副标题只保留导航信息。
-  **启停控件统一 checkbox**：MCP 服务器行卡的「停用 / 启用」按钮改为 checkbox（绑 `enabled`，
-  配置写入路径不变；StatusDot / 状态徽章 / 删除按钮保留），与工具、技能一致。
-  **Toast 页级归一**：技能与 MCP 区组不再自带 AppToast，操作回执经 `notify` 事件上抛，
-  由页级唯一的 AppToast 渲染。**技能表 4 列**：名称（来源「内置 / 用户」徽章并入名称列）、
-  适用场景、脚本、启用 checkbox；原「状态」列与表头旁双徽章删除（组头摘要 + 启用 checkbox
-  已覆盖状态信息）。数字输入（命令超时 / 输出上限 / 单次读取上限）定宽（`.input-num`）。
-- **MCP 区组（本轮增补）**：服务器编辑新增「自定义请求头」输入 —— 多行 `Key: Value`、每行一个
+- **Agent 五页（2026-11 拆分；原「Agent 设置」单页，2026-10 前该页称「智能与工具」）**：左栏新增
+  **Agent** 组，五个页面都是「页头 + 常显静态区组」，页内不再有可折叠 section-card：
+  `agent-tools` **电脑操控**（`agent.tools.*` + `agent.snapshots.*` + `agent.loop.*`）、
+  `agent-browser` **内置浏览器**（`agent.browser.*`）、`agent-subagents` **子代理**（`agent.subagents.*`）、
+  `agent-skills` **技能**（`skills.*`）、`agent-mcp` **MCP 服务器**（`mcp.*`）；
+  各页字段锚点 / `data-empty` / 保存语义与拆分前一致。
+  - **电脑操控页（`agent-tools`）**：单张 section-card（标题「工具与循环」）内部用 `.sub` 小节，
+    外层不再折叠；依次为总开关 / 工作目录 / 终端（开关、超时、输出上限）/ **免确认命令模式** /
+    文件（开关、单次读取上限）/ **文件备份**（`agent.snapshots.*` 三档上限 + `SnapshotList.vue`
+    的快照列表，主界面右栏不再展示）/ **文件检索**（`agent.tools.search.*`）/ 打开 /
+    「当前生效工具」/ **Agent 循环**（`agent.loop.maxParallelCalls` 唯一旋钮）。
+  - **组头摘要承载状态**：工具组「x / y 个工具生效」（`y` 取 `COMPUTER_TOOL_NAMES.length`、
+    **不写死数字**，总开关关闭时显示「已停用」）、子代理「x / y 个启用」、技能「已启用 x / 共 y」
+    （未发现显示「未发现」）、MCP「n 台服务器 / m 台启用」（未配置显示「未配置」）。
+  - **子代理页（`agent-subagents`，`SubagentsSection.vue`，见 06 §19.6）**：列表行 = 启用 checkbox +
+    名称 + id（mono）+「内置」徽章 + 摘要（档位 · 模型）+ 展开指令的箭头；行内字段
+    名称 / 用途说明 / 工具权限（三档下拉）/ 模型来源（空 = 跟随当前会话模型）+ 模型，
+    展开区是子代理指令（textarea，mono）。行尾「恢复预设」（仅内置）/「删除」（二次确认）、
+    底部「添加子代理」（表单：名称 / 用途说明 / 权限 / 指令；id 由页面生成 `custom-N`）。
+    锚点 `agent.subagents`（容器）/ `agent.subagents.<id>.*` / `agent.subagents.add*`；
+    **刻意不用 `data-empty`**（本页探针把未登记的空态当回归，见 §5.3）。保存走
+    `settings:update({ agent: { subagents } })`（整数组权威），回执经 `notify` 上抛页级 Toast。
+  - **技能页（`agent-skills`）与 MCP 页（`agent-mcp`）**：区组常显（不再默认收起），
+    组头摘要仍在（组锚点 `data-group="skills"` / `data-group="mcp"` 保留，探针选择器不改名）。**技能表 4 列**：名称（来源「内置 / 用户」徽章并入名称列）、适用场景、脚本、
+    启用 checkbox；原「状态」列与表头旁双徽章删除（组头摘要 + 启用 checkbox 已覆盖状态信息）。
+    **启停控件统一 checkbox**：MCP 服务器行卡的「停用 / 启用」按钮改为 checkbox（绑 `enabled`，
+    配置写入路径不变；StatusDot / 状态徽章 / 删除按钮保留），与工具、技能一致。
+    **Toast 页级归一**：技能与 MCP 区组不再自带 AppToast，操作回执经 `notify` 事件上抛，
+    由页级唯一的 AppToast 渲染。数字输入（命令超时 / 输出上限 / 单次读取上限）定宽（`.input-num`）。
+  - **安全文案收敛为一处**：电脑操控页的操作直接影响真实系统、工作目录不是沙箱（缺省目录与检索缺省根都按
+    06 §5.1 回落链取：Work 模式配了模式工作目录时为模式目录，否则 `agent.tools.workspaceDir` > 主目录；
+    全局 `projects.current` 一级已于 v25 退役）、敏感工具需逐次确认（确认开关在「系统 → 安全」，
+    关闭后不经确认直接执行）只在工具组说明里完整表述一次；工作目录长说明、页尾安全提示与
+    原常驻警示 Toast 里与之重复的表述删除，页副标题只保留导航信息。
+- **MCP 服务器页（`agent-mcp`）区组（本轮增补）**：服务器编辑新增「自定义请求头」输入 —— 多行 `Key: Value`、每行一个
   （HTTP 传输的鉴权头等场景，`mcp.servers.<id>.headersEnc`，v9 新增）；已配置的头在服务器条目上
   按名字列出并注明「值已加密存储」（读主进程补的只读标记 `headersSet`，与 env 的 `envSet` 同款），
   留空 = 不改动已有值，删除某一行 = 删除该头。编辑交互与「环境变量」完全同款，
@@ -1761,9 +1808,10 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   `ScheduleEditor`（课表 provider / 节次 / ClassIsland 连接测试 / 课前提醒）/
   `ClassificationBehavior`（自动移动 / 置信阈值 / 兜底文件夹 + 分类流水）。
   「感知文件夹」「科目」默认展开，「课表」「分类行为」默认折叠并在折叠头显示状态摘要。
-  （BetaV2）Agent 设置页 = agent.tools 区组 + 技能区组 + MCP 区组（三组同页折叠；折叠策略 / 组头摘要 /
-  安全文案 / Toast / 启停控件的现行口径见上面「Agent 设置页（2026-09 信息架构收拢）」条目；
-  MCP 状态灯仍用 `StatusDot`，`lazyConnect` 收进折叠区）；高级页（BetaV2）为「网络 / 日志 / 安全 / 危险操作」四卡
+  （2026-11）Agent 五页 = `agent-tools` / `agent-browser` / `agent-subagents` / `agent-skills` /
+  `agent-mcp`（各自独立页，字段锚点 / 组头摘要 / 安全文案 / Toast / 启停控件的现行口径见上面
+  「Agent 五页」条目；MCP 状态灯仍用 `StatusDot`，`lazyConnect` 收进服务器编辑卡）；
+  系统页（`advanced`，侧栏标签「系统」）为「网络 / 日志 / 安全 / 危险操作」四卡
   （勿扰时段已并入常规页），「重置为默认配置」需就地二次确认（不再用原生 `confirm`）。
 
 ### 2.6 首次安装引导窗口
@@ -2058,6 +2106,7 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      ——用户实测「右栏缩到最小后加号按钮不可用」的回归护栏；另把左栏拖到 200px 断言
      左栏自己的「＋」入口（加项目 / 新建会话）同样可点）→
      `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
+     `chat-subagent-panel.png`（v46：点对话里的子代理标识 → 右栏单例查看器，check 收尾关标签）→
      `chat-automation.png` / `chat-automation-normal.png` / `automation-editor.png` /
      `automation-history.png`（自动化页 + 独立窗口，v19；见下面「自动化页与详情窗口」一条）→
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
@@ -2090,11 +2139,14 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      必须赶在窗口第一次 `chat:history` 之前落盘。
   3. **引导**：`theme-onboarding.png`（双主题，只等第 0 段就位、不点页脚按钮）→
      `onboarding-welcome / llm / modes / guide / done.png` 五段（口径见下面「引导页」一条）。
-  4. **设置（BetaV2 六页 IA）**：`theme-settings.png`（先落「常规」页）→ 六页深链循环
-     `settings-general / modes / llm / voice / agent / advanced.png`（general / modes / llm / voice / agent
-     五页各挂一条门控探针，advanced 纯截图；modes 页 act 先展开默认收起的「课程表与课前提醒」分组）→
-     `settings-legacy-tts-alias.png`（旧深链 `?page=tts` 经 `LEGACY_PAGE_ALIASES` 落到「语音」页；
-     `skills|mcp → agent` 走同一张映射表，机制由本场景代表验证）→ `settings-drag.png` →
+  4. **设置（2026-11 四组 16 页）**：`theme-settings.png`（先落「通用」页）→ `SETTINGS_PAGE_IDS`
+     的 15 页深链循环（每页一张 `settings-<page>.png`，含五张 `settings-agent-tools.png` /
+     `settings-agent-browser.png` / `settings-agent-subagents.png` / `settings-agent-skills.png` /
+     `settings-agent-mcp.png`；各页按下面「设置页门控」挂对应探针；Computer Use 不入循环，
+     由 `settings-computer-use.png` 单列场景拍；modes 页 act 先展开默认收起的「课程表与课前提醒」分组）→
+     `settings-legacy-tts-alias.png` / `settings-legacy-agent-alias.png`（旧深链 `?page=tts` 与
+     `?page=agent` 经 `LEGACY_PAGE_ALIASES` 分别落到「语音」页 / 「电脑操控」页；`skills` / `mcp`
+     走同一张映射表）→ `settings-drag.png` →
      `settings-llm-models.png` → `settings-llm-default.png`（v37 默认模型下拉）→
      `settings-llm-params.png` → `settings-llm-structure.png` →
      `settings-tts-card.png`（深链用旧 id `tts`，顺带覆盖「旧链接上编辑卡流程照常可用」）→
@@ -2361,15 +2413,17 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     "到底哪个钮太小"直接看数，不用猜。**只量渲染出来的目标**（按钮 / 下拉），不量里面的图标；
     `opacity: 0` 但占位保持可命中的控件（会话行归档钮）同样要达标。
   - **设置页安全区巡检**（`SETTINGS_OVERFLOW_ACT` / `SETTINGS_OVERFLOW_CHECK`，
-    产物 `settings-overflow.png`，2026-09-29）：act 依次点开左侧**全部 7 个导航项**
-    （通用 / 模式 / AI 模型 / 语音 / Agent 设置 / Aurora Center / 系统），逐页量 `main.content` 内
+    产物 `settings-overflow.png`，2026-09-29）：act 依次点开左侧**全部 16 个导航项**
+    （本机 / 智能 / Agent / 系统四组），逐页量 `main.content` 内
     **每个元素**的矩形，只查**横向**溢出（纵向滚动是正常行为、不算），
-    探出内容区左右边界超过 1px 的节点记账；check 断言**页数 ≥ 7**（防"导航没点全还判 PASS"）
-    且违规页数为 0。这条把「安全区」从自动化页扩到了最可能出现"长标签 + 窄控件"的设置页。
+    探出内容区左右边界超过 1px 的节点记账；check 断言**页数 ≥ 15**（防"导航没点全还判 PASS"）
+    且违规页数为 0。**巡检点的是侧栏全部 16 个 `nav` 条目**（不等于 `SETTINGS_PAGE_IDS` 的
+    15 项 —— Computer Use 由单列场景拍，但侧栏有这一项）；
+    2026-11 定向实跑：16 页 `bad=[]`、`blank=[]`。这条把「安全区」从自动化页扩到了最可能出现"长标签 + 窄控件"的设置页。
     同一轮把这条护栏补齐到另外两个窗口：**引导窗**（`onboardingCheckScript`，五段共用，
     每段都查 `.pane` 内横向溢出，结果进 `overflow` 字段）与**提示条面板**
     （`EDGE_BAR_PANEL_SCRIPT`，查面板内元素是否探出 328px 窗口边界，进 `overflow` 字段）。
-    至此「安全区」的运行时证据覆盖：自动化页（卡片 / 磁贴）、设置页 7 页、引导窗 5 段、
+    至此「安全区」的运行时证据覆盖：自动化页（卡片 / 磁贴）、设置页 16 页、引导窗 5 段、
     提示条展开面板、输入区三个下拉 —— 都是几何判据，不是"看着没问题"。
   - **子代理页面**（`CHAT_SUBAGENT_OPEN_ACT` / `CHAT_SUBAGENT_OPEN_CHECK`，
     产物 `chat-subagent-page.png`，2026-09；2026-10-18 扩到两条运行）：「子代理」固定项点击后主区切到页面，断言
@@ -2383,6 +2437,14 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     —— 后续场景（composer / 自动滚底）依赖对话流在前台。
     这条同时验证「子代理快照随工具卡持久化 → 页面读回」这条链路（`06 §19`）；
     seed 的第二条只读运行也钉住多运行列表与双权限徽章（`06 §19.5`）；
+  - **子代理侧栏查看器**（`CHAT_SUBAGENT_PANEL_ACT` / `CHAT_SUBAGENT_PANEL_CHECK`，
+    产物 `chat-subagent-panel.png`，v46）：act 先展开折叠的轨迹让行首徽章进 DOM，
+    再点「Coder」那枚 `data-action="chat.subagent-open-panel"` → 断言右栏出现 `subagent`
+    单例标签与 `chat.subagent-panel`、标题取 `agentName`（`Coder`）、模型行含 provider/model、
+    `.conv-turn` ≥ 3 / `.conv-tool` ≥ 2、`.conv` 内无输入控件（只读）；随后点「Searcher」
+    那一枚断言**标签数仍是 1**（按唯一 `data-tab-id` 计，`data-tab-kind` 在折叠菜单里会重复）
+    且标题切到 `Searcher`；check 收尾关掉该标签并断言面板消失（后续场景按初始四标签集断言）。
+    这条把「点标识 → 侧栏看对话」与「单例只换焦点」两条口径都变成了可执行判据；
   - **自动化页与详情窗口**（`CHAT_AUTOMATION_*`，产物 `chat-automation.png` /
     `chat-automation-normal.png` / `automation-editor.png` / `automation-history.png`，
     v19，docs/13 §11）：
@@ -2587,8 +2649,8 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     `modes.classroom.preClassLeadMinutes` / `settings.classisland-notify-test` /
     `settings.classisland-notify-state` / `settings.classisland-notify-test-button` 各恰好 1 个，
     收尾把 provider 还原为 `manual`、清空课表并断言提醒通道区已消失（后续场景读到的仍是出厂门控）。
-  - 设置页门控（BetaV2 六页 IA：每页一条 `settings-<page>.png`，general / modes / llm / voice / agent
-    五页挂探针、advanced 纯截图）：`data-field` / `data-empty` 计数，各页口径 ——
+  - 设置页门控（2026-11 四组 16 页 IA：每页一条 `settings-<page>.png`；有门控探针的页见下，
+    sessions / plugins / advanced 纯截图，插件另有专场景）：`data-field` / `data-empty` 计数，各页口径 ——
     **general 页**（`SETTINGS_FIELDS_SCRIPT`）：死字段 `general.language` 必须为 0、提示条详情跟随
     `general.edgeBar.enabled` 开关、BetaV2 迁入的全局勿扰时段 `advanced.quietHours.start/.end`
     两字段必须常在（AdvancedPage 不再渲染它们，数到 >0 才是回归）、
@@ -2611,29 +2673,50 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     **常显**开关 / 字段都在（`tts.enabled` / `tts.autoRead` / `tts.maxChars` 与 `stt.enabled` / `stt.active`
     —— 常显字段与列表空态是两件事，别混），列表空态（`data-empty="tts.providers"` / `stt.providers`）
     与非空行容器二选一；
-    **agent 页**见下条；**旧深链别名**（`SETTINGS_LEGACY_ALIAS_SCRIPT`，产物 `settings-legacy-tts-alias.png`）：
+    **Agent 五页**见下条；**旧深链别名**（`SETTINGS_LEGACY_ALIAS_SCRIPT`，产物 `settings-legacy-tts-alias.png`）：
     `?page=tts` 必须经 `LEGACY_PAGE_ALIASES` 落到合并后的「语音」页（`tts.enabled` 与 `stt.enabled` 都在）；
-  - **「Agent 设置」页门控**（`SETTINGS_AGENT_FIELDS_SCRIPT`；BetaV2 六页 IA 下原「电脑操控」页
-    并入技能 + MCP 两区组）：读 `agent.tools.enabled` 复选框的**实际状态**，
+  - **「Agent」五页门控**（2026-11 拆分后各页一条探针）：
+    **`agent-tools` 页**（`SETTINGS_AGENT_TOOLS_FIELDS_SCRIPT`，原 `SETTINGS_AGENT_FIELDS_SCRIPT`
+    的电脑操控部分）：读 `agent.tools.enabled` 复选框的**实际状态**，
     开着时要求终端 / 文件 / **文件检索** / 打开**四栏**的详情字段都在
     （`terminalFields/filesFields > 0`、`searchFields >= 2`、`openFields > 0`，
-    外加终端栏下「免确认命令模式」容器 `allowPatternsFields === 1`）、
-    MCP 区组必须给出「空状态（`data-empty="mcp.servers"`）或服务器行」之一，
-    且不得出现这两个**预期**空状态之外的任何 `data-empty`（技能同理，`skills.disabled` 允许出现）；
+    外加终端栏下「免确认命令模式」容器 `allowPatternsFields === 1`）、文件备份四字段
+    （或空态 `data-empty="agent.snapshots"`）与 Agent 循环字段都在，且不得出现预期之外的任何
+    `data-empty`；另断言**拆页隔离**：`agent.browser.*` / `agent.subagents.*` 在本页计数必须为 0；
     关着时只要求总开关本身仍在 —— 否则用户再也开不回来；
+    **`agent-browser` 页**（`SETTINGS_AGENT_BROWSER_FIELDS_SCRIPT`）页标题为「内置浏览器」、
+    六个 `agent.browser.*` 锚点全在（总开关关闭时同样常显）、本页不出现 `data-empty`；
+    **`agent-subagents` 页**（`SETTINGS_AGENT_SUBAGENTS_FIELDS_SCRIPT`）
+    区组在、`agent.subagents.<id>.enabled` 至少 2 行（出厂预设）、字段数 ≥ 行数×5、
+    区组矩形真的落在视口里、本页不出现 `data-empty`；
+    **`agent-skills` 页**（`SETTINGS_AGENT_SKILLS_FIELDS_SCRIPT`）`skills.userDir` 常显，
+    技能清单「空态 `skills.disabled` 或至少一行」二选一，且除 `skills.disabled` 外不出现空态；
+    **`agent-mcp` 页**（`SETTINGS_AGENT_MCP_FIELDS_SCRIPT`）必须给出
+    「空状态（`data-empty="mcp.servers"`）或服务器行」之一；
+    （2026-11 定向实跑五页全 PASS：`agent-browser` 六锚点齐全且无空态；`agent-subagents`
+    rows=2 / fields=19 且在视口内；`agent-skills` `skills.userDir=1` / rows=7；`agent-mcp`
+    rows=0 + `data-empty="mcp.servers"`；`agent-tools` 的计数见下文探针条目。）
+  - **旧深链别名（Agent 拆分）**（`SETTINGS_LEGACY_AGENT_ALIAS_SCRIPT`，产物
+    `settings-legacy-agent-alias.png`）：`?page=agent` 必须经 `LEGACY_PAGE_ALIASES` 落到「电脑操控」页
+    （`agent.tools.enabled` 在）；`?page=skills` / `?page=mcp` 走同一张映射表；
   - **本轮（工具面扩展 + prompt caching）的探针条目与实测值**（2026-09-26 `AURORA_CAPTURE` 实跑：
     **48 张 PNG / 48 条 `checks`（45 条配了探针、3 条纯截图）/ 0 FAIL / 退出码 0**，
     45 条探针**全部 PASS**。计数口径与上文「不按固定张数校验」同款：这里的数字是**那一次实跑**
     的实测值，不是校验目标 —— 加场景就重跑，别照着它数）：
-    - `settings-agent.png`（`SETTINGS_AGENT_FIELDS_SCRIPT`）：开总开关时的实测值
-      `total=11`、`terminalFields=4`、**`allowPatternsFields=1`**、`filesFields=2`、
-      **`searchFields=2`**、`openFields=1`
-      （`pass` 条件要求 `allowPatternsFields === 1` 且 `searchFields >= 2`；`terminalFields` 只要求 `> 0`
-      ——它不写死数值，免得下一次扩栏时无谓变红）。**v13 起这个探针还会临时切到只读档**，
+    - 原 `settings-subagents.png`（`SETTINGS_SUBAGENTS_CHECK`）场景已取消（v46 起临时存在）：
+      子代理页由 `SETTINGS_PAGE_IDS` 循环直接拍顶部，区组 / 行数断言并入门控探针；
+    - `settings-agent-tools.png`（`SETTINGS_AGENT_TOOLS_FIELDS_SCRIPT`，原 `settings-agent.png`）：
+      开总开关时实测（2026-11 定向截图）：`page=电脑操控`、`total=12`、`terminalFields=4`、
+      `allowPatternsFields=1`、`filesFields=2`、`searchFields=2`、`openFields=2`、`snapshotFields=4`、
+      `snapshotEmpty=false`、`loopFields=1`、`browserFields=0`、`subagentFields=0`，
+      只读三断言（`readonlySummary` / `readonlyTools` / `readonlyRestored`）均为 true；
+      其余计数以当轮 `report.json` 为准。`pass` 条件要求 `allowPatternsFields === 1` 且 `searchFields >= 2`；
+      `terminalFields` 只要求 `> 0`
+      ——它不写死数值，免得下一次扩栏时无谓变红。**v13 起这个探针还会临时切到只读档**，
       断言区组摘要原文「只读模式：仅注册只读工具（不含写入与命令）」出现、
       「当前生效工具」块里列出的名字只含只读项（`read_file` / `list_dir` 在，
       `run_command` / `write_file` / `edit_file` / `open_path` / `todo_write` 一个都不在），
-      然后切回 `confirm` 并断言摘要消失 —— 这一条是"设置页摘要不骗人"的运行时证据
+      然后还原成出厂默认档（`auto` + 关闭老开关）并断言摘要消失 —— 这一条是"设置页摘要不骗人"的运行时证据
       （摘要与实际注册表是两套代码，只断言主进程注册表时摘要写错也没人发现）。
       终端卡片下「免确认命令模式」列表
       （`agent.tools.terminal.allowPatterns`，06 §11.7）**只数容器**：列表行与输入框都在容器内部、
@@ -2909,7 +2992,7 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
 
 ## 8. 插件界面（v36）
 
-- **设置 → 插件**（侧栏「扩展」组）三 tab：已安装 / 市场 / 开发。
+- **设置 → 插件**（侧栏「系统」组）三 tab：已安装 / 市场 / 开发。
   - 已安装：总开关、插件主题选择、安装确认（权限 / 工具 / SHA-256）与插件列表；每行只有
     状态 / 名称 / 版本 / 描述 / 一行统计、启停快捷开关与「配置」按钮
     （`data-field="plugins.config.<id>"`）。**不再内联展开详情或配置表单**；

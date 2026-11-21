@@ -71,6 +71,20 @@ describe('openCtxTab', () => {
     expect(second?.tabs).toHaveLength(CTX_TABS_DEFAULT.length + 1)
   })
 
+  it('「子代理」也是单例（v46）：查看器只有一个，再开只换焦点不刷标签', () => {
+    expect(CTX_TAB_DEFAULT_TITLE.subagent).toBe('子代理')
+    // 不在初始四标签里（它必须由"某次运行"打开，不能凭空存在）
+    expect(CTX_TABS_DEFAULT.some((tab) => tab.kind === 'subagent')).toBe(false)
+    const first = openCtxTab(CTX_TABS_DEFAULT, 'subagent')
+    expect(first?.created).toBe(true)
+    expect(first?.tab.id).toBe('subagent')
+    expect(first?.tab.title).toBe('子代理')
+    const second = openCtxTab(first!.tabs, 'subagent')
+    expect(second?.created).toBe(false)
+    expect(second?.tab.id).toBe('subagent')
+    expect(second?.tabs).toHaveLength(CTX_TABS_DEFAULT.length + 1)
+  })
+
   it('到上限返回 null（调用方据此给提示）', () => {
     const full: CtxTab[] = Array.from({ length: CTX_TABS_MAX }, (_, index) => ({
       id: index === 0 ? 'files' : `files-${index + 1}`,

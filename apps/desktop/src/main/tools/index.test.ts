@@ -35,6 +35,7 @@ import {
   registerExtensionTools,
   registerImageTools,
   registerSettingsTool,
+  toSubagentProfiles,
 } from './index.js'
 
 const HOME = 'C:\\Users\\tester'
@@ -682,6 +683,15 @@ describe('registerAgentCoreTools', () => {
     expect(tools.get('task')?.sensitivity).toBe('safe')
   })
 
+  it('默认配置的名册进 task 描述：出厂就有 Searcher / Coder 可选（v46）', () => {
+    const { tools, registry } = setupCore(new ToolRegistry(), makeSettings())
+    registry.sync()
+    const task = tools.get('task')
+    expect(task?.description).toContain('可用子代理')
+    expect(task?.description).toContain('searcher（Searcher，只读）')
+    expect(task?.description).toContain('coder（Coder，可写文件并执行命令）')
+  })
+
   it('readonly 档摘掉 todo_write、保留 todo_read（落盘的那半边才是有系统副作用的）', () => {
     const settings = makeSettings()
     settings.agent.permissionMode = 'readonly'
@@ -1071,5 +1081,58 @@ describe('registerImageTools', () => {
 
     registry.sync()
     expect(tools.get('echo')).toBeDefined()
+  })
+})
+describe('toSubagentProfiles（v46 装配层映射）', () => {
+  it('只取启用项；模型要求 providerId 与 model 成对非空，否则视为跟随会话', () => {
+    const settings = makeSettings()
+    settings.agent.subagents = [
+      {
+        id: 'searcher',
+        name: 'Searcher',
+        description: '调研',
+        instructions: '只读',
+        enabled: true,
+        access: 'read',
+        model: { providerId: '', model: '' },
+        builtin: true,
+      },
+      {
+        id: 'reviewer',
+        name: 'Reviewer',
+        description: '审代码',
+        instructions: '只看',
+        enabled: false,
+        access: 'write',
+        model: { providerId: 'p1', model: 'm1' },
+        builtin: false,
+      },
+      {
+        id: 'coder',
+        name: '  Coder  ',
+        description: '实现',
+        instructions: '改代码',
+        enabled: true,
+        access: 'execute',
+        model: { providerId: 'p1', model: '' },
+        builtin: true,
+      },
+    ]
+    const profiles = toSubagentProfiles(settings)
+    expect(profiles.map((item) => item.id)).toEqual(['searcher', 'coder'])
+    expect(profiles[0]).toEqual({
+      id: 'searcher',
+      name: 'Searcher',
+      description: '调研',
+      instructions: '只读',
+      access: 'read',
+    })
+    // 只给了一半（model 空）→ 不带 model（跟随会话），名称已 trim
+    expect(profiles[1]?.name).toBe('Coder')
+    expect(profiles[1]?.model).toBeUndefined()
+  })
+
+  it('未水合 / 缺字段时返回空名册（task 回落通用子代理）', () => {
+    expect(toSubagentProfiles(undefined)).toEqual([])
   })
 })

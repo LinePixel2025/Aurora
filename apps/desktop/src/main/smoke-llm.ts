@@ -58,6 +58,13 @@ export const STUB_MULTI_REPORT_A = 'STUB_SUB_A_OK'
 export const STUB_MULTI_REPORT_B = 'STUB_SUB_B_OK'
 
 /**
+ * 具名子代理场景（v46，docs/06 §19.6）：父对话派一次带 `agent: 'searcher'` 的 `task`。
+ * 子代理本身仍走 `isSubagentRequest` 那支（首轮工具 + 报告），因此断言可以同时覆盖
+ * 快照的 `agentId` / `agentName` / `access` / `model` 与「右栏面板」DOM 链路。
+ */
+export const STUB_AGENT_TASK_MARKER = 'STUB_AGENT_TASK_MARKER'
+
+/**
  * 用户消息含此标记 → 对话分流改走**终端工具链路**（docs/06 §11.7 的免确认模式）：
  * 第 1 轮返回一个 `run_command` 的 `tool_calls`，拿到工具结果后的第 2 轮回一句收尾文本。
  *
@@ -523,6 +530,57 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
               {
                 index: 0,
                 delta: { content: `${STUB_MARKER} 两个子代理都已完成。` },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSseStop(res)
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
+      // ── 父对话的具名子代理分流（v46，docs/06 §19.6）：派一次带 agent 的 task ──
+      const wantsAgentTask =
+        typeof lastUser?.content === 'string' && lastUser.content.includes(STUB_AGENT_TASK_MARKER)
+      if (wantsAgentTask) {
+        const agentTaskDone = (record.body?.messages ?? []).some(
+          (message) => message.role === 'tool',
+        )
+        if (!agentTaskDone) {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_smoke_agent_task_1',
+                      type: 'function',
+                      function: {
+                        name: 'task',
+                        arguments: JSON.stringify({
+                          description: '冒烟具名子代理',
+                          prompt: `${SUBAGENT_TASK_MARKER} 列一下当前目录并给一句汇总。`,
+                          agent: 'searcher',
+                        }),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+        } else {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: { content: `${STUB_MARKER} 具名子代理已完成。` },
                 finish_reason: null,
               },
             ],

@@ -17,6 +17,8 @@ import { createTodoTools } from './todo.js'
 import type { TodoItem, TodoPort } from './todo.js'
 import { ToolRegistry } from './registry.js'
 import type { ToolDefinition } from './registry.js'
+import type { SubagentProfile } from './task.js'
+import type { ProviderModelTarget } from '../host/agentHost.js'
 import type { SubagentSnapshot } from '@aurora/shared'
 import { createFakeProvider } from '../testing/fakeProvider.js'
 import type { ScriptRound } from '../testing/fakeProvider.js'
@@ -47,6 +49,8 @@ interface Harness {
   tool: ToolDefinition
   provider: ReturnType<typeof createFakeProvider>
   parent: ToolRegistry
+  /** provider.create() 的入参（v46：验证子代理固定模型是否真的透传） */
+  createCalls: Array<{ allowFallback?: boolean; sessionId?: string; model?: ProviderModelTarget }>
 }
 
 function createHarness(options: {
@@ -66,17 +70,26 @@ function createHarness(options: {
     sensitivity: 'confirm'
     sessionId: string
   }) => Promise<boolean | 'always' | 'machine'>
+  /** 装配层传入的子代理名册（v46，docs/06 §19.6） */
+  profiles?: readonly SubagentProfile[]
+  /** provider.create() 实际给出的模型（缺省 fake-model；用于验证回落与快照） */
+  actualModel?: string
 }): Harness {
   const provider = createFakeProvider(options.rounds)
   const parent = new ToolRegistry()
+  const createCalls: Harness['createCalls'] = []
   for (const tool of options.extraTools ?? []) parent.register(tool)
   const tool = createTaskTool({
     provider: {
-      create: () => {
+      create: (createOptions) => {
+        if (createOptions !== undefined) createCalls.push(createOptions)
         if (options.createThrows !== undefined) throw options.createThrows
-        return options.withProvider === false
-          ? undefined
-          : { provider, model: 'fake-model', temperature: 0.2 }
+        if (options.withProvider === false) return undefined
+        return {
+          provider,
+          model: options.actualModel ?? createOptions?.model?.model ?? 'fake-model',
+          temperature: 0.2,
+        }
       },
     },
     tools: parent,
@@ -85,9 +98,10 @@ function createHarness(options: {
       ? {}
       : { subagentToolNames: options.subagentToolNames }),
     ...(options.confirmTool === undefined ? {} : { confirmTool: options.confirmTool }),
+    ...(options.profiles === undefined ? {} : { profiles: options.profiles }),
   })
   parent.register(tool)
-  return { tool, provider, parent }
+  return { tool, provider, parent, createCalls }
 }
 
 describe('parentSessionIdOf', () => {
@@ -495,7 +509,7 @@ describe('createTaskTool 的写权限授予', () => {
     expect(result.subagent?.tools).toEqual(['read_file'])
     // 白名单把写工具滤掉后，快照必须按**实际**授予落 read（不能拿请求参数充数）
     expect(result.subagent?.permission).toBe('read')
-    expect(result.content).toContain('当前权限档未提供写工具')
+    expect(result.content).toContain('当前权限档未提供写入 / 命令类工具')
   })
 
   it('permission 非法取值 → isError 且不触碰 provider', async () => {
@@ -669,7 +683,7 @@ describe('createTaskTool 的多子代理与可写（docs/06 §19.5）', () => {
 
     expect(result.subagent?.permission).toBe('read')
     expect(result.subagent?.tools).toEqual(['read_file'])
-    expect(result.content).toContain('当前权限档未提供写工具')
+    expect(result.content).toContain('当前权限档未提供写入 / 命令类工具')
   })
 
   it('排队中被 abort：返回“未启动”，不会偷偷跑，也不占着槽位', async () => {
@@ -713,5 +727,176 @@ describe('createTaskTool 的多子代理与可写（docs/06 §19.5）', () => {
     const done = await first
     expect(done.content).toContain('报告')
     expect(limiter.snapshot(sessionId)).toEqual({ active: 0, queued: 0, writeLocked: false })
+  })
+})
+
+// ───────────────────────── 子代理名册与独立模型（v46，docs/06 §19.6） ─────────────────────────
+
+const SEARCHER: SubagentProfile = {
+  id: 'searcher',
+  name: 'Searcher',
+  description: '只读调研：定位实现与调用链',
+  instructions: '你是 Searcher，只做只读调研。',
+  access: 'read',
+}
+
+const CODER: SubagentProfile = {
+  id: 'coder',
+  name: 'Coder',
+  description: '实现型子任务：可改文件、可跑命令',
+  instructions: '你是 Coder，按目标改代码并自检。',
+  access: 'execute',
+  // 与 harness 的假 provider id 对齐，才能验证"指定模型原样透传、不触发回落"
+  model: { providerId: 'fake', model: 'coder-model' },
+}
+
+const MUTATING_TOOLS = () => [makeTool('write_file', 'confirm'), makeTool('edit_file', 'confirm')]
+const EXEC_TOOLS = () => [...MUTATING_TOOLS(), makeTool('run_command', 'confirm')]
+
+describe('createTaskTool 的子代理名册（v46）', () => {
+  it('有名册时工具描述列出「id（名称，档位）：用途」，参数带上 agent 枚举', () => {
+    const { tool } = createHarness({ rounds: [], profiles: [SEARCHER, CODER] })
+    expect(tool.description).toContain('可用子代理')
+    expect(tool.description).toContain('searcher（Searcher，只读）：只读调研')
+    expect(tool.description).toContain('coder（Coder，可写文件并执行命令）：实现型子任务')
+    const properties = tool.parameters.properties as Record<string, { enum?: string[] }>
+    expect(properties['agent']?.enum).toEqual(['searcher', 'coder'])
+  })
+
+  it('名册为空时不渲染 agent 参数、描述回落通用子代理（老路径逐字不变）', () => {
+    const { tool } = createHarness({ rounds: [] })
+    expect(tool.description).not.toContain('可用子代理')
+    const properties = tool.parameters.properties as Record<string, unknown>
+    expect('agent' in properties).toBe(false)
+  })
+
+  it('按 id 选中 Searcher：人设注入 instructions、快照带 agentId/agentName/access/read', async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '调研结论' }],
+      profiles: [SEARCHER],
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'searcher' },
+      CONTEXT,
+    )
+    expect(result.content).toBe('调研结论')
+    expect(result.summary).toBe(`Searcher：${DESCRIPTION}`)
+    const system = provider.calls[0]?.messages[0]
+    expect(system?.content).toContain('你是 Searcher，只做只读调研。')
+    expect(system?.content).toContain('子代理')
+    const snapshot = result.subagent
+    expect(snapshot?.agentId).toBe('searcher')
+    expect(snapshot?.agentName).toBe('Searcher')
+    expect(snapshot?.access).toBe('read')
+    expect(snapshot?.permission).toBe('read')
+    expect(snapshot?.model).toEqual({ providerId: 'fake', model: 'fake-model' })
+  })
+
+  it('按名称也能选中（大小写不敏感），并如实列出可用 id', async () => {
+    const { tool } = createHarness({ rounds: [{ text: 'ok' }], profiles: [SEARCHER] })
+    const hit = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'SEARCHER' },
+      CONTEXT,
+    )
+    expect(hit.subagent?.agentId).toBe('searcher')
+
+    const miss = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'reviewer' },
+      CONTEXT,
+    )
+    expect(miss.isError).toBe(true)
+    expect(miss.content).toContain('没有 id 或名称为「reviewer」')
+    expect(miss.content).toContain('searcher（Searcher）')
+  })
+
+  it('execute 档：run_command 进子表、写锁生效、快照 access=execute', async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '改完了' }],
+      extraTools: EXEC_TOOLS(),
+      profiles: [CODER],
+      confirmTool: async () => true,
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'coder' },
+      CONTEXT,
+    )
+    const tools = provider.calls[0]?.tools?.map((item) => item.name) ?? []
+    expect(tools).toContain('run_command')
+    expect(tools).toContain('write_file')
+    expect(result.subagent?.access).toBe('execute')
+    expect(result.subagent?.permission).toBe('write')
+    expect(result.content).not.toContain('按只读执行')
+  })
+
+  it('execute 档但父表只给了写工具（命令被权限档摘掉）：降级为 write 并说明', async () => {
+    const { tool } = createHarness({
+      rounds: [{ text: '只能改文件' }],
+      extraTools: MUTATING_TOOLS(),
+      profiles: [CODER],
+      confirmTool: async () => true,
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'coder' },
+      CONTEXT,
+    )
+    expect(result.subagent?.access).toBe('write')
+    expect(result.content).toContain('只能改文件、不能执行命令')
+  })
+
+  it('Coder 请求了 execute 但没接确认链：按只读执行，快照如实落 read', async () => {
+    const { tool } = createHarness({
+      rounds: [{ text: '只读跑完' }],
+      extraTools: EXEC_TOOLS(),
+      profiles: [CODER],
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'coder' },
+      CONTEXT,
+    )
+    expect(result.subagent?.access).toBe('read')
+    expect(result.content).toContain('装配层未接入确认链')
+  })
+
+  it('子代理固定模型透传给 provider.create；快照记实际模型', async () => {
+    const { tool, createCalls } = createHarness({
+      rounds: [{ text: 'ok' }],
+      profiles: [CODER],
+      confirmTool: async () => true,
+      extraTools: EXEC_TOOLS(),
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'coder' },
+      CONTEXT,
+    )
+    expect(createCalls[0]?.model).toEqual({ providerId: 'fake', model: 'coder-model' })
+    expect(result.subagent?.model).toEqual({ providerId: 'fake', model: 'coder-model' })
+    expect(result.content).not.toContain('已回退')
+  })
+
+  it('固定模型不可用 → 装配层回落：结果说明回退，快照记实际模型', async () => {
+    const { tool } = createHarness({
+      rounds: [{ text: 'ok' }],
+      profiles: [CODER],
+      confirmTool: async () => true,
+      extraTools: EXEC_TOOLS(),
+      actualModel: 'global-model',
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'coder' },
+      CONTEXT,
+    )
+    expect(result.content).toContain('该子代理配置的模型当前不可用')
+    expect(result.content).toContain('global-model')
+    expect(result.subagent?.model).toEqual({ providerId: 'fake', model: 'global-model' })
+  })
+
+  it('指定 agent 时 permission 参数被忽略（不因旧参数报错、也不放大档位）', async () => {
+    const { tool } = createHarness({ rounds: [{ text: 'ok' }], profiles: [SEARCHER] })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, agent: 'searcher', permission: 'write' },
+      CONTEXT,
+    )
+    expect(result.isError).toBeUndefined()
+    expect(result.subagent?.access).toBe('read')
   })
 })

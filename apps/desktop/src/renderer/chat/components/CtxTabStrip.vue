@@ -19,6 +19,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import type { PluginPanelInfo } from '@aurora/shared'
 import {
+  Bot,
   ClipboardList,
   FileText,
   Globe,
@@ -61,6 +62,8 @@ const TAB_ICONS: Record<CtxTabKind, Component> = {
   files: FileText,
   terminal: Terminal,
   browser: Globe,
+  // 子代理查看器（v46）：由对话里的子代理标识 / 子代理页按钮打开，不在「＋」菜单里。
+  subagent: Bot,
   plugin: pluginPanelIcon(undefined),
 }
 
@@ -76,6 +79,7 @@ const NEW_TAB_LABEL: Record<CtxTabKind, string> = {
   files: '新建文件标签',
   terminal: '新建终端标签',
   browser: '新建浏览器标签',
+  subagent: '子代理对话',
   plugin: '插件面板',
 }
 

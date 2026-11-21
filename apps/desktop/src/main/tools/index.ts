@@ -86,6 +86,7 @@ import {
   type ScreenshotPort,
   type ComputerUsePort,
   type SettingsToolPort,
+  type SubagentProfile,
   type TodoPort,
   type ToolRegistry,
   type ViewImagePort,
@@ -494,6 +495,33 @@ export function registerImageTools(deps: ImageToolsDeps): ImageToolsRegistry {
  */
 export const AGENT_CORE_TOOL_NAMES = ['todo_write', 'todo_read', 'task', 'ask_user'] as const
 
+/**
+ * `agent.subagents` → 内核名册（v46，docs/06 §19.6）。
+ *
+ * 三条口径：
+ * - **只取启用项**（禁用 = 模型看不到、也调不到）；
+ * - 模型要求 `providerId` 与 `model` **成对**非空，否则视为"跟随会话模型"（写了一半的配置
+ *   不该让子代理固定到一个不存在的模型上）；
+ * - 文本字段再 trim 一次（Schema 已 trim，这里防旧配置 / 手写配置的空白）。
+ */
+export function toSubagentProfiles(settings: Settings | undefined): SubagentProfile[] {
+  const profiles: SubagentProfile[] = []
+  for (const item of settings?.agent.subagents ?? []) {
+    if (!item.enabled) continue
+    const providerId = item.model.providerId.trim()
+    const model = item.model.model.trim()
+    profiles.push({
+      id: item.id,
+      name: item.name.trim(),
+      description: item.description.trim(),
+      instructions: item.instructions.trim(),
+      access: item.access,
+      ...(providerId === '' || model === '' ? {} : { model: { providerId, model } }),
+    })
+  }
+  return profiles
+}
+
 export interface AgentCoreToolsDeps {
   tools: ToolRegistry
   logger: Logger
@@ -570,13 +598,16 @@ export function registerAgentCoreTools(deps: AgentCoreToolsDeps): AgentCoreTools
       // 是执行时从**父表**过滤出来的（agent-core `tools/task.ts`）——只读档下父表里本就没有
       // 写 / 执行类工具，子代理自然也拿不到。
       //
-      // `permission: 'write'`（2026-09）不是新通道：写类工具进子表后仍由**同一个**确认回调
-      // 逐次判定（档位 / 项目根 / 免确认模式），这里注入的只是"把确认交回那条链"的入口。
+      // 子代理名册（v46，docs/06 §19.6）：`agent.subagents` 里启用的定义在**每次 sync 时**
+      // 现读成内核形状（工具描述随之重建，用户改完设置下一轮请求就生效）。
+      // `permission: 'write'` / `execute` 不是新通道：写 / 命令类工具进子表后仍由**同一个**
+      // 确认回调逐次判定（档位 / 项目根 / 免确认模式），这里注入的只是"把确认交回那条链"的入口。
       deps.tools.register(
         createTaskTool({
           provider: deps.provider,
           tools: deps.tools,
           logger: deps.logger,
+          profiles: toSubagentProfiles(deps.getSettings?.()),
           ...(deps.getConfirmTool === undefined
             ? {}
             : {

@@ -28,6 +28,7 @@ import type {
   ToolSource,
 } from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
+import { repairToolCallPairs } from '../session/history.js'
 import { createToolNameCodec, type ToolNameCodec } from '../llm/toolNames.js'
 
 /**
@@ -457,6 +458,14 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
         await appendAssistant(options, messageId, text, calls, reasoning)
       }
       /**
+       * 已产出的 tool_call 一个都没执行，但 assistant(tool_calls) 已经落盘 ——
+       * 必须补上每个 id 的 tool 结果，否则下一次请求会因配对不完整被服务端 400
+       * （「执行过一次中断的任务后，再发任何消息都报错」）。内容如实写「未返回结果」。
+       */
+      if (calls.length > 0) {
+        await appendInterruptedToolResults(options, calls, '流中断未执行')
+      }
+      /**
        * 用户取消（signal 已 abort）时**按「暂停」收尾**，而不是报 `error`：
        * 装配层 `agent.abort()` 已经把 job 乐观落成 `aborted`，这里若报 error，
        * `finishJob` 会反手把它改写成 `error` —— 点「停止」的 job 终态必须保持 `aborted`
@@ -683,6 +692,36 @@ async function settleUnexecutedCalls(
     call.outputSummary ??= summary
     call.endedAt ??= new Date().toISOString()
     await options.updateToolCall(messageId, { ...call })
+    /**
+     * 补一条失败 tool 结果：assistant(tool_calls) 已落盘，缺结果会让下一次请求
+     * （点「继续」/ 发新消息）因配对不完整被服务端 400。与流中断那条同一口径。
+     */
+    await options.append({
+      role: 'tool',
+      content: interruptedToolContent(call, summary),
+      toolCallId: call.id,
+    })
+  }
+}
+
+/** 未执行 / 流中断的 tool_call：给模型看的结果文案（不编造工具输出） */
+function interruptedToolContent(call: StoredToolCall, fallback: string): string {
+  const detail = call.outputSummary?.trim() || fallback
+  return `工具 "${call.name}" 未返回结果（${detail}），已按失败处理。`
+}
+
+/** 流在 `[DONE]` 前断开：本轮的每个 tool_call 都补一条失败结果（配对完整性） */
+async function appendInterruptedToolResults(
+  options: AgentLoopOptions,
+  calls: readonly StoredToolCall[],
+  summary: string,
+): Promise<void> {
+  for (const call of calls) {
+    await options.append({
+      role: 'tool',
+      content: interruptedToolContent(call, summary),
+      toolCallId: call.id,
+    })
   }
 }
 
@@ -735,7 +774,7 @@ function toMessages(
     })
   }
 
-  for (const message of history) {
+  for (const message of repairToolCallPairs(history)) {
     if (message.role === 'system') continue
     if (message.role === 'tool') {
       out.push({

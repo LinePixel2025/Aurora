@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 45 as const
+export const CONFIG_VERSION = 46 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -813,6 +813,10 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 浏览器能力（含私网访问 / 媒体）与并发会话上限由用户显式开启与放宽，
   // AI 自行打开或放大等于给自己扩权。只能由用户在设置页操作。
   'agent.browser',
+  // 子代理定义（v46，docs/06 §19.6）：权限档（可写 / 可执行）与独立模型是用户对 Agent 的
+  // 授权边界 —— AI 给自己加一个 execute 档子代理、或把它指向另一个模型，等于绕过确认链
+  // 自我扩权。只能由用户在设置页操作。
+  'agent.subagents',
   // 黑名单配置自身（v15）：AI 往里追加路径等于自己收紧自己的可写面（自我 DoS）；
   // 放宽本就不生效（判定从不读用户配置）。用户经设置页 `settings:update` 修改不受影响。
   'advanced.readonlyPrefixes',
@@ -964,6 +968,85 @@ export const AgentBrowserSchema = z
   .default({})
 export type AgentBrowserConfig = z.infer<typeof AgentBrowserSchema>
 
+/**
+ * 子代理的工具权限档（v46，docs/06 §19.6）。
+ *
+ * 三档是**工具面的粗粒度授权**，不是第二套白名单：
+ * - `read`：父表里 `sensitivity !== 'confirm'` 的只读工具（历史行为）；
+ * - `write`：额外放开 `write_file` / `edit_file`（`SUBAGENT_WRITE_TOOLS`）；
+ * - `execute`：再额外放开 `run_command`（`SUBAGENT_EXECUTE_TOOLS`）。
+ *
+ * 三档都碰不到 MCP / `task` / `ask_user` / `submit_plan`；写与执行子代理整段串行
+ * （同一父会话同时最多 1 个），确认链仍逐次回父会话判定（docs/06 §19.2）。
+ */
+export const SUBAGENT_ACCESS_LEVELS = ['read', 'write', 'execute'] as const
+export type SubagentAccess = (typeof SUBAGENT_ACCESS_LEVELS)[number]
+
+/** 权限档的展示文案（设置页下拉 / 快照徽章共用，避免两处各写一份） */
+export const SUBAGENT_ACCESS_LABELS: Record<SubagentAccess, string> = {
+  read: '只读（查询与读取）',
+  write: '可写文件',
+  execute: '可写文件并可执行命令',
+}
+
+/** 子代理数量上限（防工具描述膨胀与一次请求派发失控） */
+export const MAX_SUBAGENTS = 20
+
+/**
+ * 单个子代理定义（v46，docs/06 §19.6）：用户在设置页配置、主代理按 `description` 选型。
+ *
+ * - `description` 是**选型依据**：原样进入 `task` 工具的名册，主代理据此判断"什么场合派它"；
+ * - `instructions` 是子代理的**系统提示词**（角色 / 工作方式 / 输出要求），
+ *   公共约束（看不到父对话、不提问、一次跑完、如实报告）由内核统一追加；
+ * - `model` 全空 = 跟随当前会话模型（会话级覆盖再落全局），`providerId` / `model` 必须成对给出；
+ * - `builtin` 只标记出厂预设（Searcher / Coder），用于「恢复预设」，不参与运行期判定。
+ *
+ * **整组在 `SETTINGS_READONLY_PREFIXES` 里**：子代理的权限档与模型是用户对 Agent 的授权边界，
+ * AI 不得自行新增子代理、放宽档位或改模型（与 `agent.browser` / `computerUse` 同一条自我提权防线）。
+ */
+export const SubagentSchema = z.object({
+  id: z.string().min(1).max(24).regex(RESOURCE_NAME_PATTERN, RESOURCE_NAME_RULE),
+  name: z.string().trim().min(1).max(40),
+  description: z.string().trim().min(1).max(200),
+  instructions: z.string().trim().min(1).max(4_000),
+  enabled: z.boolean().default(true),
+  access: z.enum(SUBAGENT_ACCESS_LEVELS).default('read'),
+  model: z
+    .object({
+      providerId: z.string(),
+      model: z.string(),
+    })
+    .default({ providerId: '', model: '' }),
+  builtin: z.boolean().default(false),
+})
+export type SubagentConfig = z.infer<typeof SubagentSchema>
+
+/**
+ * 子代理列表（v46）：id 唯一、条数有上限。
+ *
+ * 唯一性放在数组级 `superRefine`（单条 Schema 看不到兄弟项）；重复 id 会让 `task` 的
+ * `agent` 参数含义不确定，因此在写配置这一步就拒绝。
+ */
+export const SubagentsSchema = z
+  .array(SubagentSchema)
+  .max(MAX_SUBAGENTS)
+  .superRefine((list, ctx) => {
+    const seen = new Set<string>()
+    list.forEach((item, index) => {
+      const key = item.id.toLowerCase()
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `子代理 id 重复：${item.id}`,
+          path: [index, 'id'],
+        })
+        return
+      }
+      seen.add(key)
+    })
+  })
+  .default([])
+
 export const AgentSchema = z.object({
   tools: AgentToolsSchema,
   /**
@@ -1044,6 +1127,14 @@ export const AgentSchema = z.object({
    * 用户走设置页 / `settings:update` 不受该黑名单影响。
    */
   browser: AgentBrowserSchema,
+  /**
+   * 子代理定义（v46，docs/06 §19.6）：用户在设置页增删改，`task` 工具按 `description`
+   * 把它们列成名册供主代理选型；每个子代理可单独指定模型与工具权限档。
+   *
+   * 整组在 `SETTINGS_READONLY_PREFIXES` 里（AI 改不动）：加一个可写 / 可执行子代理、
+   * 把它指向另一个模型，都是给 Agent 扩权 —— 只能由用户在设置页操作。
+   */
+  subagents: SubagentsSchema,
 })
 export type AgentSettings = z.infer<typeof AgentSchema>
 
@@ -1395,6 +1486,8 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'agent.loop': '循环的并发度与防失控口径属于 Agent 自己的停止闸门，不允许通过工具修改',
   'agent.snapshots': '写前快照是改动可回滚的兜底，不允许通过工具关闭',
   'agent.browser': '浏览器能力与并发上限是用户对 Agent 的授权边界，AI 不得自行开启或放宽',
+  'agent.subagents':
+    '子代理的权限档与独立模型是用户对 Agent 的授权边界，AI 不得自行新增或放宽（docs/06 §19.6）',
   'advanced.readonlyPrefixes':
     '只读黑名单的配置自身不允许通过工具修改（防自我收紧；放宽本就不生效）',
   center: 'Center 连接是数据外发通道，不允许通过工具启用或改向（docs/12 §7）',

@@ -200,6 +200,8 @@
       "modes.work.workspaceDir",
       // v35 新增：内置浏览器（开关 / 并发 / 内网访问 = Agent 的数据外发面，见 06 §27）
       "agent.browser",
+      // v46 新增：子代理定义（权限档 / 独立模型 = 用户对 Agent 的授权边界，见 06 §19.6）
+      "agent.subagents",
     ],
   },
   "agent": {
@@ -245,6 +247,20 @@
       "compatUserAgent": true, // Agent 标签初始使用 Chromium 兼容 UA
       "allowMedia": false, // 是否放行 Agent 标签的摄像头 / 麦克风权限请求
     },
+    // v46 新增：子代理定义（见 06 §19.6）。整组在 SETTINGS_READONLY_PREFIXES 里 ——
+    // 权限档与独立模型是用户对 Agent 的授权边界，AI 的 set_setting 一律拒绝
+    "subagents": [
+      {
+        "id": "searcher", // 资源名规则（禁 .）；task.agent 用它寻址
+        "name": "Searcher", // 展示名（卡片徽章 / 面板标题）
+        "description": "只读调研：在项目里定位实现、追调用链、汇总结论", // 什么时候用它（进 task 描述名册）
+        "instructions": "你是 Searcher……", // 子代理系统提示词（≤4000）
+        "enabled": true, // false = 模型看不到也调不到
+        "access": "read", // read | write | execute（工具面三档，见 06 §19.2）
+        "model": { "providerId": "", "model": "" }, // 两者都空 = 跟随当前会话模型
+        "builtin": true, // 出厂预设标记（只影响设置页「恢复预设」）
+      },
+    ], // 最多 20 条、id 唯一；出厂 = Searcher（read）/ Coder（execute）
   },
   // v16 新增：Aurora Center 连接（docs/12）。整组在 SETTINGS_READONLY_PREFIXES 里 ——
   // 连接目标是数据外发通道，AI 的 set_setting 一律拒绝；只能由用户在设置页操作
@@ -600,7 +616,7 @@
   `maxSnapshotBytes`（单个文件超过这个大小就不留底，默认 512 KiB —— **不静默**：
   工具结果里会写"未保存快照：文件过大"）、`totalBudgetBytes`（备份目录总预算，默认 200 MiB，
   超出时从最旧开始删）。快照落在 `<userData>/backups/<sessionId>/`。
-  **用户可写**（「智能与工具」页调整），**AI 不可写**：`agent.snapshots` 在
+  **用户可写**（「设置 → Agent → 电脑操控 → 文件备份」里调整），**AI 不可写**：`agent.snapshots` 在
   `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款），AI 的 `set_setting` 一律拒绝——
   关掉写前备份等于拆掉回滚保险。
 - `agent.loop`（**v15 新增、v34 收窄**，见 06 §4.1 / §5）：Agent 循环唯一剩下的旋钮是
@@ -612,7 +628,7 @@
     `maxTotalTokens`（token **只统计不限制**，用量照常展示）、
     `autoContinueRounds`（没有"轮次用尽"这个日常事件，就没有"自动续几轮"）。
     迁移 `v33 → v34` 把三个旧值**整体丢弃**、不做映射 —— 搬进新字段只会造出没人消费的影子配置。
-  **用户可写**（「智能与工具 → Agent 循环」里调），**AI 不可写**：`agent.loop` 在
+  **用户可写**（「设置 → Agent → 电脑操控 → Agent 循环」里调），**AI 不可写**：`agent.loop` 在
   `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款）—— 让 AI 给自己放大执行预算，
   等于绕过"该停下来问用户"的那道闸门。
 - `agent.browser`（**v35 新增**，见 06 §27）：内置浏览器 Agent 工具组 —— 能力面等价 Playwright MCP，
@@ -626,6 +642,15 @@
   （不控制自动播放；播放策略仍由 Chromium 默认行为决定）。
   **整组在 `SETTINGS_READONLY_PREFIXES` 里**：放开并发 / 内网 / 媒体等于扩大 Agent 的数据外发面，
   AI 的 `set_setting` 一律拒绝，只能由用户在设置页改；`readonly` 权限档下整组**不注册**。
+- `agent.subagents`（**v46 新增**，见 06 §19.6）：自定义子代理定义，每条
+  `{ id, name, description, instructions, enabled, access, model, builtin }`。
+  `description` 是**选型依据**（原样进 `task` 工具描述的名册，主代理据此判断什么时候派谁）；
+  `instructions` 是子代理系统提示词；`access` 是工具面三档（`read` / `write` / `execute`，
+  后两档的写 / 命令仍走父会话确认链）；`model` 是 `{ providerId, model }`，两者都空 = 跟随
+  当前会话模型（解析优先级：子代理模型 > 会话覆盖 > 全局，见 06 §3）。
+  **最多 20 条、id 唯一**（数组级校验）；出厂预设两个：**Searcher**（只读）与 **Coder**（可执行），
+  可编辑 / 禁用 / 恢复预设。**整组在 `SETTINGS_READONLY_PREFIXES` 里**：增加可写 / 可执行子代理、
+  或把它指向另一个模型，都是绕过确认链的自我扩权路径 —— AI 的 `set_setting` 一律拒绝。
 - `automations`（**v19 新增**，见 docs/13 §2.2 / §11）：**自动化（Agent Mode / Normal Mode）**的
   总开关，整组只有 `enabled` 一个字段（默认 `true`）。**关闭 = 引擎停止评估与触发**，
   定义与运行历史原样保留（回看历史不受影响）；设置页入口在「模式」页顶部的「自动化」区组
@@ -930,12 +955,14 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   用户已写的 `channel` / 智慧提醒字段原样保留）、
   `v44 → v45`（**移除 Code Mode**，见 docs/05：删除 `modes.code` 占位配置组；
   `modes.current === 'code'` 归一为 `'classroom'`（出厂默认 / 推荐首发模式）；
-  `modes` 分组缺失时不凭空造对象，其他 `modes.current` 值原样保留）。
-  四十五条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `modes` 分组缺失时不凭空造对象，其他 `modes.current` 值原样保留）、
+  `v45 → v46`（**新增 `agent.subagents`**，见 06 §19.6：`agent` 存在但 `subagents` 不是数组时
+  写入出厂预设 Searcher / Coder；已有数组原样保留；`agent` 分组缺失时不凭空造对象）。
+  四十六条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **45** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **46** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1076,11 +1103,13 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   改它不会改变界面语言，因此**设置页与引导页都不再显示该选择器**（保存时仍原样回传，配置不丢）。
 - **页面骨架**：所有页面统一「标题 + 一句话说明 + 分组卡片」（`theme.css` 的
   `.page` / `.page-title` / `.page-sub` + `settings/settings.css` 的 `.section-card` /
-  `.section-title` / `.section-desc` / `.empty-state`）；侧栏按「基础 / AI 能力 / 系统」三组排列。
-- **页面结构（v39 起 12 页）**：`SETTINGS_PAGE_IDS = ['general', 'sessions', 'modes', 'notifications',
-  'llm', 'voice', 'agent', 'computer-use', 'awareness', 'center', 'plugins', 'advanced']`（数组顺序即截图出图顺序），
-  侧栏按「基础 / 智能 / 连接 / 扩展 / 系统」五组排列：
-  - **基础**：`general` 通用（启动与快捷键 / 外观 / 提示条 / 勿扰时段 / 关于与更新）、
+  `.section-title` / `.section-desc` / `.empty-state`）；侧栏按「本机 / 智能 / Agent / 系统」四组排列。
+- **页面结构（2026-11 起 16 页、四组）**：`SETTINGS_PAGE_IDS = ['general', 'sessions', 'modes',
+  'notifications', 'llm', 'voice', 'agent-tools', 'agent-browser', 'agent-subagents', 'agent-skills',
+  'agent-mcp', 'awareness', 'center', 'plugins', 'advanced']`（数组顺序即截图出图顺序，共 15 项；
+  Computer Use 不进循环，由 `settings-computer-use.png` 单列场景拍），
+  侧栏 16 项在默认窗高下放不下：导航区独立滚动，切换页面时内容区回到顶部，深链打开时当前项自动滚入视口。
+  - **本机**：`general` 通用（启动与快捷键 / 外观 / 提示条 / 勿扰时段 / 关于与更新）、
     **`sessions` 会话管理（2026-09-30 新增）**：
     **项目管理区组整体自「通用」页迁入**（`projects.*` 锚点与逻辑原样搬，见 §1 的 `projects`；
     项目根可用性警示也从右栏卡改到这里的 AppToast 文案「项目目录不可用」）+
@@ -1092,21 +1121,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     `todos/<id>.json` / `todos/<id>-sub.json`，再删 `sessions/<id>.json`，最后广播删除事件。
     todo 清理失败时不删会话、不广播；`quick` 与普通会话走同一删除路径）、
     `modes` 模式（**自动化总开关区组（v19，`automations.enabled`，不跟模式门控）** + 模式卡 +
-    ClassRoom 区组 + Work 区组，见 §7）；
-  - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
-    `voice` 语音（TTS 区组 + STT 区组）、
-    `agent` Agent 设置（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠；2026-10 前称「智能与工具」）、
-    **`computer-use` Computer Use（v39 新增，06 §28）**：总开关与前提（平台 / 模型 vision / 权限档）、
-    视觉（`showVirtualCursor` / `glow` / `showHud`，其中 `showHud` = 顶部操作过程面板）、
-    节奏（`moveDurationMs` / `typingDelayMs` /
-    `screenshotMaxWidth`）、安全限额（`maxActions` / `idleStopMinutes` / `allowedApps` /
-    `deniedApps`）与使用说明；锚点前缀 `computer-use.*`，截图场景 `settings-computer-use.png`。
-    整组在 `SETTINGS_READONLY_PREFIXES`，AI 不可改。
-    `awareness` 文件自感知（见 06 §26）；
-  - **连接**：`center` Aurora Center；
-  - **扩展**：`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
-  - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
-  - **`notifications` 提醒（v37 新增，v38 / v40 / v41 / v42 / v44 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
+    ClassRoom 区组 + Work 区组，见 §7）、
+    **`notifications` 提醒（v37 新增，v38 / v40 / v41 / v42 / v44 扩展；2026-10-25 聚合定时提醒与勿扰时段）**：
     自上而下六个区组 —— ①「默认提醒方式」四选一；②「流光提醒」细节
     （提示音 / 自定义音效（v42：选择文件 / 恢复默认）/ 音量 / 朗读 / 弹窗大小 / 停留时长，
     非流光通道时置灰）；
@@ -1133,9 +1149,30 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     `settings-notifications-schedule.png`（定时提醒 + 勿扰区组，课前提醒按
     「三控件或 data-empty 二选一」断言）；任务完成区组的默认值 / 置灰由
     `settings-notifications-task` 单独核对。
-  - 旧页深链兼容映射：`?page=tts` → `voice`、`?page=skills|mcp` → `agent`；
-    `general` / `modes` / `llm` / `advanced` 页 id 不变，旧深链继续可用。
-- **Skill 管理**（目标 6 页 IA 下为「Agent 设置」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
+  - **智能**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
+    `voice` 语音（TTS 区组 + STT 区组）、
+    **`computer-use` Computer Use（v39 新增，06 §28）**：总开关与前提（平台 / 模型 vision / 权限档）、
+    视觉（`showVirtualCursor` / `glow` / `showHud`，其中 `showHud` = 顶部操作过程面板）、
+    节奏（`moveDurationMs` / `typingDelayMs` /
+    `screenshotMaxWidth`）、安全限额（`maxActions` / `idleStopMinutes` / `allowedApps` /
+    `deniedApps`）与使用说明；锚点前缀 `computer-use.*`，截图场景 `settings-computer-use.png`。
+    整组在 `SETTINGS_READONLY_PREFIXES`，AI 不可改。
+    `awareness` 文件自感知（见 06 §26）；
+  - **Agent（2026-11 由原「Agent 设置」单页拆成五页；该页 2026-10 前称「智能与工具」）**：
+    `agent-tools` **电脑操控**（`agent.tools.*`：总开关与工作目录 / 终端（含免确认命令模式）/
+    文件 / 文件备份（`agent.snapshots.*` + `SnapshotList`）/ 文件检索 / 打开 / 当前生效工具，
+    以及 `agent.loop.*` 的 Agent 循环）、
+    `agent-browser` **内置浏览器**（`agent.browser.*` 六项，v35，见 06 §27）、
+    `agent-subagents` **子代理**（`agent.subagents.*`，v46 见 06 §19.6；字段锚点
+    `agent.subagents.<id>.*`，添加表单 `agent.subagents.add*`，回执经页级 Toast）、
+    `agent-skills` **技能**（`skills.*`）、`agent-mcp` **MCP 服务器**（`mcp.*`）；
+    五页均为「页头 + 常显静态区组」，页内不再有可折叠 section-card；
+  - **系统**：`center` Aurora Center；`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
+    `advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
+  - 旧页深链兼容映射（渲染层 `LEGACY_PAGE_ALIASES`）：`?page=tts` → `voice`、
+    `?page=agent` → `agent-tools`、`?page=skills` → `agent-skills`、`?page=mcp` → `agent-mcp`；
+    `agent` / `skills` / `mcp` 旧 id 不再存在，`general` / `modes` / `llm` / `advanced` 页 id 不变。
+- **Skill 管理**（现为「设置 → Agent → 技能」页）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
   - 实现状态（P6+）：`skills.userDir` **真正生效**（此前运行时硬编码 `userData/skills`，
     配置项是死字段）。空串回落 `userData/skills`；填自定义目录后保存会**按新目录重扫**。
     页面显示「当前生效目录」与「上次扫描时间」，并提供**真实的**「重新扫描」
@@ -1143,7 +1180,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     `skills:status` 的 `failed` / `warnings` 并在页面提示，不再静默吞掉。
     另：目录切换复用**同一个注册表实例**（`setUserDir` + 重扫）——`use_skill` 工具的闭包
     与提示词组装都持有该实例，换实例会让它们继续指向旧表，表现为「改了目录但模型仍看到旧技能」。
-- **MCP 管理**（目标 6 页 IA 下为「Agent 设置」页的 MCP 区组）：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
+- **MCP 管理**（现为「设置 → Agent → MCP 服务器」页）：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
   - 实现状态（v0.3.0）：列表读写与凭据脱敏沿用 v0.1.0；**状态灯**由 `mcp:status` /
     `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
     最近一次失败原因），`lazyConnect` 可在设置页切换（收在「高级」折叠里）。
@@ -1154,8 +1191,9 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     编辑交互与「环境变量」完全同款）；已配置的头在服务器条目上按名字列出并注明「值已加密存储」
     （读只读标记 `headersSet`，§1.1），留空 = 不改动已有值，删除某一行 = 删除该头。
     字段与凭据链路见 §1 / §1.1，传输侧行为见 06 §7。
-- **电脑操控**（`agent.tools.*`，P6++）：目标 6 页 IA 下并入「智能与工具」页（`agent`，
-  与技能、MCP 区组同页折叠；v8 前为「AI 能力」组独立页）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
+- **电脑操控**（`agent.tools.*`，P6++）：现为独立页「设置 → Agent → 电脑操控」（`agent-tools`；
+  2026-11 前并入「Agent 设置」单页，与技能、MCP 区组同页折叠；v8 前为「AI 能力」组独立页）。
+  页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
   终端（开关 / 超时 ms / 输出字符上限 / **免确认命令模式列表**）、文件（开关 / 单次读取字节上限）、
   **文件检索**（开关 / 结果条数上限，`agent.tools.search.*`，v12 新增）、打开（开关）；
   字段路径见 §1，工具能力与安全边界见 06 §11。
@@ -1189,7 +1227,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     生效后由权限档决定：`auto` 完全权限直接放行；`confirm` 档按旧 auto 的项目边界执行
     （根内直接执行、越界弹卡、无项目直接放行）；命中 `allowPatterns` 的 `run_command`
     在 confirm 档仍免确认（见 06 §11.7）。
-- **内置浏览器**（`agent.browser.*`，v35，见 06 §27）：并入「智能与工具（`agent`）」页的折叠区组，
+- **内置浏览器**（`agent.browser.*`，v35，见 06 §27）：现为独立页「设置 → Agent → 内置浏览器」
+  （`agent-browser`；2026-11 前为「Agent 设置」页内置浏览器区组），
   六项 —— 总开关（`agent.browser.enabled`）、并发上限（`maxSessions`，1–4）、空闲释放分钟数
   （`idleMinutes`，1–60）、内网访问（`allowPrivateNetwork`）、兼容 UA（`compatUserAgent`）、
   网页媒体权限（`allowMedia`）。字段路径见 §1，工具与安全边界见 06 §27。
@@ -1204,7 +1243,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     （不改变自动播放策略）。
   - 整组**只读**（`SETTINGS_READONLY_PREFIXES`）：AI 的 `set_setting` 一律拒绝，只能由用户在这里改；
     只读权限档下整组不注册（门控见 §6.1）。
-- **语音**（`tts.*` / `stt.*`，P6+ 语音轮 起）：目标 6 页 IA 下为「语音」页（`voice`，TTS 区组 + STT 区组；
+- **语音**（`tts.*` / `stt.*`，P6+ 语音轮 起）：现为「设置 → 智能 → 语音」页（`voice`，TTS 区组 + STT 区组；
   v8 前为「AI 能力」组第 2 项、仅 TTS）。TTS 区组提供「总开关」（`tts.enabled`）、「默认 TTS 模型」
   （`tts.active`）、「自动朗读」（`tts.autoRead`）、「截断上限」（`tts.maxChars`），以及 provider 列表的
   **增 / 改 / 删 + 「试听」**（用当前表单值合成一小段试听音频）。字段路径见 §1，请求协议与失败降级见 06 §13。
@@ -1237,7 +1276,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     门控口径同 TTS：未配置时对话窗连麦克风按钮都不渲染（docs/07 §2.3）；
     麦克风（`media`）权限仅对自身窗口放行（主进程 `setPermissionRequestHandler`）。
 - **系统**（`advanced`，旧称「高级」）：日志查看与导出、代理设置、日志级别、重置为默认配置。
-  目标 6 页 IA 下分组为「网络 / 日志 / 安全 / 危险操作」，勿扰时段控件移至「通用」页
+  该页分组为「网络 / 日志 / 安全 / 危险操作」，勿扰时段控件移至「通用」页
   （全局 + 提示条两组同区；字段仍是 `advanced.quietHours` / `general.edgeBar.quietHours`）；
   「重置为默认配置」需**就地二次确认**（按钮变为「确认重置？」+ 取消），不再用原生 `confirm`。
   - 实现状态（v0.5.0）：**勿扰时段已实际拦截主动行为**——敏感工具确认在时段内直接拒绝
@@ -1245,7 +1284,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     「敏感工具确认」开关（`advanced.confirmSensitiveTools`，**默认关闭** —— 2026-09-29 起
     它与默认档 `auto` 镜像）：关闭后敏感工具不再逐次询问（`auto` 档语义：完全权限、
     所有敏感工具直接放行），且**每次调用即时判断**，改设置无需重启。
-    用户要在项目边界之外重新逐次确认，就在设置页「智能与工具」或对话窗把档位切回「变更前确认」；
+    用户要在项目边界之外重新逐次确认，就在「设置 → 系统 → 安全」或对话窗把档位切回「变更前确认」；
     该档现在恢复旧 auto 语义：项目根内直接执行、越界弹卡，无项目时直接放行。
   - 实现状态（P6+）：**代理与日志级别真正生效**（此前是「存了不生效」的死配置）——
     - `advanced.proxy`：`main/net.ts` 交给 `session.setProxy`，出网改用 Electron `net.fetch`
@@ -1294,7 +1333,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 | `agent.permissionMode`                                                                        | 常显（权限档位必须随时能改回来；v13 新增）                                                                                                                         |
 | `agent.snapshots.*`                                                                           | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"`                                                 |
 | `agent.loop.*`                                                                                | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么跑"，不是"注册哪些工具"；v15 新增、v34 收窄为「同轮并行上限」一项）                                |
-| `agent.browser.*`                                                                             | 常显（总开关关着时六项仍渲染，可先配置后开启；**不新增 `data-empty`** —— 本区组没有空态。v35 新增；只读档由注册层决定，与显示无关）                                 |
+| `agent.browser.*`                                                                             | 常显（总开关关着时六项仍渲染，可先配置后开启；**不新增 `data-empty`** —— 本页没有空态。v35 新增；只读档由注册层决定，与显示无关）                                 |
 | `automations.enabled`                                                                         | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控**；2026-10-25 起「提醒」页「定时提醒」区组也聚合一份（同字段，「恰好 1 个」断言按页各自成立） |
 | `general.requireAdmin`                                                                        | 常显（「常规」页「启动」区组；v20 新增）。被删掉 / 改名时 capture 的 general 页探针立刻报 FAIL                                                                     |
 
@@ -1310,11 +1349,11 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 `modes.work.workspaceDir`（v8 起 Work 有可配置字段，`data-empty="modes.work"` 空状态随之取消；
 探针断言由 capture 适配任务同步更新）；另断言 `automations.enabled` **恰好 1 个**（v19 新增：
 它是常显字段，数到 0 就说明「自动化」区组整块没渲染）；
-`settings?page=agent` 读 `agent.tools.enabled` 复选框的**实际状态**：开着时终端 / 文件 / 检索 / 打开
+`settings?page=agent-tools` 读 `agent.tools.enabled` 复选框的**实际状态**：开着时终端 / 文件 / 检索 / 打开
 四栏的详情字段都必须存在（且 `data-empty` 为空；**检索栏**（`agent.tools.search.*`）与终端卡片下的
 **免确认命令模式**列表（`agent.tools.terminal.allowPatterns`）随 v12 新增，探针条目同步扩展，
 **具体计数以 `report.json` 的实际条目为准**），关着时只要求总开关自己还在；
-**文件备份区组**（`agent.snapshots.*`，v14 新增）要求"四个字段都在、或给出
+**文件备份区组**（`agent.snapshots.*`，v14 新增；在电脑操控页内）要求"四个字段都在、或给出
 `data-empty="agent.snapshots"`"，且该页 `data-empty` 白名单里要放行它（默认开启时不会出现）。
 **Agent 循环区组**（`agent.loop.*`，v15 新增、v34 收窄为一项）要求
 `[data-field^="agent.loop."]` 计数 **≥ 1**（`maxParallelCalls` 常显，不跟 `agent.tools.enabled` 门控），

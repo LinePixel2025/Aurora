@@ -569,7 +569,7 @@ function clampContextWindow(value: unknown): number {
 }
 
 /**
- * 「上下文窗口」输入框：`@change` 提交（与 AgentPage 的 `clampNumber` 同一套路），
+ * 「上下文窗口」输入框：`@change` 提交（与 AgentToolsPage 的 `clampNumber` 同一套路），
  * **不逐键改写** —— `type=number` 下 `1.` / `-` 这类中间态的 `input.value` 是空串，
  * 逐键钳成 0 会把用户正在敲的字符擦掉、连小数都打不进去。
  */

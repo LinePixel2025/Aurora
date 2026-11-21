@@ -215,6 +215,8 @@ const emit = defineEmits<{
   (event: 'plan-revise', callId: string): void
   (event: 'plan-exit'): void
   (event: 'plan-open', callId: string): void
+  /** 点子代理标识徽章（v46）：父级在右栏打开 / 聚焦该次运行的对话面板 */
+  (event: 'open-subagent', run: { callId: string; taskId: string }): void
 }>()
 
 /**
@@ -1526,6 +1528,12 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                     :duration="toolDuration(call)"
                     :data-field="cardField(call)"
                     @toggle="toggleToolRow(call.id)"
+                    @open-subagent="
+                      emit('open-subagent', {
+                        callId: call.id,
+                        taskId: call.subagent?.taskId ?? '',
+                      })
+                    "
                   />
                 </TransitionGroup>
 

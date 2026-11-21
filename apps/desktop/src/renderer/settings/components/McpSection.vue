@@ -1,20 +1,19 @@
 <script setup lang="ts">
 /**
  * MCP 区组（docs/06 §7、docs/08 §6）：服务器配置增删改 + **真实连接状态灯**。
- * 由原 `McpPage.vue` 整体迁入（BetaV2 8 → 6 页，spec §9），锚点与行为原样保留。
  *
- * 2026-09 信息架构收拢（docs/07 §2.5）：默认**收起**（组锚点 `data-group="mcp"`，
- * capture 探针先展开再计数）；组头摘要「n 台服务器 / m 台启用」承载状态（收起也能看清）；
+ * 2026-11 Agent 独立栏目：原「Agent 设置」页里的 MCP 折叠区组迁入独立「MCP 服务器」页，
+ * 因此改为**常显**（`group-head.static`，不再折叠）：页面本身就是服务器管理入口，
+ * 默认收起会让人以为没有配置。组头摘要「n 台服务器 / m 台启用」承载状态；
  * 行卡启停与工具 / 技能统一为 checkbox（绑 `enabled`，写入路径不变，StatusDot / 状态徽章 /
- * 删除按钮保留）。操作回执不再本地渲染 Toast，统一经 `notify` 事件上抛给页级 AppToast。
+ * 删除按钮保留）。操作回执经 `notify` 事件上抛给页级 AppToast。
  *
  * env / headers 凭据通过 settings:setSecrets 加密存储，列表只显示已配置的变量名与请求头名；
  * `lazyConnect` 收进「高级」折叠；新增服务器表单默认收起（空状态时由主按钮展开）。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ChevronRight } from '@aurora/shared/browser'
 // 运行时值走浏览器子路径（`@aurora/shared` 主入口依赖 node:fs）；类型仍可从主入口取。
-import { RESOURCE_NAME_PATTERN, RESOURCE_NAME_RULE } from '@aurora/shared/browser'
+import { ChevronRight, RESOURCE_NAME_PATTERN, RESOURCE_NAME_RULE } from '@aurora/shared/browser'
 import type { McpServerConfig, McpServerStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -33,9 +32,6 @@ const showAdd = ref(false)
 const showAdvanced = ref(false)
 /** 删除的二次确认：待确认的服务器名（单值，同一时刻只确认一台；与 LlmPage 的 pendingRemoveId 同款） */
 const pendingRemoveId = ref<string | null>(null)
-
-/** 区组折叠状态：默认收起（组头摘要承载状态，docs/07 §2.5） */
-const open = ref(false)
 
 let offStatus: (() => void) | null = null
 
@@ -269,239 +265,226 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
 </script>
 
 <template>
-  <!-- data-group：capture 探针的组锚点（SETTINGS_AGENT_FIELDS_SCRIPT 据此先展开再计数） -->
+  <!-- data-group：capture 探针的组锚点（按页面分页后仍保留，避免选择器改名） -->
   <section class="group section-card" data-group="mcp">
-    <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
-      <ChevronRight
-        class="chevron"
-        :class="{ open }"
-        :size="14"
-        :stroke-width="1.8"
-        aria-hidden="true"
-      />
+    <div class="group-head static">
       <span class="section-title">MCP 服务器</span>
       <span class="group-summary tiny muted grow">
         {{
           servers.length === 0 ? '未配置' : `${servers.length} 台服务器 / ${enabledCount} 台启用`
         }}
       </span>
-    </button>
+    </div>
 
-    <Transition name="collapse">
-      <div v-if="open" class="group-body">
-        <p class="section-desc">
-          连接外部工具服务（Model Context Protocol）：工具以
-          <code class="mono">mcp.&lt;server&gt;.&lt;tool&gt;</code> 注册；连接失败只影响该服务器。
+    <div class="group-body">
+      <p class="section-desc">
+        连接外部工具服务（Model Context Protocol）：工具以
+        <code class="mono">mcp.&lt;server&gt;.&lt;tool&gt;</code> 注册；连接失败只影响该服务器。
+      </p>
+
+      <!-- 空状态：没有服务器时不显示 lazyConnect 等无对象的配置项 -->
+      <template v-if="servers.length === 0">
+        <p class="empty-inline" data-empty="mcp.servers">
+          尚未配置 MCP 服务器：添加后它的工具会自动出现在对话可用工具里。
         </p>
+        <div class="row">
+          <AppButton variant="primary" @click="showAdd = true">添加服务器</AppButton>
+        </div>
+      </template>
 
-        <!-- 空状态：没有服务器时不显示 lazyConnect 等无对象的配置项 -->
-        <template v-if="servers.length === 0">
-          <p class="empty-inline" data-empty="mcp.servers">
-            尚未配置 MCP 服务器：添加后它的工具会自动出现在对话可用工具里。
-          </p>
-          <div class="row">
-            <AppButton variant="primary" @click="showAdd = true">添加服务器</AppButton>
-          </div>
-        </template>
+      <template v-else>
+        <!-- 服务器列表：区组内的轻量行卡，行容器标 `mcp.servers.<name>` -->
+        <div class="server-list">
+          <article
+            v-for="server in servers"
+            :key="server.name"
+            class="server-row"
+            :data-field="`mcp.servers.${server.name}`"
+          >
+            <header class="server-head">
+              <StatusDot
+                :tone="statusTone(statusOf(server.name))"
+                :style="statusDotStyle(statusOf(server.name))"
+                :title="stateLabel(statusOf(server.name))"
+              />
+              <strong class="mono">{{ server.name }}</strong>
+              <span class="badge">{{ server.transport }}</span>
+              <span class="badge" :class="{ warn: statusOf(server.name)?.state === 'error' }">
+                {{ stateLabel(statusOf(server.name)) }}
+              </span>
+              <span class="grow" />
+              <!-- 启停与工具 / 技能统一为 checkbox（绑 enabled，写路径走 saveServers 不变） -->
+              <label class="row tiny enable-toggle">
+                <input type="checkbox" :checked="server.enabled" @change="toggleEnabled(server)" />
+                {{ server.enabled ? '已启用' : '已停用' }}
+              </label>
+              <AppButton
+                size="sm"
+                :variant="pendingRemoveId === server.name ? 'danger' : 'ghost'"
+                data-action="remove-mcp-server"
+                @click="requestRemove(server.name)"
+              >
+                删除
+              </AppButton>
+            </header>
 
-        <template v-else>
-          <!-- 服务器列表：区组内的轻量行卡，行容器标 `mcp.servers.<name>` -->
-          <div class="server-list">
-            <article
-              v-for="server in servers"
-              :key="server.name"
-              class="server-row"
-              :data-field="`mcp.servers.${server.name}`"
-            >
-              <header class="server-head">
-                <StatusDot
-                  :tone="statusTone(statusOf(server.name))"
-                  :style="statusDotStyle(statusOf(server.name))"
-                  :title="stateLabel(statusOf(server.name))"
-                />
-                <strong class="mono">{{ server.name }}</strong>
-                <span class="badge">{{ server.transport }}</span>
-                <span class="badge" :class="{ warn: statusOf(server.name)?.state === 'error' }">
-                  {{ stateLabel(statusOf(server.name)) }}
-                </span>
-                <span class="grow" />
-                <!-- 启停与工具 / 技能统一为 checkbox（绑 enabled，写路径走 saveServers 不变） -->
-                <label class="row tiny enable-toggle">
+            <!-- 危险操作二次确认（P2-24）：确认条就地出现，点「确认删除」才真的删 -->
+            <div v-if="pendingRemoveId === server.name" class="confirm-bar">
+              <span class="tiny confirm-text">
+                删除服务器「{{ server.name }}」？{{
+                  envNames(server).length + headerNames(server).length > 0
+                    ? '它的环境变量 / 请求头密文会一并清除。'
+                    : '它还没有保存凭据。'
+                }}此操作不可撤销。
+              </span>
+              <AppButton
+                size="sm"
+                variant="danger"
+                data-action="confirm-remove-mcp-server"
+                @click="remove(server.name)"
+              >
+                确认删除
+              </AppButton>
+              <AppButton
+                size="sm"
+                variant="ghost"
+                data-action="cancel-remove-mcp-server"
+                @click="pendingRemoveId = null"
+              >
+                取消
+              </AppButton>
+            </div>
+            <p class="tiny muted mono target">
+              {{
+                server.transport === 'stdio'
+                  ? `${server.command ?? ''} ${(server.args ?? []).join(' ')}`
+                  : (server.url ?? '')
+              }}
+            </p>
+            <p v-if="statusOf(server.name)?.lastError" class="tiny err">
+              {{ statusOf(server.name)?.lastError }}
+            </p>
+            <p v-if="envNames(server).length > 0" class="tiny muted">
+              环境变量：{{ envNames(server).join('、') }}（值已加密存储）
+            </p>
+            <p v-if="headerNames(server).length > 0" class="tiny muted">
+              请求头：{{ headerNames(server).join('、') }}（值已加密存储）
+            </p>
+          </article>
+        </div>
+
+        <section class="advanced-block">
+          <button
+            class="more"
+            type="button"
+            :aria-expanded="showAdvanced"
+            @click="showAdvanced = !showAdvanced"
+          >
+            <ChevronRight
+              class="chevron"
+              :class="{ open: showAdvanced }"
+              :size="14"
+              :stroke-width="1.8"
+              aria-hidden="true"
+            />
+            高级：连接策略
+          </button>
+          <Transition name="collapse">
+            <div v-if="showAdvanced">
+              <SettingField
+                data-field="mcp.lazyConnect"
+                label="懒连接"
+                hint="开启后首次使用该服务器的工具时才连接；关闭则启动即连（默认）"
+              >
+                <label class="row tiny">
                   <input
                     type="checkbox"
-                    :checked="server.enabled"
-                    @change="toggleEnabled(server)"
+                    :checked="lazyConnect"
+                    @change="setLazyConnect(($event.target as HTMLInputElement).checked)"
                   />
-                  {{ server.enabled ? '已启用' : '已停用' }}
+                  <span>首次使用时才连接服务器</span>
                 </label>
-                <AppButton
-                  size="sm"
-                  :variant="pendingRemoveId === server.name ? 'danger' : 'ghost'"
-                  data-action="remove-mcp-server"
-                  @click="requestRemove(server.name)"
-                >
-                  删除
-                </AppButton>
-              </header>
-
-              <!-- 危险操作二次确认（P2-24）：确认条就地出现，点「确认删除」才真的删 -->
-              <div v-if="pendingRemoveId === server.name" class="confirm-bar">
-                <span class="tiny confirm-text">
-                  删除服务器「{{ server.name }}」？{{
-                    envNames(server).length + headerNames(server).length > 0
-                      ? '它的环境变量 / 请求头密文会一并清除。'
-                      : '它还没有保存凭据。'
-                  }}此操作不可撤销。
-                </span>
-                <AppButton
-                  size="sm"
-                  variant="danger"
-                  data-action="confirm-remove-mcp-server"
-                  @click="remove(server.name)"
-                >
-                  确认删除
-                </AppButton>
-                <AppButton
-                  size="sm"
-                  variant="ghost"
-                  data-action="cancel-remove-mcp-server"
-                  @click="pendingRemoveId = null"
-                >
-                  取消
-                </AppButton>
-              </div>
-              <p class="tiny muted mono target">
-                {{
-                  server.transport === 'stdio'
-                    ? `${server.command ?? ''} ${(server.args ?? []).join(' ')}`
-                    : (server.url ?? '')
-                }}
-              </p>
-              <p v-if="statusOf(server.name)?.lastError" class="tiny err">
-                {{ statusOf(server.name)?.lastError }}
-              </p>
-              <p v-if="envNames(server).length > 0" class="tiny muted">
-                环境变量：{{ envNames(server).join('、') }}（值已加密存储）
-              </p>
-              <p v-if="headerNames(server).length > 0" class="tiny muted">
-                请求头：{{ headerNames(server).join('、') }}（值已加密存储）
-              </p>
-            </article>
-          </div>
-
-          <section class="advanced-block">
-            <button
-              class="more"
-              type="button"
-              :aria-expanded="showAdvanced"
-              @click="showAdvanced = !showAdvanced"
-            >
-              <ChevronRight
-                class="chevron"
-                :class="{ open: showAdvanced }"
-                :size="14"
-                :stroke-width="1.8"
-                aria-hidden="true"
-              />
-              高级：连接策略
-            </button>
-            <Transition name="collapse">
-              <div v-if="showAdvanced">
-                <SettingField
-                  data-field="mcp.lazyConnect"
-                  label="懒连接"
-                  hint="开启后首次使用该服务器的工具时才连接；关闭则启动即连（默认）"
-                >
-                  <label class="row tiny">
-                    <input
-                      type="checkbox"
-                      :checked="lazyConnect"
-                      @change="setLazyConnect(($event.target as HTMLInputElement).checked)"
-                    />
-                    <span>首次使用时才连接服务器</span>
-                  </label>
-                </SettingField>
-              </div>
-            </Transition>
-          </section>
-
-          <div v-if="!showAdd" class="row">
-            <AppButton size="sm" @click="showAdd = true">添加服务器</AppButton>
-          </div>
-        </template>
-
-        <Transition name="collapse">
-          <section v-if="showAdd" class="form-block">
-            <div class="row">
-              <h3 class="block-title grow">添加服务器</h3>
-              <AppButton size="sm" variant="ghost" @click="showAdd = false">取消</AppButton>
+              </SettingField>
             </div>
+          </Transition>
+        </section>
 
-            <SettingField label="名称" required hint="用于工具命名前缀与状态展示">
+        <div v-if="!showAdd" class="row">
+          <AppButton size="sm" @click="showAdd = true">添加服务器</AppButton>
+        </div>
+      </template>
+
+      <Transition name="collapse">
+        <section v-if="showAdd" class="form-block">
+          <div class="row">
+            <h3 class="block-title grow">添加服务器</h3>
+            <AppButton size="sm" variant="ghost" @click="showAdd = false">取消</AppButton>
+          </div>
+
+          <SettingField label="名称" required hint="用于工具命名前缀与状态展示">
+            <input
+              v-model="form.name"
+              class="input"
+              type="text"
+              spellcheck="false"
+              placeholder="filesystem"
+            />
+          </SettingField>
+          <SettingField label="传输方式">
+            <select v-model="form.transport">
+              <option value="stdio">stdio（本地进程）</option>
+              <option value="http">streamable-http（远程）</option>
+            </select>
+          </SettingField>
+          <template v-if="form.transport === 'stdio'">
+            <SettingField label="命令" required>
               <input
-                v-model="form.name"
+                v-model="form.command"
                 class="input"
                 type="text"
                 spellcheck="false"
-                placeholder="filesystem"
+                placeholder="npx"
               />
             </SettingField>
-            <SettingField label="传输方式">
-              <select v-model="form.transport">
-                <option value="stdio">stdio（本地进程）</option>
-                <option value="http">streamable-http（远程）</option>
-              </select>
+            <SettingField label="参数" hint="空格分隔">
+              <input v-model="form.args" class="input" type="text" spellcheck="false" />
             </SettingField>
-            <template v-if="form.transport === 'stdio'">
-              <SettingField label="命令" required>
-                <input
-                  v-model="form.command"
-                  class="input"
-                  type="text"
-                  spellcheck="false"
-                  placeholder="npx"
-                />
-              </SettingField>
-              <SettingField label="参数" hint="空格分隔">
-                <input v-model="form.args" class="input" type="text" spellcheck="false" />
-              </SettingField>
-            </template>
-            <SettingField v-else label="URL" required>
-              <input
-                v-model="form.url"
-                class="input"
-                type="text"
-                spellcheck="false"
-                placeholder="https://example.com/mcp"
-              />
-            </SettingField>
-            <SettingField label="环境变量" hint="每行 KEY=VALUE；值会加密存储，不回显">
-              <textarea v-model="form.envText" spellcheck="false" placeholder="TOKEN=xxxx" />
-            </SettingField>
-            <SettingField
-              v-if="form.transport === 'http'"
-              label="自定义请求头"
-              hint="每行 Key: Value；值会加密存储，不回显"
-            >
-              <textarea
-                v-model="form.headersText"
-                spellcheck="false"
-                placeholder="Authorization: Bearer xxx"
-              />
-            </SettingField>
+          </template>
+          <SettingField v-else label="URL" required>
+            <input
+              v-model="form.url"
+              class="input"
+              type="text"
+              spellcheck="false"
+              placeholder="https://example.com/mcp"
+            />
+          </SettingField>
+          <SettingField label="环境变量" hint="每行 KEY=VALUE；值会加密存储，不回显">
+            <textarea v-model="form.envText" spellcheck="false" placeholder="TOKEN=xxxx" />
+          </SettingField>
+          <SettingField
+            v-if="form.transport === 'http'"
+            label="自定义请求头"
+            hint="每行 Key: Value；值会加密存储，不回显"
+          >
+            <textarea
+              v-model="form.headersText"
+              spellcheck="false"
+              placeholder="Authorization: Bearer xxx"
+            />
+          </SettingField>
 
-            <footer class="row">
-              <AppButton variant="primary" @click="add">添加</AppButton>
-            </footer>
-          </section>
-        </Transition>
+          <footer class="row">
+            <AppButton variant="primary" @click="add">添加</AppButton>
+          </footer>
+        </section>
+      </Transition>
 
-        <p class="tiny muted">
-          服务器以你填写的 argv 数组启动，<strong>不经过 shell</strong
-          >；请求头与环境变量的值加密存储。
-        </p>
-      </div>
-    </Transition>
+      <p class="tiny muted">
+        服务器以你填写的 argv 数组启动，<strong>不经过 shell</strong
+        >；请求头与环境变量的值加密存储。
+      </p>
+    </div>
   </section>
 </template>
 

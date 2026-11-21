@@ -351,8 +351,4 @@ function onAppsChange(field: 'allowedApps' | 'deniedApps', event: Event): void {
 .hint.warn {
   color: var(--status-unread);
 }
-
-.group-head.static {
-  cursor: default;
-}
 </style>

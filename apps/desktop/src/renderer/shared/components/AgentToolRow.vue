@@ -29,7 +29,7 @@ import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
 import { useCollapseTransition } from '@aurora/shared/browser'
 import { toolIconOf } from '@aurora/shared/browser'
 import { toolLabelOf } from '@aurora/shared/browser'
-import { ChevronRight, FilePenLine } from '@aurora/shared/browser'
+import { ChevronRight, FilePenLine, Bot } from '@aurora/shared/browser'
 import AgentTodoList from './AgentTodoList.vue'
 import AppTooltip from './AppTooltip.vue'
 import StatusDot from './StatusDot.vue'
@@ -51,7 +51,15 @@ withDefaults(
   { open: false, settled: false, duration: '', dataField: undefined },
 )
 
-const emit = defineEmits<{ (event: 'toggle'): void }>()
+const emit = defineEmits<{
+  (event: 'toggle'): void
+  /**
+   * 点子代理标识徽章（v46）：父级在右栏打开 / 聚焦这次运行的对话面板。
+   * 刻意不做成"点头部"——头部仍是展开 / 收起（展开体里已有完整对话），
+   * 徽章是独立的第二动作；两者分离也避免在 `<button>` 里嵌 `<button>`（无效 HTML）。
+   */
+  (event: 'open-subagent'): void
+}>()
 
 /**
  * 状态文案只用于**无障碍标签**，不再渲染成行内文字（本组件的设计要点之一）。
@@ -118,6 +126,14 @@ function subagentStepCount(call: AgentToolCall): number | null {
 }
 
 /**
+ * 子代理标识徽章上的名字（v46）：具名子代理用定义里的名称；通用子代理 / 快照还没到
+ * （刚派生的第一帧）回落「子代理」—— 徽章在派生瞬间就要可点，不能等第一个进度事件。
+ */
+function subagentChipName(call: AgentToolCall): string {
+  return call.subagent?.agentName?.trim() || '子代理'
+}
+
+/**
  * 子代理被授予的写权限（2026-09，docs/06 §19）：只有 `write` 才显示徽章。
  * 工具名清单进悬停提示（逐行铺开会把行首挤爆）。
  */
@@ -156,60 +172,80 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
     :class="[`t-${call.state}`, { open, running: call.state === 'running', settled }]"
     :data-field="dataField"
   >
-    <button
-      type="button"
-      class="tool-head"
-      :class="{ shimmer: call.state === 'running' }"
-      :aria-expanded="open"
-      :aria-label="`${call.name} · ${stateLabel(call.state)}`"
-      @click="emit('toggle')"
-    >
-      <!-- 状态点：唯一的常驻状态语义载体（去掉行内状态文字后的替代：色 + aria-label） -->
-      <span class="tool-dot">
-        <StatusDot :tone="toolTone(call.state)" :size="6" :class="{ confirm: settled }" />
-        <span class="sr-state">{{ stateLabel(call.state) }}</span>
-      </span>
-      <!-- 工具语义图标：每行恰好一枚（capture 的 CHAT_SIDEBAR_SCRIPT 按这个数断言） -->
-      <component
-        :is="toolIcon(call)"
-        class="tool-icon"
-        :size="14"
-        :stroke-width="1.7"
-        aria-hidden="true"
-      />
-      <!-- 任务清单行：固定标题 + 条目数（结构化清单常驻行身） -->
-      <template v-if="todosOf(call)">
-        <span class="tool-title">任务清单</span>
-        <span class="tiny muted">{{ todosOf(call)!.length }} 项</span>
-      </template>
-      <!-- 子代理行：任务简述 + 写权限徽章 + 步骤数 -->
-      <template v-else-if="taskOf(call)">
-        <span class="tool-title">
-          {{ taskOf(call)!.description.trim() !== '' ? taskOf(call)!.description : '子代理' }}
+    <div class="tool-row">
+      <button
+        type="button"
+        class="tool-head"
+        :class="{ shimmer: call.state === 'running' }"
+        :aria-expanded="open"
+        :aria-label="`${call.name} · ${stateLabel(call.state)}`"
+        @click="emit('toggle')"
+      >
+        <!-- 状态点：唯一的常驻状态语义载体（去掉行内状态文字后的替代：色 + aria-label） -->
+        <span class="tool-dot">
+          <StatusDot :tone="toolTone(call.state)" :size="6" :class="{ confirm: settled }" />
+          <span class="sr-state">{{ stateLabel(call.state) }}</span>
         </span>
-        <AppTooltip v-if="subagentWriteGranted(call)" :text="subagentToolsHint(call)">
-          <span class="tiny perm-badge">
-            <FilePenLine :size="11" :stroke-width="1.8" aria-hidden="true" />
-            可读写
+        <!-- 工具语义图标：每行恰好一枚（capture 的 CHAT_SIDEBAR_SCRIPT 按这个数断言） -->
+        <component
+          :is="toolIcon(call)"
+          class="tool-icon"
+          :size="14"
+          :stroke-width="1.7"
+          aria-hidden="true"
+        />
+        <!-- 任务清单行：固定标题 + 条目数（结构化清单常驻行身） -->
+        <template v-if="todosOf(call)">
+          <span class="tool-title">任务清单</span>
+          <span class="tiny muted">{{ todosOf(call)!.length }} 项</span>
+        </template>
+        <!-- 子代理行：任务简述 + 写权限徽章 + 步骤数 -->
+        <template v-else-if="taskOf(call)">
+          <span class="tool-title">
+            {{ taskOf(call)!.description.trim() !== '' ? taskOf(call)!.description : '子代理' }}
           </span>
-        </AppTooltip>
-        <span v-if="subagentStepCount(call) !== null" class="tiny muted tool-steps">
-          {{ subagentStepCount(call) }} 步
-        </span>
-      </template>
-      <!--
+          <AppTooltip v-if="subagentWriteGranted(call)" :text="subagentToolsHint(call)">
+            <span class="tiny perm-badge">
+              <FilePenLine :size="11" :stroke-width="1.8" aria-hidden="true" />
+              可读写
+            </span>
+          </AppTooltip>
+          <span v-if="subagentStepCount(call) !== null" class="tiny muted tool-steps">
+            {{ subagentStepCount(call) }} 步
+          </span>
+        </template>
+        <!--
         通用行：语义化标题（「运行 pnpm test」）。摘不出短语时回落 mono 工具名
         （保持旧行的等宽观感），两种形态都不会渲染残缺文本。
       -->
-      <template v-else>
-        <span v-if="titleOf(call) !== call.name" class="tool-title">{{ titleOf(call) }}</span>
-        <span v-else class="mono tiny tool-name">{{ call.name }}</span>
-      </template>
-      <!-- 结果摘要上提到行首一行（悬停看全文），单行省略 -->
-      <span class="tiny tool-summary" :class="`s-${call.state}`">{{ summaryOf(call) }}</span>
-      <span v-if="duration !== ''" class="tiny muted tool-time">{{ duration }}</span>
-      <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
-    </button>
+        <template v-else>
+          <span v-if="titleOf(call) !== call.name" class="tool-title">{{ titleOf(call) }}</span>
+          <span v-else class="mono tiny tool-name">{{ call.name }}</span>
+        </template>
+        <!-- 结果摘要上提到行首一行（悬停看全文），单行省略 -->
+        <span class="tiny tool-summary" :class="`s-${call.state}`">{{ summaryOf(call) }}</span>
+        <span v-if="duration !== ''" class="tiny muted tool-time">{{ duration }}</span>
+        <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
+      </button>
+      <!--
+        子代理标识徽章（v46，docs/07 §2.3）：派生瞬间就出现，点它 = 在右栏看这次运行。
+        它**不是**展开开关（展开体里也有对话），而是"跟着看"的第二入口 ——
+        运行中点击即可围观实时过程，不打断主区。
+      -->
+      <button
+        v-if="taskOf(call)"
+        type="button"
+        class="subagent-chip"
+        :class="`s-${call.state}`"
+        data-action="chat.subagent-open-panel"
+        :title="`在侧栏查看「${subagentChipName(call)}」的对话`"
+        :aria-label="`在侧栏查看「${subagentChipName(call)}」的对话`"
+        @click="emit('open-subagent')"
+      >
+        <Bot :size="12" :stroke-width="1.8" aria-hidden="true" />
+        <span class="subagent-chip-name">{{ subagentChipName(call) }}</span>
+      </button>
+    </div>
 
     <!--
       结构化任务清单（todo_write）：常驻行身（不展开就能看到清单状态），
@@ -291,6 +327,63 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
 
 .tool-head:hover {
   background: var(--fill-1);
+}
+
+/*
+ * 行容器：头部（展开开关）占满剩余宽度，子代理标识徽章固定在行尾。
+ * 头部原来的 `width: 100%` 在 flex 行里要收回成 `flex: 1`，否则徽章会被挤出行外。
+ */
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.tool-row > .tool-head {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+/* 子代理标识（v46）：行尾一枚可点的 pill，运行中用强调色 + 呼吸，与状态点同一语义 */
+.subagent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  max-width: 40%;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 18px;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.subagent-chip:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.subagent-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-chip.s-running {
+  border-color: color-mix(in srgb, var(--aurora-blue) 45%, transparent);
+  color: var(--accent-text);
+  /* 边框呼吸（与子代理页运行卡同一套 keyframes）：运行中一眼可见，终态自动停 */
+  animation: aurora-edge-breathe var(--dur-pulse) var(--ease-standard) infinite;
 }
 
 /*

@@ -69,6 +69,7 @@ import PluginPanel from '../plugins/PluginPanel.vue'
 import PluginPageFrame from '../plugins/PluginPageFrame.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
+import SubagentPanel from './components/SubagentPanel.vue'
 import AutomationPage from './components/AutomationPage.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
@@ -359,6 +360,34 @@ watch(
  */
 const fileOpenRequests = ref<Record<string, { path: string; token: number }>>({})
 let fileOpenToken = 0
+
+/**
+ * 右栏「子代理」查看器（v46，docs/07 §2.3）：焦点 = 某一次运行（callId / taskId）。
+ *
+ * 单例标签：再点另一枚子代理标识只**换焦点**，不会越开越多；关掉后再点会重建。
+ * 标题取运行的名字（`Searcher` 这类），未命中快照时回落「子代理」。
+ */
+const subagentFocus = ref<{ callId: string; taskId: string } | null>(null)
+
+async function openSubagentPanel(run: { callId: string; taskId: string }): Promise<void> {
+  contextOpen.value = true
+  const tab = ensureCtxKind('subagent')
+  if (tab === null) {
+    flashProjectNotice('error', `标签已达上限（${CTX_TABS_MAX} 个），先关掉一个`)
+    return
+  }
+  subagentFocus.value = { callId: run.callId, taskId: run.taskId }
+  // 与文件预览同款时序：首次打开时面板这一帧才挂载，等它挂好再改标题 / 写焦点。
+  await nextTick()
+  const hit = subagentRuns.value.find(
+    (item) =>
+      (run.callId !== '' && item.callId === run.callId) ||
+      (run.taskId !== '' && item.taskId === run.taskId),
+  )
+  const name = hit?.agentName?.trim() ?? ''
+  // 标签标题只用子代理名（88px 宽只放得下 4–6 个字，加前缀会把名字本身截掉）
+  setCtxTabTitle(tab.id, name)
+}
 
 async function openChangedFile(path: string): Promise<void> {
   const target = path.trim()
@@ -2686,6 +2715,7 @@ async function markGuideDone(): Promise<void> {
           @speak="speakMessage"
           @stop-speak="tts.stop"
           @open-file="openChangedFile"
+          @open-subagent="openSubagentPanel"
           @plan-approve="onPlanApprove"
           @plan-revise="onPlanRevise"
           @plan-exit="onPlanExit"
@@ -2889,6 +2919,7 @@ async function markGuideDone(): Promise<void> {
             :runs="subagentRuns"
             :session-title="currentSessionTitle"
             @back="view = 'chat'"
+            @open-panel="openSubagentPanel"
           />
           <!--
             自动化页面（docs/13 §11）：与子代理页同构的主区替换内容。
@@ -2994,6 +3025,17 @@ async function markGuideDone(): Promise<void> {
               :session-id="sessionId"
               :version="planVersion"
               :focus-plan-id="planFocusId"
+              @title="(title) => setCtxTabTitle(tab.id, title)"
+            />
+            <!--
+              子代理查看器（v46，docs/07 §2.3）：单例标签 + 焦点运行。
+              数据源与「子代理」页面 / 工具卡同一份（实时事件优先、历史快照补齐），
+              因此运行中打开这里能边跑边看，且只读（没有输入 / 干预入口）。
+            -->
+            <SubagentPanel
+              v-else-if="tab.kind === 'subagent'"
+              :runs="subagentRuns"
+              :focus="subagentFocus"
               @title="(title) => setCtxTabTitle(tab.id, title)"
             />
             <!--
