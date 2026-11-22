@@ -341,7 +341,7 @@
 ```
 
 - 字段说明：`llm.providers` 支持多组模型配置，`llm.active` 指定默认；`modes.classroom.subjects` 即科目 → 文件夹映射（见 05 §3）；`schedule.provider` 为 `manual | classisland`（见 05 §3.4）。
-- **v47 Center 默认值（2026-11，开发中）**：`serverUrl` 固定为 `CENTER_SERVER_URL`
+- **v47 Center 默认值（v0.8.3）**：`serverUrl` 固定为 `CENTER_SERVER_URL`
   （`http://120.24.223.65:8787`，设置页只读、不可改向）；`officialModels` 四类 `enabled`
   默认 `true`，选模入口并入 AI 模型 / 语音 / 生图各自的管理页（见 §8）。存量 `serverUrl`
   **不做迁移**，在下一次保存或登录时规范到固定地址（避免静默切走自托管用户）。
