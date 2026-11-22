@@ -137,6 +137,7 @@ allure-results/
 /.zcode/
 /.fleet/
 /.history/
+/.dsh-project-memory/
 
 # ── 编辑器 / 操作系统 ──
 .idea/

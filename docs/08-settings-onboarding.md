@@ -389,7 +389,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **45**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **47**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
