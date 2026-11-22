@@ -4976,7 +4976,14 @@ export const CHAT_SUBAGENT_OPEN_ACT = `(async () => {
     // 展开**独立对话视图**（截图要拍的就是它 —— 断言留在 check，但证据必须在图上）。
     // 2026-10-18：seed 有两条运行（write / read），列表按开始时间倒序 → 第一条是 read。
     // 这里明确挑「可读写」那条（write），断言仍是“有 2 个工具调用的对话视图”。
-    const runs = Array.from(document.querySelectorAll('[data-field="chat.subagent-run"]'))
+    // v0.8.1：先从切页后**等运行卡真的渲染出来**再挑（页容器先出现、卡片下一帧才挂，
+    // 之前直接 query 偶尔拿到空数组 → act 静默不展开，截图拍到的是折叠态）。
+    let runs = []
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      runs = Array.from(document.querySelectorAll('[data-field="chat.subagent-run"]'))
+      if (runs.length > 0) break
+      await wait(50)
+    }
     const writeRun =
       runs.find((card) => {
         const chip = card.querySelector('[data-field="chat.subagent-perm"]')
@@ -5059,6 +5066,13 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
     result.convOpened = conv !== null
     result.convTurns = count('[data-field="chat.subagent-conversation"] .conv-turn')
     result.convTools = count('[data-field="chat.subagent-conversation"] .conv-tool')
+    // v0.8.1：对话视图与主对话同一套排版 —— 助手正文必须走 Markdown 渲染（「.md」），
+    // 每轮都有头像列，工具行有可读标题（不再是裸 mono 工具名）
+    result.convMarkdown = count('[data-field="chat.subagent-conversation"] .conv-turn.assistant .md')
+    result.convAvatars = count('[data-field="chat.subagent-conversation"] .conv-turn .conv-avatar')
+    result.convToolTitles = count(
+      '[data-field="chat.subagent-conversation"] .conv-tool .conv-tool-title',
+    )
     result.convPrompt = promptEl === null ? '' : (promptEl.textContent || '').trim().slice(0, 20)
     result.convReportChars = reportBubble === null ? 0 : (reportBubble.textContent || '').trim().length
     result.convReadonly =
@@ -5087,6 +5101,9 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
       result.convReportChars > 10 &&
       result.convReadonly === true &&
       result.convReport === 1 &&
+      result.convMarkdown >= 1 &&
+      result.convAvatars === result.convTurns &&
+      result.convToolTitles === result.convTools &&
       result.traceDeduped === true
     // 收尾：切回对话流（composer 与消息区必须在后续场景里可用）
     const back = document.querySelector('[data-action="chat.subagent-back"]')
@@ -11486,6 +11503,85 @@ export const SETTINGS_AGENT_BROWSER_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
+ * "子代理创建弹窗"场景（v0.8.1，docs/07 §2.5）：点子代理页底部的「新建子代理」，
+ * 断言弹窗打开、四个字段与 Aurora 起草入口齐全；check 内点「取消」收尾（截图已拍完，
+ * 不能让遮罩污染后续设置页场景）。
+ */
+export const SETTINGS_SUBAGENT_CREATE_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const open = document.querySelector('[data-field="agent.subagents.create"]')
+    if (open === null) return { ready: false, reason: '没有「新建子代理」按钮' }
+    open.click()
+    let dialog = null
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      dialog = document.querySelector('[data-field="agent.subagents.createDialog"]')
+      if (dialog !== null) break
+      await wait(100)
+    }
+    return { ready: dialog !== null, reason: dialog === null ? '弹窗没有出现' : '' }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_SUBAGENT_CREATE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const dialog = document.querySelector('[data-field="agent.subagents.createDialog"]')
+    const card = dialog === null ? null : dialog.querySelector('.dialog-card')
+    const fieldNames = ['name', 'description', 'access', 'instructions'].filter(
+      (key) => document.querySelector('[data-field="agent.subagents.create.' + key + '"]') !== null,
+    )
+    const brief = count('[data-field="agent.subagents.create.brief"]')
+    const draft = count('[data-field="agent.subagents.create.draft"]')
+    const submit = count('[data-field="agent.subagents.create.submit"]')
+    const rect = card === null ? null : card.getBoundingClientRect()
+    const inWindow =
+      rect !== null &&
+      rect.width >= 420 &&
+      rect.height > 200 &&
+      rect.top >= 0 &&
+      rect.left >= 0 &&
+      rect.bottom <= window.innerHeight + 1 &&
+      rect.right <= window.innerWidth + 1
+    const result = {
+      dialog: dialog !== null,
+      cardWidth: rect === null ? 0 : Math.round(rect.width),
+      inWindow,
+      fields: fieldNames,
+      brief,
+      draft,
+      submit,
+    }
+    // 收尾：点「取消」并等遮罩消失（后续设置页截图必须看到干净的页面）
+    const cancel = document.querySelector('[data-field="agent.subagents.create.cancel"]')
+    if (cancel !== null) cancel.click()
+    let closed = false
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (document.querySelector('[data-field="agent.subagents.createDialog"]') === null) {
+        closed = true
+        break
+      }
+      await wait(100)
+    }
+    result.closed = closed
+    result.pass =
+      result.dialog === true &&
+      result.inWindow === true &&
+      result.fields.length === 4 &&
+      result.brief === 1 &&
+      result.draft === 1 &&
+      result.submit === 1 &&
+      result.closed === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * "子代理"设置页门控探针（v46，docs/06 §19.6、docs/07 §2.3）。
  *
  * 断区组在 + 至少两行预设 + 每行至少 5 个字段 + 区块真的在视口里（页面顶部）。
@@ -15267,6 +15363,49 @@ export const CHAT_PLAN_MODE_ACT = `(async () => {
       if (chip !== null) break
       await wait(150)
     }
+    // v0.8.1：进入计划模式的回执通知（chat.project-notice）必须落在主区顶部居中、
+    // 不压左栏、且是实底。趁通知还在（2.6s 内）把几何量进探针，交给 check 断言。
+    const notice = document.querySelector('[data-field="chat.project-notice"]')
+    let noticeProbe = { present: false }
+    if (notice !== null) {
+      const rect = notice.getBoundingClientRect()
+      const nav = document.querySelector('.nav')
+      const navRect = nav === null ? null : nav.getBoundingClientRect()
+      const main = document.querySelector('.main')
+      const mainRect = main === null ? null : main.getBoundingClientRect()
+      const bg = String(getComputedStyle(notice).backgroundColor)
+      let alpha = 1
+      if (bg.indexOf('rgba(') === 0) {
+        const parts = bg.slice(bg.indexOf('(') + 1, bg.indexOf(')')).split(',')
+        const value = Number.parseFloat((parts[3] || '1').trim())
+        alpha = Number.isNaN(value) ? 1 : value
+      }
+      const overlapNav =
+        navRect === null
+          ? false
+          : !(
+              rect.right <= navRect.left ||
+              rect.left >= navRect.right ||
+              rect.bottom <= navRect.top ||
+              rect.top >= navRect.bottom
+            )
+      noticeProbe = {
+        present: true,
+        top: Math.round(rect.top),
+        left: Math.round(rect.left),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        inMain:
+          mainRect !== null &&
+          rect.left >= mainRect.left - 1 &&
+          rect.right <= mainRect.right + 1 &&
+          rect.top >= mainRect.top - 1 &&
+          rect.bottom <= mainRect.bottom + 1,
+        overlapNav,
+        backgroundAlpha: alpha,
+      }
+    }
+    window.__auroraPlanNoticeProbe = noticeProbe
     return {
       ready: chip !== null,
       sessionId,
@@ -15285,6 +15424,9 @@ export const CHAT_PLAN_MODE_CHECK = `(async () => {
     const box = document.querySelector('.composer-input')
     const placeholder = box === null ? '' : String(box.getAttribute('placeholder') || '')
     const pending = chip === null ? null : chip.getAttribute('data-plan-pending')
+    // v0.8.1：act 量好的顶部通知几何（读后删除，避免污染下一轮 / 其他探针）
+    const noticeProbe = window.__auroraPlanNoticeProbe ?? null
+    delete window.__auroraPlanNoticeProbe
     // 收尾走**真实芯片点击**（onPlanExit → useChat 同步 planState），并等芯片消失；
     // 直接调 IPC 只改主进程状态，渲染层仍以为在计划模式，会污染后续场景。
     let exited = false
@@ -15303,12 +15445,18 @@ export const CHAT_PLAN_MODE_CHECK = `(async () => {
       chipText,
       pending,
       placeholder,
+      notice: noticeProbe,
       exited,
       pass:
         chip !== null &&
         chipText.indexOf('计划模式') !== -1 &&
         pending === '0' &&
         placeholder.indexOf('规划') !== -1 &&
+        noticeProbe !== null &&
+        noticeProbe.present === true &&
+        noticeProbe.inMain === true &&
+        noticeProbe.overlapNav === false &&
+        noticeProbe.backgroundAlpha >= 0.9 &&
         exited === true,
     }
   } catch (error) {
@@ -16670,6 +16818,15 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: settingsPageChecks[page],
     })
   }
+  // 子代理创建弹窗（v0.8.1）：独立场景 —— 弹窗是模态遮罩，不能挂在页面循环里拍
+  // （否则每个设置页都会带一张遮罩）。act 打开、check 断言后点取消收尾。
+  plan.push({
+    name: 'settings',
+    file: 'settings-subagent-create.png',
+    query: { page: 'agent-subagents' },
+    act: SETTINGS_SUBAGENT_CREATE_ACT,
+    check: SETTINGS_SUBAGENT_CREATE_CHECK,
+  })
   // 旧深链别名（BetaV2）："?page=tts" 应映射到"语音"页（TTS + STT 都在）。
   // `agent / skills / mcp` 走同一张 `LEGACY_PAGE_ALIASES` 映射表，机制代表验证；
   // `?page=agent`（2026-11 拆分前的主页面 id）另拍一张，用标题与总开关钉住落点。
