@@ -781,10 +781,19 @@ interface AgentHostDeps {
   `maxChars` 按 `name + description + JSON.stringify(parameters)` 累加，与单测同一口径。
 - `syncToolRegistries()` 结束时测一次：超出只在**跨阈值时** `warn` 一次，回到预算内 `info` 一次；
   **只告警，不阻断请求、不改注册集合**。
+- 测量口径是**内置**：`plugin.` / `mcp.` 前缀的工具都不计入（插件与 MCP 各有全局硬上限，见下两条），
+  否则装一个 3 工具插件或连一台中等 MCP 服务器就会永久越过 65。
 - `apps/desktop/src/main/tools/toolFaceBudget.test.ts` 对内置全量（含 `use_skill`、`submit_plan`）断言；
-  插件 / MCP 不计入该测试，插件侧上限仍按 docs/14（单插件 32 / 全部 128）。
+  插件 / MCP 不计入该测试。
+- 插件工具有独立的全局硬上限 **64**（`PLUGIN_TOOL_FACE_LIMIT`，`packages/shared/src/plugin/protocol.ts`）：
+  超出部分按 `plugin.<id>.<name>` 字典序不注册（docs/14 §3.1.1）。单插件仍 ≤ 32（清单校验）。
+- MCP 工具也有独立的全局硬上限 **64**（`MCP_TOOL_FACE_LIMIT`，`agent-core/src/mcp/hub.ts`）：
+  按「服务器名 + 工具名」字典序跨服务器分配，超出部分不注册（docs/06 §7）。
+- **没有跨来源总闸**：内置 63 + 插件 64 + MCP 64 三者同时取满时，请求体仍可能越过 provider 常见的
+  128 tools 上限 —— 这是已知边界（P2 全局总闸），当前由三份独立上限把最坏情况限制在 191 以内。
 - 2026-11 基线（v45）：全量 63 个（新增 `submit_plan`）按本口径 **约 35k 字符**；42k 留约 7k 余量。
-  **抬高阈值必须同时改本节与常量**，并在评审里说明新增的是哪一类能力。
+  **抬高阈值必须同时改本节与常量**，并在评审里说明新增的是哪一类能力；插件的 64 同样受
+  「63 + 64 ≤ 128（单来源叠加）」单测约束。
 
 ## 6. Skill 系统
 
@@ -834,6 +843,11 @@ interface AgentHostDeps {
     服务器工具数超过单页上限时不再静默丢工具。
 - **工具注册**：MCP tools → Agent 工具表，命名 `mcp.<server>.<tool>`；与 Skill 冲突时 MCP 优先并记日志。
   全部 MCP 工具标记 `sensitivity = 'confirm'`（确认交互归 P5，见 §5）。
+- **全局工具上限（v0.8.4）**：全部已连接服务器的工具合计上限 **64**（`MCP_TOOL_FACE_LIMIT`）。
+  超出部分**不注册**（模型看不到、也调不到），服务器本身仍连接、其余能力不受影响；分配按
+  「服务器名 + 工具名」字典序统一重算，与连接先后 / 配置顺序无关；断开 / 移除服务器后
+  被截断的工具自动补回。设置页每台服务器的「N 个工具」显示的是**实际注册数**，
+  截断在日志里 `warn` 一次（含被跳过的前 20 个名字）。
 - **出站线路名（v37）**：内部注册名保持点号（`plugin.<id>.<name>` / `mcp.<server>.<tool>`），
   但发给 provider 的 `tools[].name` 与历史 `tool_calls[].name` 一律经 `llm/toolNames.ts`
   归一为 `[A-Za-z0-9_-]`（点号 → 下划线），模型回传的调用名再映射回内部名。

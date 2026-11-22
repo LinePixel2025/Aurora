@@ -10,7 +10,7 @@
 import type { McpServerConfig, McpServerStatus, Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
 import type { ToolDefinition, ToolRegistry } from '../tools/registry.js'
-import { McpClient } from './client.js'
+import { McpClient, type McpToolInfo } from './client.js'
 import { McpError, toMcpError } from './errors.js'
 import type { McpTransport } from './jsonrpc.js'
 import { HttpTransport, StdioTransport } from './transports.js'
@@ -74,6 +74,15 @@ interface ServerEntry {
 
 export const MCP_TOOL_PREFIX = 'mcp'
 
+/**
+ * 全部 MCP 服务器注册的工具合计上限（防失控常量，docs/06 §7）。
+ *
+ * 与插件侧同款：超出部分**不注册**（模型看不到、也调不到），服务器本身仍连接、
+ * 其余能力不受影响；分配按「服务器名 + 工具名」字典序，结果与连接先后无关。
+ * 不做成设置项 —— 它和 `PLUGIN_TOOL_FACE_LIMIT` 同属「防失控」，不是用户偏好。
+ */
+export const MCP_TOOL_FACE_LIMIT = 64
+
 /** stdio 意外断开的自动重连参数（docs/06 §7）：1s 起步指数退避、封顶 60s、最多 5 次 */
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 60_000
@@ -97,6 +106,8 @@ export class McpClientHub {
   private readonly entries = new Map<string, ServerEntry>()
   private lazyConnect = false
   private closed = false
+  /** 上一次被截断的工具名（有序）：只在集合变化时 warn，避免状态刷新刷屏 */
+  private lastSkippedKey = ''
 
   constructor(options: McpClientHubOptions) {
     this.tools = options.tools
@@ -250,7 +261,7 @@ export class McpClientHub {
           if (notification.method === 'notifications/tools/list_changed') {
             void client
               .refreshTools()
-              .then(() => this.registerTools(entry, client))
+              .then(() => this.rebalanceTools())
               .catch((error: unknown) =>
                 this.logger.warn('MCP 工具清单刷新失败', {
                   server: definition.name,
@@ -274,7 +285,7 @@ export class McpClientHub {
       entry.state = 'ready'
       entry.lastError = undefined
       entry.reconnectAttempt = 0
-      this.registerTools(entry, client)
+      this.rebalanceTools()
       // headers 是凭据路径：日志只允许出现 key 名，绝不落值
       this.logger.info('MCP 服务器已连接', {
         server: definition.name,
@@ -293,45 +304,84 @@ export class McpClientHub {
     }
   }
 
-  private registerTools(entry: ServerEntry, client: McpClient): void {
-    // 先清掉上一轮注册的工具（清单可能变小），避免残留失效工具
-    this.unregisterEntryTools(entry)
+  /**
+   * 按**服务器名 + 工具名**确定性地重建全部 MCP 工具注册（docs/06 §7）。
+   *
+   * 为什么不是「每个服务器各自注册」：全局上限必须跨服务器分配，而连接是异步的；
+   * 只有每次变化都按同一份排序重算，最终状态才与连接先后无关。已注册的工具先全部
+   * 摘除再按配额补回（同步完成，请求看不到中间态）。
+   */
+  private rebalanceTools(): void {
+    if (this.closed) return
+    const connected = [...this.entries.values()]
+      .filter((item) => item.client?.isConnected === true)
+      .sort((a, b) =>
+        a.definition.name < b.definition.name ? -1 : a.definition.name > b.definition.name ? 1 : 0,
+      )
+    for (const item of this.entries.values()) this.unregisterEntryTools(item)
 
-    const server = entry.definition.name
-    for (const tool of client.listTools()) {
-      const name = mcpToolName(server, tool.name)
-      const definition: ToolDefinition = {
-        name,
-        description:
-          tool.description === '' ? `MCP 工具 ${tool.name}（${server}）` : tool.description,
-        parameters: tool.parameters,
-        // 敏感确认交互归 P5（docs/06 §5）；此处仅标记 + 日志留痕
-        sensitivity: 'confirm',
-        execute: async (input, ctx) => {
-          await this.ensureConnected(entry)
-          const active = entry.client
-          if (active === undefined || !active.isConnected) {
-            const reason = entry.lastError ?? '未连接'
-            return {
-              content: `MCP 服务器「${server}」不可用：${reason}`,
-              isError: true,
-              summary: reason,
-            }
-          }
-          const result = await active.callTool(tool.name, input)
-          this.logger.debug('MCP 工具调用完成', {
-            server,
-            tool: tool.name,
-            session: ctx.sessionId,
-            sensitivity: 'confirm',
-          })
-          return result
-        },
+    let remaining = MCP_TOOL_FACE_LIMIT
+    const skipped: string[] = []
+    for (const item of connected) {
+      const client = item.client
+      if (client === undefined) continue
+      const tools = [...client.listTools()].sort((a, b) =>
+        a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+      )
+      const kept = tools.slice(0, remaining)
+      remaining -= kept.length
+      for (const tool of kept) this.registerTool(item, tool)
+      item.toolCount = kept.length
+      for (const tool of tools.slice(kept.length)) {
+        skipped.push(mcpToolName(item.definition.name, tool.name))
       }
-      this.tools.register(definition, 'mcp')
-      entry.registered.push(name)
     }
-    entry.toolCount = entry.registered.length
+
+    const key = skipped.join('\n')
+    if (key !== '' && key !== this.lastSkippedKey) {
+      this.logger.warn('MCP 工具超过全局上限，已按服务器名与工具名截断', {
+        limit: MCP_TOOL_FACE_LIMIT,
+        skipped: skipped.length,
+        tools: skipped.slice(0, 20),
+      })
+    }
+    this.lastSkippedKey = key
+  }
+
+  /** 注册单个 MCP 工具；`execute` 在断线时按「服务器不可用」回填，不抛到循环。 */
+  private registerTool(entry: ServerEntry, tool: McpToolInfo): void {
+    const server = entry.definition.name
+    const name = mcpToolName(server, tool.name)
+    const definition: ToolDefinition = {
+      name,
+      description:
+        tool.description === '' ? `MCP 工具 ${tool.name}（${server}）` : tool.description,
+      parameters: tool.parameters,
+      // 敏感确认交互归 P5（docs/06 §5）；此处仅标记 + 日志留痕
+      sensitivity: 'confirm',
+      execute: async (input, ctx) => {
+        await this.ensureConnected(entry)
+        const active = entry.client
+        if (active === undefined || !active.isConnected) {
+          const reason = entry.lastError ?? '未连接'
+          return {
+            content: `MCP 服务器「${server}」不可用：${reason}`,
+            isError: true,
+            summary: reason,
+          }
+        }
+        const result = await active.callTool(tool.name, input)
+        this.logger.debug('MCP 工具调用完成', {
+          server,
+          tool: tool.name,
+          session: ctx.sessionId,
+          sensitivity: 'confirm',
+        })
+        return result
+      },
+    }
+    this.tools.register(definition, 'mcp')
+    entry.registered.push(name)
   }
 
   /**
@@ -340,7 +390,7 @@ export class McpClientHub {
    * **必须走 `ToolRegistry.unregister`**（P2-06）：同名工具若在 MCP 注册**之前**就已存在
    * （用户配置过同名的内置 / Skill 工具），注销 MCP 实现时注册表会把被覆盖的旧定义恢复回来 ——
    * 断开 / 出错 / 重连清理都不该让内置工具"消失到下一次 `sync()`"。
-   * 本 hub 的四个清理点（registerTools 重建 / markError / 意外退出 / teardown）全部走这里。
+   * 本 hub 的四个清理点（rebalance 重建 / markError / 意外退出 / teardown）全部走这里。
    */
   private unregisterEntryTools(entry: ServerEntry): void {
     for (const name of entry.registered) this.tools.unregister(name)
@@ -353,6 +403,8 @@ export class McpClientHub {
     entry.client = undefined
     entry.toolCount = 0
     this.unregisterEntryTools(entry)
+    // 该服务器的名额让给其它已连接服务器（否则大服务器出错后小服务器永远少一截）
+    this.rebalanceTools()
     this.logger.warn('MCP 服务器不可用，已降级', {
       server: entry.definition.name,
       code: error.code,
@@ -380,6 +432,7 @@ export class McpClientHub {
     entry.client = undefined
     entry.toolCount = 0
     this.unregisterEntryTools(entry)
+    this.rebalanceTools()
     entry.lastError = `连接意外断开（code=${info.code ?? 'null'}，signal=${info.signal ?? 'null'}）`
     this.scheduleReconnect(entry)
   }
@@ -451,6 +504,8 @@ export class McpClientHub {
     entry.toolCount = 0
     const client = entry.client
     entry.client = undefined
+    // 主动断开同样让出名额：其它服务器的被截断工具在下一次 rebalance 里补回
+    this.rebalanceTools()
     if (client) await client.close().catch(() => undefined)
   }
 

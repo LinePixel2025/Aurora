@@ -52,6 +52,15 @@ export const PLUGIN_HEARTBEAT = {
 /** 同时运行的插件进程上限（防失控常量，不做成设置项）。 */
 export const PLUGIN_MAX_RUNNING = 8
 
+/**
+ * 全部启用插件的工具合计上限（P0 防失控常量，docs/14 §3.1.1）。
+ *
+ * 与内置全量 63 相加 = 127，留在 OpenAI 兼容网关常见的单请求 128 tools 上限内；
+ * 超出部分按 `plugin.<id>.<name>` 字典序**不注册**（模型看不到、也调不到）。
+ * 不做成设置项：它和 `PLUGIN_MAX_RUNNING` 同属「防失控」，不是用户偏好。
+ */
+export const PLUGIN_TOOL_FACE_LIMIT = 64
+
 /** 崩溃重启节奏与窗口内次数上限；超过即标记 `crashed` 并停用。 */
 export const PLUGIN_RESTART_BACKOFF = [1_000, 5_000, 15_000] as const
 export const PLUGIN_RESTART_WINDOW_MS = 10 * 60 * 1000

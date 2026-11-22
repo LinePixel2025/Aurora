@@ -26,6 +26,11 @@ import { prepareAttachments, type AttachmentDigest } from './attachment-prepare.
 import { PastedImageError, writePastedImage } from './pasted-image.js'
 import type { PluginManager } from './plugins/manager.js'
 import { readPluginPanelData } from './plugins/panel-data.js'
+import {
+  applyToolFace,
+  pluginInstallToolFaceWarnings,
+  type PluginToolFaceSnapshot,
+} from './plugins/tool-face.js'
 import type { WidgetManager } from './plugins/widgets.js'
 import type { PluginDialogManager } from './plugins/dialogs.js'
 import type { PluginMarketplaceClient } from './plugins/marketplace.js'
@@ -44,6 +49,7 @@ import {
   createDefaultSettings,
   err,
   ok,
+  resolvePermissionMode,
   type AppInfo,
   type AskUserAnswerInput,
   type AuroraApi,
@@ -291,6 +297,11 @@ export interface DesktopDeps {
    * （不静默成功）——安装 / 启停 / 配置都要求用户能看到失败原因。
    */
   plugins?: PluginManager
+  /**
+   * 插件工具面注册快照（docs/14 §3.1.1）：`plugins:list` 用它标注每个工具是否真的注册，
+   * 以及全局已用量。未注入时列表原样返回（不装饰），界面自动隐藏用量行。
+   */
+  pluginToolFace?: () => PluginToolFaceSnapshot
   /** 桌面小组件窗口（docs/14 §5.3）；插件系统未装配时为空 */
   widgets?: WidgetManager
   /** 临时对话框窗口（docs/14 §5.8）；插件系统未装配时为空 */
@@ -1464,13 +1475,31 @@ export function registerIpc(deps: DesktopDeps): () => void {
   const pluginError = (error: unknown): Result<never> =>
     err('E_INVALID_ARGUMENT', error instanceof Error ? error.message : String(error))
 
-  handle<PluginSummary[]>(IPC.plugins.list, () =>
-    plugins === undefined ? pluginsMissing<PluginSummary[]>() : ok(plugins.list()),
-  )
+  handle<PluginSummary[]>(IPC.plugins.list, () => {
+    if (plugins === undefined) return pluginsMissing<PluginSummary[]>()
+    const list = plugins.list()
+    // 工具面快照只装饰 list（docs/14 §3.1.1）：安装 / 启停的返回值消费方随后都会重拉列表，
+    // 少一条装饰路径就少一处会漂移的「已注册」计数。
+    const face = deps.pluginToolFace?.()
+    return ok(face === undefined ? list : list.map((summary) => applyToolFace(summary, face)))
+  })
   handle<PluginInstallPreview>(IPC.plugins.inspect, (ref: PluginPackageRef) =>
     plugins === undefined
       ? Promise.resolve(pluginsMissing<PluginInstallPreview>())
-      : plugins.inspect(ref).then(ok, pluginError),
+      : plugins.inspect(ref).then((preview) => {
+          // 安装确认弹窗的工具面预警（docs/14 §3.1.1）：装完会丢工具 / 挤掉现有工具时，
+          // 往既有的 warnings 里追加，由同一个对话框原样展示（不新增 UI 分支）。
+          const snapshot = deps.pluginToolFace?.()
+          if (snapshot === undefined) return ok(preview)
+          const warnings = pluginInstallToolFaceWarnings(preview, snapshot, {
+            readonlyMode: resolvePermissionMode(deps.settings.get()) === 'readonly',
+          })
+          return ok(
+            warnings.length === 0
+              ? preview
+              : { ...preview, warnings: [...preview.warnings, ...warnings] },
+          )
+        }, pluginError),
   )
   handle<PluginSummary>(IPC.plugins.install, (ref: PluginPackageRef) =>
     plugins === undefined

@@ -14,7 +14,7 @@ import type {
   PluginWidgetLayout,
   PluginWidgetWindowLevel,
 } from '@aurora/shared'
-import { PLUGIN_PERMISSION_LABELS } from '@aurora/shared/browser'
+import { PLUGIN_PERMISSION_LABELS, PLUGIN_TOOL_FACE_LIMIT } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import AppTooltip from '../shared/components/AppTooltip.vue'
@@ -72,6 +72,27 @@ const statusText = computed(() => {
 const desktopWidgets = computed(
   () => summary.value?.widgets.filter((widget) => widget.slot === 'desktop') ?? [],
 )
+
+/**
+ * 工具注册状态（docs/14 §3.1.1）：只在插件真正参与注册时展示。
+ * 停用 / 总开关关闭时工具全为 `registered: false` 是预期，不标「未注册」以免误导。
+ */
+const toolFaceActive = computed(() => {
+  const plugin = summary.value
+  return plugin !== null && plugin.enabled && plugin.status !== 'disabled'
+})
+const registeredToolCount = computed(
+  () => summary.value?.tools.filter((tool) => tool.registered === true).length ?? 0,
+)
+const skippedToolCount = computed(() => summary.value?.toolFace?.skipped ?? 0)
+const toolFaceSummary = computed(() => {
+  const plugin = summary.value
+  // 未装饰（插件系统未装配 / 早期快照）时不显示，避免「0 / 3 已注册」的假数据
+  if (plugin === null || plugin.tools.length === 0 || plugin.toolFace === undefined) return ''
+  if (!toolFaceActive.value) return `工具 ${plugin.tools.length} 个 · 插件未启用，未注册`
+  const used = plugin.toolFace.used
+  return `工具 ${registeredToolCount.value} / ${plugin.tools.length} 已注册 · 全局插件工具 ${used} / ${PLUGIN_TOOL_FACE_LIMIT}`
+})
 
 /** 切插件 / 重新打开时用 key 重置配置表单，避免旧草稿串到新插件。 */
 const configKey = computed(() =>
@@ -400,6 +421,17 @@ onBeforeUnmount(() => {
 
         <section class="section-card">
           <h2 class="section-title">扩展点</h2>
+          <p v-if="toolFaceSummary" class="tool-face-line" data-field="plugin-config.tool-face">
+            {{ toolFaceSummary }}
+          </p>
+          <p
+            v-if="skippedToolCount > 0"
+            class="tool-face-warn"
+            data-field="plugin-config.tool-face-warn"
+          >
+            全局插件工具已达上限（{{ PLUGIN_TOOL_FACE_LIMIT }}）：本插件 {{ skippedToolCount }}
+            个工具未注册。停用其它插件或减少工具后自动恢复。
+          </p>
           <ul
             v-if="
               summary.tools.length > 0 ||
@@ -412,6 +444,9 @@ onBeforeUnmount(() => {
           >
             <li v-for="tool in summary.tools" :key="`tool-${tool.name}`">
               工具 · <span class="mono">{{ tool.fullName }}</span>
+              <span v-if="toolFaceActive && tool.registered === false" class="badge warn">
+                未注册
+              </span>
             </li>
             <li v-for="command in summary.commands" :key="`cmd-${command.name}`">
               命令 · <span class="mono">/{{ command.name }}</span> {{ command.title }}
@@ -594,6 +629,11 @@ onBeforeUnmount(() => {
   font-size: var(--text-xs);
 }
 
+.badge.warn {
+  border-color: var(--warning-text);
+  color: var(--warning-text);
+}
+
 .state {
   padding: 1px 7px;
   border-radius: var(--radius-pill);
@@ -654,6 +694,18 @@ onBeforeUnmount(() => {
 .section-desc {
   margin: 0 0 var(--space-2);
   color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.tool-face-line {
+  margin: 0 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.tool-face-warn {
+  margin: 0 0 var(--space-2);
+  color: var(--warning-text);
   font-size: var(--text-sm);
 }
 

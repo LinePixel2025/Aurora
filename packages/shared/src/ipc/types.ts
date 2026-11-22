@@ -2521,6 +2521,21 @@ export interface PluginToolInfo {
   description: string
   sensitivity: 'safe' | 'confirm'
   readonly: boolean
+  /**
+   * 当前工具面是否注册了该工具（仅 `plugins:list` 装饰时提供）。
+   * `false` = 插件停用 / 只读档 / 全局上限截断；`undefined` = 未装饰（安装预览等）。
+   */
+  registered?: boolean
+}
+
+/** 插件工具面用量（仅 `plugins:list` 装饰；`used` 是全局值）。 */
+export interface PluginToolFaceInfo {
+  /** 全局已注册的插件工具数 */
+  used: number
+  /** 本插件已注册的工具数 */
+  registered: number
+  /** 本插件因全局上限未注册的工具数 */
+  skipped: number
 }
 
 export interface PluginPanelInfo {
@@ -2653,6 +2668,11 @@ export interface PluginSummary {
   isDev: boolean
   permissions: PluginPermission[]
   tools: PluginToolInfo[]
+  /**
+   * 工具面注册结果（docs/14 §3.1.1，仅 `plugins:list` 装饰）。
+   * `used` 是全局值，每份摘要相同；缺省 = 未装饰（插件系统未装配 / 早期调用）。
+   */
+  toolFace?: PluginToolFaceInfo
   commands: PluginCommandInfo[]
   panels: PluginPanelInfo[]
   widgets: PluginWidgetInfo[]

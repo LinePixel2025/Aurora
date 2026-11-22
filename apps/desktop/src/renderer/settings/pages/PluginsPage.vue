@@ -14,7 +14,7 @@ import type {
   PluginSummary,
 } from '@aurora/shared'
 import { Blocks, Play, Puzzle } from '@aurora/shared/browser'
-import { PLUGIN_PERMISSION_LABELS } from '@aurora/shared/browser'
+import { PLUGIN_PERMISSION_LABELS, PLUGIN_TOOL_FACE_LIMIT } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import AppTooltip from '../../shared/components/AppTooltip.vue'
@@ -214,6 +214,26 @@ function pluginStats(plugin: PluginSummary): string {
   if (plugin.permissions.length > 0) parts.push(`${plugin.permissions.length} 项权限`)
   return parts.join(' · ')
 }
+
+/**
+ * 工具面用量（docs/14 §3.1.1）：`used` 是全局值，任意一份装饰过的摘要都带同一份快照。
+ * 总开关关闭时工具面为空，不显示用量行（「0 / 64」会被误读成没装插件）。
+ */
+const toolFaceInfo = computed(
+  () => installed.value.find((plugin) => plugin.toolFace !== undefined)?.toolFace ?? null,
+)
+const skippedToolCount = computed(() =>
+  installed.value.reduce((total, plugin) => total + (plugin.toolFace?.skipped ?? 0), 0),
+)
+const showToolFace = computed(
+  () => masterEnabled.value && installed.value.some((plugin) => plugin.tools.length > 0),
+)
+const toolFaceSummary = computed(() => {
+  const info = toolFaceInfo.value
+  if (info === null) return ''
+  const base = `插件工具已用 ${info.used} / ${PLUGIN_TOOL_FACE_LIMIT}`
+  return skippedToolCount.value > 0 ? `${base}，${skippedToolCount.value} 个超出上限未注册` : base
+})
 
 async function addDevDir(): Promise<void> {
   const current = pluginsSettings.value
@@ -435,6 +455,10 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <p v-if="showToolFace && toolFaceSummary" class="tool-face" data-field="plugins.tool-face">
+          {{ toolFaceSummary }}
+        </p>
+
         <div v-if="loading" class="empty-state">
           <p class="muted">正在读取插件列表…</p>
         </div>
@@ -485,6 +509,9 @@ onUnmounted(() => {
 
             <p class="plugin-summary">
               <span>{{ pluginStats(plugin) }}</span>
+              <span v-if="(plugin.toolFace?.skipped ?? 0) > 0" class="tool-face-warn">
+                {{ plugin.toolFace?.skipped }} 个工具未注册
+              </span>
               <span>{{ plugin.author }}</span>
             </p>
           </article>
@@ -753,6 +780,16 @@ onUnmounted(() => {
   margin: 0;
   color: var(--text-muted);
   font-size: var(--text-xs);
+}
+
+.tool-face {
+  margin: 0 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.tool-face-warn {
+  color: var(--warning-text);
 }
 
 .block-label {

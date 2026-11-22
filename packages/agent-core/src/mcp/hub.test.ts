@@ -2,7 +2,13 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { createMemoryLogger, type McpServerConfig } from '@aurora/shared'
-import { McpClientHub, mcpToolName, toServerDefinitions, type TransportHooks } from './hub.js'
+import {
+  McpClientHub,
+  MCP_TOOL_FACE_LIMIT,
+  mcpToolName,
+  toServerDefinitions,
+  type TransportHooks,
+} from './hub.js'
 import { McpError } from './errors.js'
 import type { JsonRpcRequest, JsonRpcResponse, McpTransport } from './jsonrpc.js'
 import { ToolRegistry } from '../tools/registry.js'
@@ -336,7 +342,10 @@ class FakeMcpTransport implements McpTransport {
   readonly kind = 'stdio' as const
   private hooks: TransportHooks | undefined
 
-  constructor(private readonly failConnect: boolean) {}
+  constructor(
+    private readonly failConnect: boolean,
+    private readonly toolNames: readonly string[] = ['echo'],
+  ) {}
 
   setHooks(hooks: TransportHooks | undefined): void {
     this.hooks = hooks
@@ -359,13 +368,11 @@ class FakeMcpTransport implements McpTransport {
         jsonrpc: '2.0',
         id: request.id,
         result: {
-          tools: [
-            {
-              name: 'echo',
-              description: '假工具 echo',
-              inputSchema: { type: 'object', properties: {} },
-            },
-          ],
+          tools: this.toolNames.map((name) => ({
+            name,
+            description: `假工具 ${name}`,
+            inputSchema: { type: 'object', properties: {} },
+          })),
         },
       }
     }
@@ -558,6 +565,74 @@ describe('McpClientHub stdio 意外断开自动重连（docs/06 §7）', () => {
     await vi.advanceTimersByTimeAsync(1_000)
     expect(hub.statuses()[0]?.state).toBe('ready')
     expect(tools.get('mcp.fake.echo')).not.toBe(builtin)
+    await hub.close()
+  })
+})
+
+describe('McpClientHub 工具总量上限（docs/06 §7）', () => {
+  const definition = (name: string) => ({
+    name,
+    transport: 'stdio' as const,
+    enabled: true,
+    command: 'unused-by-factory',
+  })
+  const toolNamesOf = (prefix: string, count: number): string[] =>
+    Array.from({ length: count }, (_, index) => `${prefix}${String(index).padStart(2, '0')}`)
+
+  function capSetup(byServer: Record<string, string[]>) {
+    const tools = new ToolRegistry()
+    const logger = createMemoryLogger()
+    const hub = new McpClientHub({
+      tools,
+      logger,
+      createTransport: (item) => new FakeMcpTransport(false, byServer[item.name] ?? ['echo']),
+    })
+    return { hub, tools, logger }
+  }
+
+  it('跨服务器合计只注册 64 个：按服务器名 + 工具名确定性分配', async () => {
+    const { hub, tools, logger } = capSetup({
+      alpha: toolNamesOf('t', 40),
+      beta: toolNamesOf('u', 40),
+    })
+    // 故意逆序配置：分配不应受连接 / 配置顺序影响
+    await hub.reconfigure([definition('beta'), definition('alpha')], { connect: true })
+
+    const names = tools
+      .list()
+      .map((tool) => tool.name)
+      .sort()
+    expect(names).toHaveLength(MCP_TOOL_FACE_LIMIT)
+    expect(names).toContain('mcp.alpha.t39')
+    expect(names).toContain('mcp.beta.u23')
+    expect(names).not.toContain('mcp.beta.u24')
+    expect(hub.statuses().find((item) => item.name === 'alpha')?.toolCount).toBe(40)
+    expect(hub.statuses().find((item) => item.name === 'beta')?.toolCount).toBe(24)
+    expect(logger.entries.some((line) => line.includes('MCP 工具超过全局上限'))).toBe(true)
+    await hub.close()
+  })
+
+  it('单台服务器超限时只注册前 64 个（按工具名）', async () => {
+    const { hub, tools } = capSetup({ solo: toolNamesOf('t', 65) })
+    await hub.reconfigure([definition('solo')], { connect: true })
+    const names = tools.list().map((tool) => tool.name)
+    expect(names).toHaveLength(MCP_TOOL_FACE_LIMIT)
+    expect(names).toContain('mcp.solo.t63')
+    expect(names).not.toContain('mcp.solo.t64')
+    await hub.close()
+  })
+
+  it('移除占用名额的服务器后，被截断的工具自动补回', async () => {
+    const { hub, tools } = capSetup({
+      alpha: toolNamesOf('t', 40),
+      beta: toolNamesOf('u', 40),
+    })
+    await hub.reconfigure([definition('alpha'), definition('beta')], { connect: true })
+    expect(tools.get('mcp.beta.u39')).toBeUndefined()
+
+    await hub.reconfigure([definition('beta')], { connect: true })
+    expect(tools.get('mcp.beta.u39')).toBeDefined()
+    expect(hub.statuses().find((item) => item.name === 'beta')?.toolCount).toBe(40)
     await hub.close()
   })
 })

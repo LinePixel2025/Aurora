@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildToolGuidance, SkillsBridge, ToolRegistry } from '@aurora/agent-core'
-import { createDefaultSettings, createMemoryLogger } from '@aurora/shared'
-import { measureToolFace, TOOL_FACE_BUDGET } from './budget.js'
+import { createDefaultSettings, createMemoryLogger, PLUGIN_TOOL_FACE_LIMIT } from '@aurora/shared'
+import { measureBuiltinToolFace, measureToolFace, TOOL_FACE_BUDGET } from './budget.js'
 import {
   registerAgentCoreTools,
   registerAutomationTools,
@@ -172,5 +172,22 @@ describe('工具面预算（docs/06 §5.4）', () => {
     ]) {
       expect(guidance).toContain(marker)
     }
+  })
+
+  it('内置全量 + 插件全局上限不越过 provider 的 128 tools 上限', () => {
+    // 任何新增内置工具都会让这条失败：加工具前先重审插件上限（docs/06 §5.4）
+    const count = buildFullToolFace().toLlmTools().length
+    expect(count + PLUGIN_TOOL_FACE_LIMIT).toBeLessThanOrEqual(128)
+  })
+
+  it('运行期预算只统计内置，插件 / MCP 各有全局上限', () => {
+    const entries = [
+      { name: 'read_file', description: '读文件', parameters: { type: 'object' } },
+      { name: 'mcp.srv.echo', description: '回显', parameters: { type: 'object' } },
+      { name: 'plugin.a.b', description: '插件工具', parameters: { type: 'object' } },
+    ]
+    const face = measureBuiltinToolFace(entries)
+    expect(face.count).toBe(1)
+    expect(face.chars).toBe(measureToolFace(entries.slice(0, 1)).chars)
   })
 })

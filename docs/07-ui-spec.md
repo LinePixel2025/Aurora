@@ -170,9 +170,13 @@
 - **内容**：插件身份与状态头、配置表单（`plugin-config.config`，字段来自清单 `config.fields`）、
   桌面小组件显隐 / 层级（沿用 `plugins.widget-visible.<id>` / `plugins.widget-level.<id>` 锚点）、
   权限与扩展点清单、管理动作（启用 / 信任 / 重启 / 回滚 / 目录 / 日志 / 卸载）。
+  扩展点区显示工具注册状态：顶部一行「本插件已注册 / 声明 · 全局已用 / 64」
+  （`plugin-config.tool-face`），未注册的工具带标记；因全局上限被截断时显示
+  `plugin-config.tool-face-warn` 并给出恢复办法。
   保存走 `plugins:setConfig`；重启后所有已打开的面板 / 页面 / 小组件经 `plugins:changed` 重载。
 - **锚点**：`plugin-config.page` / `plugin-config.config` / `plugin-config.save` /
-  `plugin-config.restart` / `plugin-config.permissions`，截图场景 `plugin-config.png`。
+  `plugin-config.restart` / `plugin-config.permissions` / `plugin-config.tool-face` /
+  `plugin-config.tool-face-warn`，截图场景 `plugin-config.png`。
 
 ### 2.2.3 流光提醒（Banner Notification）
 
@@ -3080,6 +3084,10 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
   - 已安装：总开关、插件主题选择、安装确认（权限 / 工具 / SHA-256）与插件列表；每行只有
     状态 / 名称 / 版本 / 描述 / 一行统计、启停快捷开关与「配置」按钮
     （`data-field="plugins.config.<id>"`）。**不再内联展开详情或配置表单**；
+    列表标题下另有一行工具面用量（`plugins.tool-face`）：「插件工具已用 / 64」，
+    发生截断时提示「N 个超出上限未注册」，对应插件行带未注册徽标。
+    安装确认弹窗的「提醒」区会预演装完的工具面：本插件几个工具不会注册 / 会挤掉哪些已有工具
+    （装得下时不显示）。
   - **插件配置窗口**（`plugin-config`，见 §2.2.2）：配置、桌面小组件显隐 / 层级、权限与扩展点、
     启用 / 信任 / 重启 / 回滚 / 目录 / 日志 / 卸载全部收在这里，详情信息不再挤在设置列表里；
   - 市场：Center 公开列表，显示更新标记与「安装 / 更新」；未配置 Center 时明确空态；

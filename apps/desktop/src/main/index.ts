@@ -272,7 +272,7 @@ import {
 } from './tools/index.js'
 import { registerBrowserTools } from './tools/index.js'
 import { registerComputerUseTools } from './tools/index.js'
-import { measureToolFace, TOOL_FACE_BUDGET } from './tools/budget.js'
+import { measureBuiltinToolFace, TOOL_FACE_BUDGET } from './tools/budget.js'
 import { ComputerUseService } from './computer-use/service.js'
 import { ComputerUseInputHost } from './computer-use/input-host.js'
 import { DesktopComputerUsePort } from './computer-use/port.js'
@@ -292,7 +292,8 @@ import { PluginMarketplaceClient } from './plugins/marketplace.js'
 import { createUtilityPluginProcessFactory } from './plugins/process.js'
 import { WidgetManager } from './plugins/widgets.js'
 import { PluginDialogManager } from './plugins/dialogs.js'
-import { registerPluginTools } from './plugins/contributions/tools.js'
+import { registerPluginTools, type PluginToolsRegistry } from './plugins/contributions/tools.js'
+import { emptyPluginToolFaceSnapshot, type PluginToolFaceSnapshot } from './plugins/tool-face.js'
 import { registerPluginPageProtocol, registerPluginPageScheme } from './page-protocol.js'
 import { BrowserAgentManager } from './browser-agent.js'
 import {
@@ -541,7 +542,15 @@ let skillsService: SkillsService | undefined
 let pluginManager: PluginManager | undefined
 /** 本机用量账本（插件 `ctx.usage`，docs/14 §4.1）：按日计数，独立于 settings */
 let usageStats: UsageStatsStore | undefined
-let pluginTools: { sync(): string[] } | undefined
+let pluginTools: PluginToolsRegistry | undefined
+/**
+ * 插件工具面的最近一次注册快照（P0 / P1，docs/14 §3.1.1）。
+ *
+ * 由 `syncToolRegistries()` 在 `pluginTools.sync()` 后更新；`plugins:list` 经
+ * `deps.pluginToolFace` 取它来装饰「已注册 / 未注册 / 全局已用」。
+ * 初值取空快照：`plugins:list` 可能早于首次 sync 被窗口调用，不能是 `undefined` 语义。
+ */
+let pluginToolFaceSnapshot: PluginToolFaceSnapshot = emptyPluginToolFaceSnapshot()
 /** 桌面小组件窗口（docs/14 §5.3）；插件系统未装配时为空 */
 let widgetManager: WidgetManager | undefined
 /** 插件临时对话框窗口（docs/14 §5.8）；插件系统未装配时为空 */
@@ -3436,6 +3445,8 @@ async function bootstrap(): Promise<void> {
     skills: skillsService,
     // 插件系统（docs/14）：plugins:* 的 IPC 切片；未装配时各通道如实回 E_INVALID_STATE
     plugins: pluginManager,
+    // 插件工具面注册快照（docs/14 §3.1.1）：`plugins:list` 据此标注已注册 / 未注册与全局用量
+    pluginToolFace: () => pluginToolFaceSnapshot,
     widgets: widgetManager,
     dialogs: dialogManager,
     pluginMarketplace,
@@ -7598,7 +7609,9 @@ let toolFaceOverBudget = false
 
 function checkToolFaceBudget(): void {
   if (tools === undefined) return
-  const face = measureToolFace(tools.toLlmTools())
+  // 只统计内置：插件 / MCP 工具各有全局硬上限（docs/14 §3.1.1、docs/06 §7），
+  // 再计入 65 的 ratchet 会让任何装了 3 个以上工具的插件 / MCP 永久越过阈值（docs/06 §5.4）。
+  const face = measureBuiltinToolFace(tools.toLlmTools())
   const over = face.count > TOOL_FACE_BUDGET.maxTools || face.chars > TOOL_FACE_BUDGET.maxChars
   if (over && !toolFaceOverBudget) {
     logger?.warn('工具面超出预算（考虑按需注册或收敛重叠工具）', {
@@ -7630,9 +7643,11 @@ function syncToolRegistries(): void {
   automationTools?.sync()
   // 文件自感知工具（docs/06 §26）：启用 / 授权 / 知识库可用性变化即时生效
   awarenessTools?.sync()
-  // 插件工具（docs/14）：`plugin.<id>.<name>`，默认 confirm；只读档只注册 readonly 工具
-  pluginTools?.sync()
-  // 工具面预算（docs/06 §5.4）：内置 + 插件注册完再测一次；超限只 warn，不阻断请求
+  // 插件工具（docs/14）：`plugin.<id>.<name>`，默认 confirm；只读档只注册 readonly 工具；
+  // 全局上限 64 的截断也在 sync() 内完成（docs/14 §3.1.1），快照留给 `plugins:list` 装饰
+  const pluginFace = pluginTools?.sync()
+  if (pluginFace !== undefined) pluginToolFaceSnapshot = pluginFace
+  // 工具面预算（docs/06 §5.4）：内置 + MCP 注册完再测一次；超限只 warn，不阻断请求
   checkToolFaceBudget()
 }
 

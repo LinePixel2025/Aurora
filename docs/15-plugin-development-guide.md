@@ -64,7 +64,7 @@ aurora-center plugins publish --server http://127.0.0.1:8787 --user admin --dir 
 | `main` | ✓ | 包内入口（`main.js`） |
 | `activation` |  | `startup`（默认）/ `lazy` |
 | `permissions` |  | 见 §3；声明贡献必须同时声明对应权限 |
-| `contributes.tools` |  | 工具（≤ 32；最终名 ≤ 64） |
+| `contributes.tools` |  | 工具（≤ 32；最终名 ≤ 64；宿主另有全局合计 ≤ 64，超出不注册） |
 | `contributes.skills` |  | 包内 Skill 目录 |
 | `contributes.commands` |  | 斜杠命令（`action` / `prompt`） |
 | `contributes.automation` |  | 自动化动作 / 事件 |
@@ -586,6 +586,7 @@ schema / 引用文件存在），安装器、市场与 `verify-plugin.mjs` 仍�
 | 页面 `请求失败：页面尚未就绪` | 页面在 guest 就绪前发请求，宿主已兜底；持续出现看主进程日志 |
 | 工具每次都弹确认 | 清单 `sensitivity: "safe"` 但插件尚未「信任」；信任后才免确认 |
 | 只读档看不到工具 | 只注册 `readonly: true` 的工具 |
+| 插件已启用但工具在 Agent 里看不到 | 全局插件工具已达上限 64：超出部分按名字不注册；停用其它插件或减少工具数（见配置窗口的未注册标记） |
 | `E_PLUGIN_PERMISSION` | 调了未声明的宿主 API（storage / net / notify / config / events…） |
 | 自动化不触发 | 事件名 / 插件 id 与清单不一致；或事件在自动化执行期间被防自激守卫忽略 |
 

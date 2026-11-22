@@ -3640,12 +3640,14 @@ export const SETTINGS_PLUGINS_INSTALLED_CHECK = `(() => {
   const tab = document.querySelector('[data-field="plugins.tab-installed"]')
   const active = tab !== null && tab.classList.contains('active')
   const item = document.querySelector('.plugin-item')
+  const toolFace = document.querySelector('[data-field="plugins.tool-face"]')
   return {
     pass:
       active &&
       text.includes('Hello Aurora') &&
       text.includes('安装插件包') &&
       item !== null &&
+      toolFace !== null &&
       (item.innerText.includes('配置') || item.innerText.includes('停用')),
     detail: text.slice(0, 200),
   }
@@ -3697,6 +3699,7 @@ export const PLUGIN_CONFIG_CHECK = `(async () => {
   const restart = document.querySelector('[data-field="plugin-config.restart"]')
   const level = document.querySelector('[data-field="plugins.widget-level.duty-week"]')
   const permissions = document.querySelector('[data-field="plugin-config.permissions"]')
+  const toolFace = document.querySelector('[data-field="plugin-config.tool-face"]')
   return {
     pass:
       page !== null &&
@@ -3706,7 +3709,8 @@ export const PLUGIN_CONFIG_CHECK = `(async () => {
       save !== null &&
       restart !== null &&
       permissions !== null &&
-      level !== null,
+      level !== null &&
+      toolFace !== null,
     detail: text.slice(0, 240),
   }
 })()`
