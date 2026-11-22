@@ -266,8 +266,8 @@
   // 连接目标是数据外发通道，AI 的 set_setting 一律拒绝；只能由用户在设置页操作
   "center": {
     "enabled": false, // 总开关；false 时不连接 Center，center_* 工具也不注册
-    "serverUrl": "", // Center 服务器地址（ws(s):// 或 http(s)://，连接时统一换 ws 协议）
-    "tokenEnc": "<safeStorage 密文>", // 客户端令牌（凭据路径：center.token ⇄ center.tokenEnc，同 apiKey 链路；由账号登录颁发，见 12 §3）
+    "serverUrl": "http://120.24.223.65:8787", // v47 起固定官方地址（CENTER_SERVER_URL）；设置页只读，不可改向
+    "tokenEnc": "<safeStorage 密文>", // 客户端令牌（凭据路径：center.token ⇄ center.tokenEnc，同 apiKey 链路；由设备授权登录颁发，见 12 §3）
     "account": "", // 已登录的 Center 账号名（v17 新增；非凭据，仅展示与诊断）
     "clientId": "", // 本机客户端 id（首次登录时生成并持久化；非凭据）
     "displayName": "", // 在 Center 展示的名字；空串 = 主机名
@@ -276,11 +276,11 @@
     "allowFileTransfer": true, // 允许 center_send_file 上传文件
     "maxFileMb": 64, // 单个上传文件上限（1–512）
     "officialModels": {
-      // v31：Center 官方模型全局覆盖；会话级模型覆盖仍写 SessionMeta.llm
-      "llm": { "enabled": false, "model": "" },
-      "imagegen": { "enabled": false, "model": "" },
-      "tts": { "enabled": false, "model": "" },
-      "stt": { "enabled": false, "model": "" },
+      // v31 新增 / v47 起默认开启：选择入口并入各模型管理页（见 §8）；会话级模型覆盖仍写 SessionMeta.llm
+      "llm": { "enabled": true, "model": "" },
+      "imagegen": { "enabled": true, "model": "" },
+      "tts": { "enabled": true, "model": "" },
+      "stt": { "enabled": true, "model": "" },
     },
   },
   // v19 新增：自动化总开关（docs/13 §2.2）。自动化的**定义与历史不是配置** ——
@@ -341,6 +341,10 @@
 ```
 
 - 字段说明：`llm.providers` 支持多组模型配置，`llm.active` 指定默认；`modes.classroom.subjects` 即科目 → 文件夹映射（见 05 §3）；`schedule.provider` 为 `manual | classisland`（见 05 §3.4）。
+- **v47 Center 默认值（2026-11，开发中）**：`serverUrl` 固定为 `CENTER_SERVER_URL`
+  （`http://120.24.223.65:8787`，设置页只读、不可改向）；`officialModels` 四类 `enabled`
+  默认 `true`，选模入口并入 AI 模型 / 语音 / 生图各自的管理页（见 §8）。存量 `serverUrl`
+  **不做迁移**，在下一次保存或登录时规范到固定地址（避免静默切走自托管用户）。
 - `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `settings` / `memory` /
   `onboarding` / `automation`
   （v4 起移除 `service-dock`、v6 起移除 `mini-chat`，两个窗口均已删除；`memory` 为记忆库
@@ -824,7 +828,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 45`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 47`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -957,12 +961,16 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `modes.current === 'code'` 归一为 `'classroom'`（出厂默认 / 推荐首发模式）；
   `modes` 分组缺失时不凭空造对象，其他 `modes.current` 值原样保留）、
   `v45 → v46`（**新增 `agent.subagents`**，见 06 §19.6：`agent` 存在但 `subagents` 不是数组时
-  写入出厂预设 Searcher / Coder；已有数组原样保留；`agent` 分组缺失时不凭空造对象）。
-  四十六条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  写入出厂预设 Searcher / Coder；已有数组原样保留；`agent` 分组缺失时不凭空造对象）、
+  `v46 → v47`（**Center 官方模型默认开启**，见 §8 与 12 §12.2：把 `center.officialModels` 四类
+  选择的 `enabled` 置 `true`、**已选 `model` 原样保留**；`center` 分组缺失时不凭空造对象。
+  设置页不再有「官方模型」总开关，存量配置若保持 `false` 将永远没有入口启用，因此这次迁移
+  只做这一件事；Center 地址固定属于默认值变化，存量 `serverUrl` 不迁移）。
+  四十七条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **46** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **47** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1002,27 +1010,28 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 
 1. **页头摘要**：标题 + 一句话说明（凭据加密、日志脱敏）+ 当前默认状态
    （`当前默认：<activeId> · <model>`；`llm.active` 为空或指向不存在的 provider 时显示「尚未选择默认模型」）。
-2. **默认模型**（v37）：有已保存 provider 时，页头下方显示一张「默认模型」卡，
-   `data-field="llm.defaultModel"` 的单个 `<select>` 按 provider 分组（`<optgroup>`），
-   每个选项是一对 `(providerId, model)`（JSON 编码进 `value`，避免模型 id 里的分隔符冲突）；
-   选项集合 = 每个已保存 provider 的 `modelList ∪ {model}`。
-   切换即**立即保存**（不点「应用」）：写 `llm.active = providerId` 与
+2. **默认模型**（v37）：有已保存 provider **或官方目录可用**（v47）时，页头下方显示一张
+   「默认模型」卡，`data-field="llm.defaultModel"` 的单个 `<select>` 按 provider 分组
+   （`<optgroup>`），每个选项是一对 `(providerId, model)`（JSON 编码进 `value`，避免模型 id
+   里的分隔符冲突）；选项集合 = 每个已保存 provider 的 `modelList ∪ {model}`。
+   本机 provider 一个都没有、但目录里有官方语言模型时**也渲染这张卡**，否则官方模型没有
+   选模入口。切换即**立即保存**（不点「应用」）：写 `llm.active = providerId` 与
    `llm.providers.<id>.model = model`，并把该模型补进 `modelList`；失败时按 `settingsStore.error` 提示。
    已登录且拿到目录时，下拉还多一个「Aurora Center 官方模型」分组（`<optgroup>`，选项来自
    `center.modelServices()` 的 `services.llm.models`）。选中官方项会**同时**写
    `llm.active = 'center-llm'`、`center.officialModels.llm = { enabled: true, model }`，
    镜像 Provider 的落盘 model 仍由目录同步维护。`llm.active` 指向官方但目录不可用时，
    下拉保留一个禁用的占位项「Center 官方模型（目录不可用）」，不改写配置；
-   选择任意本机模型即切回本机 provider，且**不会关闭**官方能力（它仍可作为会话级来源）。
-3. **工具行**：`+ 添加 Provider`（切到添加态）与「保存全部」（逐个保存全部 provider）。
+   选择任意本机模型即切回本机 provider，且**不改**官方能力选择（它仍可作为会话级来源）。
+3. **工具行**：`+ 添加 Provider`（`data-action="add-llm-provider"`，打开添加弹窗）。
 4. **provider 行列表**：每个 provider 一行，行上只有
    - 名称（`.mono`）；
    - **凭据状态 badge**：`apiKeySet === true` → `凭据已保存`（ok），否则 `缺少凭据`（warn）——
      凭据**永不回显**（§1.1），编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**；
    - 当前默认仍以行外层 `.accent` 描边表达，不再显示独立 badge；
    - 行尾操作：`编辑` / `删除`；默认模型由上方下拉切换。
-   - 列表为空时是 `data-empty="llm.providers"` 的**空状态卡**（文案与「添加 AI 模型」主按钮），
-     不画一排空行。
+   - 列表与官方分组**都为空**时是 `data-empty="llm.providers"` 的**空状态卡**
+     （文案与「添加 AI 模型」主按钮），不画一排空行。
 5. **编辑卡**（`editingId` 是单值，因此**同一时刻最多一张卡**）：
    - 必填区：`baseUrl` / `apiKey` / `model`（必填项前置，缺失时当场提示是哪个 provider 的哪个字段，
      不再等到保存后由 Schema 兜底）；
@@ -1054,8 +1063,13 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
      **思考等级 / 上下文窗口 / 支持图片输入不在这一层**（v23 起改为在**模型行内**、随模型绑定，
      见上一条），`temperature` 已随 v23 从 Schema 删除、本区不再有它；
    - 卡底 `应用`（只提交这一张卡，成功回列表态）/ `取消`。
-   - 添加流程：预设 chips（DeepSeek / OpenAI / 本地兼容）+ 自定义 id 输入框；重复 id 提示
-     `Provider「<id>」已存在`；选中预设**直接进编辑卡**。
+   - 添加流程（v47）：页内不再展开添加表单，`+ 添加 Provider` 打开**模态弹窗**
+     （`<Teleport to="body">`、`role="dialog"`，锚点 `settings.add-provider`；字段锚点
+     `settings.add-provider.{id,type,baseUrl,apiKey,model}`，取消 `cancel-add-provider`）。
+     弹窗内是预设 chips（DeepSeek / OpenAI / 本地兼容）+ provider id / 接口类型 / baseURL /
+     API Key / 模型名与必填校验，重复 id 提示 `Provider「<id>」已存在`；
+     Esc / 点遮罩 / 取消都关闭且**不写配置**。添加成功后弹窗关闭并**自动打开该 provider 的编辑卡**，
+     继续配置模型列表与高级参数 —— 弹窗只负责新增，编辑仍走页内编辑卡。
    - **模型列表是页与窗的公共数据**：本页维护 `llm.providers.<id>.modelList`，对话窗的「模型」选择器
      从**同一份**列表里选、并把选中项写回 `llm.providers.<id>.model`（docs/07 §2.3）。
      两边不存在各自的副本，因此「模型页改当前模型 → 对话窗选择器跟着变」是必然而非同步逻辑。
@@ -1086,6 +1100,9 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     **生图模型区组**（`imagegen.*`：总开关 / 默认生图模型 / provider 增改删；provider 表单为
     `baseUrl` / `apiKey` / `model` / `size`，与 `llm.providers` 同构但独立，见 §1；
     凭据沿用 §1.1 的 `apiKeySet` 只读标记口径，编辑卡 API Key 留空 = 本次不修改）。
+    添加流程同样是**模态弹窗**（`+ 添加生图模型` / `add-imagegen-provider` → `settings.add-provider`，
+    提交成功自动打开编辑卡）；Center 官方生图以**只读官方行**出现在 provider 列表里，
+    行内下拉写 `center.officialModels.imagegen.model`（见 §8）。
     **生图模型列表为空时**是 `data-empty="imagegen.providers"` 的**空状态卡**（锚点保持不变），
     卡上必须有**可点的「+ 添加生图模型」主按钮** —— 空状态只留一句话、不给入口，
     用户会以为这功能没实现（v23 起的目标口径）。
@@ -1184,14 +1201,20 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     另：目录切换复用**同一个注册表实例**（`setUserDir` + 重扫）——`use_skill` 工具的闭包
     与提示词组装都持有该实例，换实例会让它们继续指向旧表，表现为「改了目录但模型仍看到旧技能」。
 - **MCP 管理**（现为「设置 → Agent → MCP 服务器」页）：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
+  - **添加流程（v47）**：`添加服务器`（`data-action="add-mcp-server"`）打开**模态弹窗**
+    （`data-field="settings.add-mcp"`；字段锚点 `settings.add-mcp.{name,transport,command,args,url,env,headers}`，
+    取消 `cancel-add-mcp`）。名称 / 传输方式 / 命令与参数（stdio）或 URL（HTTP）/
+    环境变量 / 自定义请求头（仅 HTTP 显示）都在弹窗内；名称沿用资源名规则（禁 `.`）且不许重名，
+    校验不通过就地报错。Esc / 点遮罩 / 取消都关闭且**不写配置**；提交成功关闭弹窗、
+    列表出现新行（MCP 服务器没有独立编辑卡），页级 Toast 回执连接状态见行内状态灯。
   - 实现状态（v0.3.0）：列表读写与凭据脱敏沿用 v0.1.0；**状态灯**由 `mcp:status` /
     `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
     最近一次失败原因），`lazyConnect` 可在设置页切换（收在「高级」折叠里）。
   - 凭据保真（本轮修）：列表里「环境变量：…（值已加密存储）」读的是主进程补的**只读标记**
     `envSet`（§1.1），不是永远为空对象的 `envEnc`；任何一次保存（添加 / 停用 / 删除）回传的
     空 `envEnc` 都按「本次不改凭据」处理，不再清掉磁盘上的密文。
-  - **自定义请求头（v9）**：服务器编辑新增「自定义请求头」输入（多行 `Key: Value`、每行一个，
-    编辑交互与「环境变量」完全同款）；已配置的头在服务器条目上按名字列出并注明「值已加密存储」
+  - **自定义请求头（v9）**：添加弹窗内含「自定义请求头」输入（多行 `Key: Value`、每行一个，
+    输入交互与「环境变量」完全同款）；已配置的头在服务器条目上按名字列出并注明「值已加密存储」
     （读只读标记 `headersSet`，§1.1），留空 = 不改动已有值，删除某一行 = 删除该头。
     字段与凭据链路见 §1 / §1.1，传输侧行为见 06 §7。
 - **电脑操控**（`agent.tools.*`，P6++）：现为独立页「设置 → Agent → 电脑操控」（`agent-tools`；
@@ -1264,6 +1287,13 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     （与 speed 同款策略），探针按可见性断言。
     预设 chips 自 v43 起四条：OpenAI TTS / SiliconFlow 语音 / Qwen3-TTS（dashscope）/
     Qwen-Audio-TTS（dashscope-audio），后两条自带 `type` 与 `language: 'zh'`。
+  - **添加流程（v47）**：`添加 TTS 模型` / `+ 添加 TTS 模型`（`data-action="add-tts-provider"`）
+    打开**模态弹窗**（`settings.add-provider`；字段锚点
+    `settings.add-provider.{id,type,baseUrl,apiKey,model,voice,instructions,language,speed,format}`，
+    取消 `cancel-add-provider`）。提交成功关闭弹窗并**自动打开该 provider 的编辑卡**
+    （继续拉模型列表 / 试听）；Esc / 点遮罩 / 取消都关闭且不写配置。
+  - **Center 官方 TTS 行**：列表顶部按 §8 显示只读 `center-tts` 行（凭据由 Center 托管、
+    不可编辑 / 删除），行内下拉写 `center.officialModels.tts.model`，选中即 `enabled: true`。
   - 凭据沿用 §1.1 的只读标记口径：列表里只显示 `apiKeySet`（`凭据已保存` / `缺少凭据`），
     密文**永不回显**，编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**。
   - **「获取模型列表」（编辑卡内，模型名输入框旁）**：调 `tts:listModels`
@@ -1271,11 +1301,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     datalist 作下拉候选，按钮旁显示「共 n 个」；baseUrl / apiKey 用**编辑中的草稿值**，
     留空则由主进程回落已保存配置与凭据。失败走 toast 提示、**不改任何配置**；
     模型名始终可直接手填，列表只是候选不是必经步骤。
-  - 列表为空时是 `data-empty="tts.providers"` 的**空状态卡**，不画一排空行。
+  - 本机 provider 与官方行**都为空**时是 `data-empty="tts.providers"` 的**空状态卡**，不画一排空行。
   - **STT 区组（v8 起实装，v24 加「接口协议」）**：「总开关」（`stt.enabled`）、「默认 STT 模型」
     （`stt.active`）与 provider 列表增 / 改 / 删（表单 `type` / `baseUrl` / `apiKey` / `model` / `language`，见 §1）；
     「接口协议」是编辑卡的第一项（`data-field="stt.providers.<id>.type"`），切换后 baseURL / 模型名的
     提示词随协议改写（两套接口的字段语义不同，见 06 §15.1）；两条预设各自带 `type`。
+    **添加流程（v47）**同样是模态弹窗：`添加语音输入模型`（`data-action="add-stt-provider"`）→
+    `settings.add-provider`（字段锚点 `settings.add-provider.{id,type,baseUrl,apiKey,model,language}`），
+    提交成功自动打开编辑卡。Center 官方 STT 以只读 `center-stt` 行出现在列表顶部，
+    行内下拉写 `center.officialModels.stt.model`（§8）。
     门控口径同 TTS：未配置时对话窗连麦克风按钮都不渲染（docs/07 §2.3）；
     麦克风（`media`）权限仅对自身窗口放行（主进程 `setPermissionRequestHandler`）。
 - **系统**（`advanced`，旧称「高级」）：日志查看与导出、代理设置、日志级别、重置为默认配置。
@@ -1396,36 +1430,42 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 写入统一走 `settings.update({ modes: { ...当前 modes, classroom: { ...当前 classroom, ...补丁 } } })`：
 `settings:update` 是**按顶层分组浅合并**，因此必须展开当前分组，否则会丢掉未被提及的子字段。
 
-## 8. Aurora Center 官方模型（v31）
+## 8. Aurora Center 官方模型（v31；v47 起默认开启）
 
-`CONFIG_VERSION` 升到 **31**，`center` 新增 `officialModels`：
+`center.officialModels` 四类能力各有 `{ enabled, model }`；v47 起四类 `enabled` 默认 `true`：
 
 ```json
 {
   "officialModels": {
-    "llm": { "enabled": false, "model": "" },
-    "imagegen": { "enabled": false, "model": "" },
-    "tts": { "enabled": false, "model": "" },
-    "stt": { "enabled": false, "model": "" }
+    "llm": { "enabled": true, "model": "" },
+    "imagegen": { "enabled": true, "model": "" },
+    "tts": { "enabled": true, "model": "" },
+    "stt": { "enabled": true, "model": "" }
   }
 }
 ```
 
-- 迁移 `v30 → v31` 只补缺失字段，四类能力默认关闭；`center.*` 整组仍在
-  `SETTINGS_READONLY_PREFIXES` 中，Agent 不能自行启用官方模型或改向 Center。
+- 迁移 `v30 → v31` 只补缺失字段（当时四类默认关闭）；迁移 `v46 → v47` 把存量四类的
+  `enabled` 置 `true`、**已选 `model` 原样保留**，`center` 分组缺失时不凭空造对象。
+- **设置页不再有「官方模型」区组（v47）**：Center 页只保留连接设置 / 远程控制许可 / 连接状态；
+  四类官方模型的选模入口并入对应模型管理页：
+  - 语言模型：「AI 模型」页默认模型下拉里的「Aurora Center 官方」分组（`<optgroup>`）；
+  - TTS / STT / 生图：各自 provider 列表顶部一条**只读官方行**（`center-tts` /
+    `center-stt` / `center-imagegen`），行内下拉写 `center.officialModels.<cap>.model`（§6）。
+- **官方行的出现条件（v47）**：`officialModels.<cap>.enabled` 为 `true`，**或**该能力的目录 /
+  镜像 Provider 可用 —— 即使配置被外部改成 `false`，只要目录可用仍有入口把它选回来。
+  官方行只读（凭据由 Center 托管，不能编辑 / 删除）；在下拉里选中模型即写
+  `enabled: true` 与所选 `model`。
+- `center.*` 整组仍在 `SETTINGS_READONLY_PREFIXES` 中，Agent 不能自行启用官方模型或改向 Center。
 - 登录并从 Center 拉取到模型目录后，主进程维护保留 Provider
   `center-llm` / `center-imagegen` / `center-tts` / `center-stt`。它们的 Base URL
-  由 `center.serverUrl` 推导，API Key 固定使用 `center.token`；TTS / STT / 生图 Provider
-  页把启用后的条目显示为只读官方卡片，不提供编辑或删除入口。
+  由固定 `center.serverUrl` 推导，API Key 固定使用 `center.token`。
 - **语言模型的默认模型只认 `llm.active`（2026-10-24 修订）**：官方能力开启不再「全局覆盖」。
   读取层（`createCenterAwareSettingsStore`）**不得**把 `llm.active` 改写成 `center-llm`；
-  只有 `llm.active` 指向 `center-llm` 时才按官方模型构造请求。用户在本机 Provider 上选的
-  默认一直生效，直到显式选择官方模型（AI 模型页官方分组，或 Center 页首次勾选官方开关）。
-  会话级覆盖仍遵循「会话 > 全局」；官方开启且默认在本机时，官方仍可作为会话级来源。
-- **Center 页 LLM 开关的切换规则**：首次开启（`false → true`）把 `llm.active` 切到
-  `center-llm`；关闭时只有当前默认仍是官方才回落到首个可用本机 LLM provider（没有则置空），
-  用户自己切到本机后开关的启用 / 关闭都不再覆盖该选择（与 TTS / STT / 生图同款）。
-  TTS / STT / 生图仍以各自 `active` 为实际分派依据。
+  只有 `llm.active` 指向 `center-llm` 时才按官方模型构造请求。在默认模型下拉里选择官方模型
+  会**同时**写 `llm.active = 'center-llm'`、`center.officialModels.llm = { enabled: true, model }`；
+  选择本机模型只改 `llm.active`，**不改**官方选择（官方仍可作为会话级来源）。
+  会话级覆盖仍遵循「会话 > 全局」。
 - **读时覆写只用于非语言能力**：`officialModels.<cap>.model` 的读时覆写继续作用于
   `imagegen` / `tts` / `stt` 的 `center-*` 镜像副本；语言模型的选模与回落统一由
   `createProviderFactory` 处理（选中项 → `defaultModel` → 首个），不提示「回落本机」。
@@ -1435,8 +1475,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   覆写进 `center-*` Provider 的返回副本，三条能力链与 TTS 试听 / 拉模型、Center 远程中转共用
   同一副本；落盘镜像仍由目录同步维护为 defaultModel。解析链与镜像同源
   （选中项 → defaultModel → 首个；空串 = 未选择），所选模型被 Center 下线时自动回落
-  defaultModel 并记一次日志，**不**触发「回落本机」提示。选模入口有两处、写同一字段：
-  Center 页「官方模型」区组与各供应商页的官方行下拉。
+  defaultModel 并记一次日志，**不**触发「回落本机」提示。选模入口是各模型管理页的官方行
+  与「AI 模型」页默认模型下拉，写的是同一字段。
 - Center 离线、模型被停用时，官方请求按现有本地候选回落，并在对应能力首次回落时提示一次；
   若没有本地候选，保留原始错误。
 - **目录未就绪不是故障（v0.4.9）**：客户端把每次成功拉取的目录快照缓存在

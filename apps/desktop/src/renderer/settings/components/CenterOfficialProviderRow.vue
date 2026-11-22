@@ -11,7 +11,7 @@ const props = defineProps<{
   details: string[]
   /** Center 官方目录里该能力的开放模型；目录缺席时下拉禁用 */
   service?: CenterOfficialServiceCatalog
-  /** 当前已选的官方模型（`center.officialModels.<cap>.model`，与 Center 页同一字段） */
+  /** 当前已选的官方模型（`center.officialModels.<cap>.model`，与模型管理页同一字段） */
   selectionModel: string
 }>()
 

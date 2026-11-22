@@ -34,6 +34,7 @@ import {
   type AskUserQuestion,
 } from '@aurora/agent-core'
 import {
+  CENTER_SERVER_URL,
   IPC,
   createNoopLogger,
   nodeFileSystem,
@@ -11786,20 +11787,22 @@ export const SETTINGS_VOICE_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * "Aurora Center"页探针（v0.2.2 设备授权登录改造后的卡片结构）：
- * 连接设置卡必须含 开关 / 服务器地址 / 展示名 / 账号 / 密码（write-only）/"登录账户"
- * （设备授权主按钮）/"密码登录"（直登回落按钮）/ clientId 只读位；隔离 userData 无令牌 →
- * 徽章必须是"未登录"、clientId 显示"尚未生成"；连接状态卡（5s 轮询）必须常在。
+ * "Aurora Center"页探针（v47 固定地址 + 仅网页登录）：
+ * 连接设置卡必须含 开关 / **固定服务器地址（只读文本）** / 展示名 / "登录账户" 主按钮 /
+ * clientId 只读位；**不得**再出现 Center 账号 / 登录密码 / 密码登录按钮 / 官方模型区组；
+ * 隔离 userData 无令牌 → 徽章必须是"未登录"、clientId 显示"尚未生成"；连接状态卡必须常在。
+ * 不点击登录（会真的打开浏览器），只断言入口在。
  */
 export const SETTINGS_CENTER_FIELDS_SCRIPT = `(async () => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
     const activeNav = document.querySelector('.nav-item.active')
     const enabledToggle = document.querySelector('[data-field="center.enabled"] input[type="checkbox"]')
-    const serverUrl = document.querySelector('[data-field="center.serverUrl"] input[type="text"]')
+    const fixedUrl = document.querySelector('[data-field="center.serverUrl"]')
+    const fixedUrlText = fixedUrl === null ? '' : (fixedUrl.textContent || '').trim()
     const displayName = document.querySelector('[data-field="center.displayName"] input[type="text"]')
-    const account = document.querySelector('[data-field="center.account"] input[type="text"]')
-    const password = document.querySelector('[data-field="center.password"] input[type="password"]')
+    const accountInput = document.querySelector('[data-field="center.account"] input')
+    const password = document.querySelector('[data-field="center.password"]')
     const buttons = Array.from(document.querySelectorAll('button')).map((b) => (b.textContent || '').trim())
     const deviceLoginButton = buttons.indexOf('登录账户')
     const passwordLoginButton = buttons.indexOf('密码登录')
@@ -11807,42 +11810,40 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(async () => {
     const statusField = count('[data-field="center.status"]')
     const deviceLoginField = document.querySelector('[data-field="center.deviceLogin"]')
     const deviceLoginRootTag = deviceLoginField === null ? '' : deviceLoginField.tagName
-    const deviceLoginLabel = deviceLoginField === null ? null : deviceLoginField.querySelector('.label')
-    if (deviceLoginLabel instanceof HTMLElement) deviceLoginLabel.click()
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-    const labelClickError = Array.from(document.querySelectorAll('.toast')).some((node) =>
-      ((node.textContent || '').indexOf('请先填写服务器地址') !== -1),
-    )
+    const officialFields = count('[data-field^="center.officialModels"]')
+    const expectedUrl = ${JSON.stringify(CENTER_SERVER_URL)}
 
     return {
       page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
       center: {
         togglePresent: enabledToggle !== null,
-        serverUrlPresent: serverUrl !== null,
+        fixedUrlPresent: fixedUrl !== null,
+        fixedUrlMatches: fixedUrlText.indexOf(expectedUrl) !== -1,
         displayNamePresent: displayName !== null,
-        accountPresent: account !== null,
-        passwordWriteOnly: password !== null && password.getAttribute('type') === 'password',
+        accountInputAbsent: accountInput === null,
+        passwordInputAbsent: password === null,
         deviceLoginButtonPresent: deviceLoginButton !== -1,
-        passwordLoginButtonPresent: passwordLoginButton !== -1,
+        passwordLoginButtonAbsent: passwordLoginButton === -1,
         badgeNotLoggedIn: badges.indexOf('未登录') !== -1,
         badgeLoggedInAbsent: badges.indexOf('已登录') === -1,
         clientIdPlaceholder: (document.body.textContent || '').indexOf('尚未生成') !== -1,
         statusSectionPresent: statusField > 0,
-        labelClickIgnored: !labelClickError,
+        officialFieldsAbsent: officialFields === 0,
         deviceLoginRootTag: deviceLoginRootTag,
       },
       pass:
         enabledToggle !== null &&
-        serverUrl !== null &&
+        fixedUrl !== null &&
+        fixedUrlText.indexOf(expectedUrl) !== -1 &&
         displayName !== null &&
-        account !== null &&
-        password !== null &&
+        accountInput === null &&
+        password === null &&
         deviceLoginButton !== -1 &&
-        passwordLoginButton !== -1 &&
+        passwordLoginButton === -1 &&
         badges.indexOf('未登录') !== -1 &&
         badges.indexOf('已登录') === -1 &&
         statusField > 0 &&
-        !labelClickError &&
+        officialFields === 0 &&
         deviceLoginRootTag === 'DIV',
     }
   } catch (error) {
@@ -12117,8 +12118,10 @@ export const SETTINGS_CENTER_IMAGEGEN_CHECK = centerProviderCheck(
  */
 export const SETTINGS_LLM_SCROLL_ACT = `(async () => {
   try {
-    const anchor = document.querySelector('[data-empty="imagegen.providers"]')
-    if (anchor === null) return { ok: false, reason: 'no imagegen empty state' }
+    const anchor =
+      document.querySelector('[data-empty="imagegen.providers"]') ||
+      document.querySelector('[data-field="imagegen.providers"]')
+    if (anchor === null) return { ok: false, reason: 'no imagegen empty/list anchor' }
     anchor.scrollIntoView({ block: 'center' })
     await new Promise((resolve) => setTimeout(resolve, 300))
     return { ok: true, scrolled: true }
@@ -14232,62 +14235,29 @@ export const SETTINGS_OVERFLOW_CHECK = `(() => {
 })()`
 
 export const SETTINGS_TTS_ADD_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    const normalize = (text) => (text || '').replace(/\\s+/g, '').replace(/^\\+/, '')
-    // ⚠️ 每次都**重新查询**按钮：进入添加态后会出现全新的按钮节点，
-    //    在点击前查一次就把结果缓存下来的话，新节点永远不在那个数组里（首跑实测踩到）。
     const allButtons = () => Array.from(document.querySelectorAll('button'))
-    const blankButton = () =>
-      allButtons().find((item) => item.getAttribute('data-action') === 'add-blank-tts') ||
-      allButtons().find((item) => normalize(item.textContent) === '空白配置')
-    const record = (value) => {
-      window.__auroraTtsActResult = value
-      return value
-    }
-    // 1) 先进入"添加"态："+ 空白配置"只在添加区（空状态里的"添加 TTS 模型"或
-    //    工具行的"+ 添加 TTS 模型"点下去之后）才渲染 —— 直接找它会一无所获。
-    let opened = null
-    if (blankButton() === undefined) {
-      const opener =
-        allButtons().find((item) => normalize(item.textContent) === '添加TTS模型') ||
-        allButtons().find((item) => item.getAttribute('data-action') === 'add-tts-provider')
-      if (opener === undefined) {
-        return record({
-          ok: false,
-          reason: 'no 添加 TTS 模型 opener',
-          labels: allButtons()
-            .map((item) => (item.textContent || '').trim())
-            .filter((item) => item !== ''),
-        })
-      }
-      opener.click()
-      opened = normalize(opener.textContent)
-      // 等添加区渲染（Vue 的 DOM 更新是微任务，这里留够一帧）
-      await new Promise((resolve) => setTimeout(resolve, 300))
-    }
-    // 2) 再点"+ 空白配置"进编辑卡
-    const target = blankButton()
-    if (target === undefined) {
-      return record({
+    const opener =
+      allButtons().find((item) => item.getAttribute('data-action') === 'add-tts-provider') ||
+      allButtons().find((item) => (item.textContent || '').replace(/\\s+/g, '').indexOf('添加TTS模型') !== -1)
+    if (opener === undefined) {
+      return {
         ok: false,
-        reason: 'no 空白配置 button',
-        opened,
-        labels: allButtons()
-          .map((item) => (item.textContent || '').trim())
-          .filter((item) => item !== ''),
-      })
+        reason: 'no 添加 TTS 模型 opener',
+        labels: allButtons().map((item) => (item.textContent || '').trim()).filter((item) => item !== ''),
+      }
     }
-    target.click()
-    // 等编辑卡渲染
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    const rows = document.querySelectorAll('[data-field$=".baseUrl"]').length
-    window.__auroraTtsCardProbe = { clicked: true, label: normalize(target.textContent) }
-    return record({
-      ok: true,
-      opened,
-      label: normalize(target.textContent),
-      editorFields: rows,
-    })
+    opener.click()
+    let dialog = null
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      dialog = document.querySelector('[data-field="settings.add-provider"]')
+      if (dialog !== null) break
+      await wait(100)
+    }
+    const result = { ok: dialog !== null, dialog: dialog !== null, reason: dialog === null ? '弹窗没有出现' : '' }
+    window.__auroraTtsActResult = result
+    return result
   } catch (error) {
     window.__auroraTtsActResult = { ok: false, reason: String(error) }
     return window.__auroraTtsActResult
@@ -14295,39 +14265,48 @@ export const SETTINGS_TTS_ADD_ACT = `(async () => {
 })()`
 
 /**
- * "语音"页编辑卡探针 · 后半（step-05）：八字段的 `data-field` 必须全在。
- * v43 起新增 instructions / language 两个**常显**字段（与 speed 同款「常显 + 按类型 hint」策略，
- * 空白配置是 openai-compat 也渲染，只是 hint 说明不发送）。
+ * "语音"页 TTS 添加弹窗探针 · 后半（v47）：八字段必须全在弹窗里，并点「取消」收尾。
  *
- * 用**后缀**选择器（`[data-field$=".baseUrl"]`）而不是写死 provider id：
- * 点"+ 空白配置"之后 id 由页面决定（LlmPage 同款流程用的是 `custom`），
- * 探针假设 id 等于把契约里没冻结的东西当成事实。
- *
- * "在"的判定是**可见**（`getBoundingClientRect` 有尺寸），不是只数选择器命中数：
- * 一个 `display:none` 的卡也数得出来，那样断言就退化成空转（与 `SETTINGS_LLM_STRUCTURE_CHECK` 同口径）。
+ * 用**后缀**选择器 + 弹窗根锚点，不写死 provider id；「在」的判定是**可见**
+ * （`getBoundingClientRect` 有尺寸），不是只数选择器命中数。
  */
 export const SETTINGS_TTS_CARD_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
+    const dialog = document.querySelector('[data-field="settings.add-provider"]')
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0
+    }
     const fields = ['baseUrl', 'apiKey', 'model', 'voice', 'instructions', 'language', 'speed', 'format']
     const found = {}
     for (const name of fields) {
-      const hit = Array.from(document.querySelectorAll('[data-field$=".' + name + '"]')).filter(
-        (el) => {
-          const rect = el.getBoundingClientRect()
-          return rect.width > 0 && rect.height > 0
-        },
-      )
+      const hit = Array.from(
+        document.querySelectorAll('[data-field="settings.add-provider.' + name + '"]'),
+      ).filter(visible)
       found[name] = hit.length
     }
     const missing = fields.filter((name) => found[name] === 0)
-    const probe = window.__auroraTtsCardProbe
+    const typeSelect =
+      dialog === null ? null : dialog.querySelector('[data-field="settings.add-provider.type"] select')
+    const typeOptions = typeSelect === null ? [] : Array.from(typeSelect.options).map((item) => item.value)
+
+    let closed = false
+    const cancel = document.querySelector('[data-action="cancel-add-provider"]')
+    if (cancel !== null) cancel.click()
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (document.querySelector('[data-field="settings.add-provider"]') === null) {
+        closed = true
+        break
+      }
+      await wait(100)
+    }
     return {
-      pass: missing.length === 0,
+      pass: dialog !== null && missing.length === 0 && typeOptions.length === 3 && closed === true,
       fields: found,
       missing,
-      // act 的结论一并回传：失败时能一眼看出是"没进添加态"还是"没找到空白配置"，
-      // 不用再改代码重跑一次（首跑就是靠它定位到缓存按钮节点的）。
-      act: probe === undefined ? null : probe,
+      typeOptions,
+      closed,
       actResult: window.__auroraTtsActResult === undefined ? null : window.__auroraTtsActResult,
     }
   } catch (error) {
@@ -14336,82 +14315,43 @@ export const SETTINGS_TTS_CARD_CHECK = `(async () => {
 })()`
 
 /**
- * "语音"页 STT 编辑卡探针 · 前半（v24 阿里云原生 ASR）：点开 STT 区组的编辑卡。
+ * "语音"页 STT 添加弹窗探针 · 前半（v47）：点 STT 区组的「添加语音输入模型」打开弹窗。
  *
- * 与 TTS 那条同款，但**必须先锁定 STT 区组容器**再找按钮：两栏同页、且都有"空白配置"，
- * 按文案全页找会点到 TTS 那张卡上去。区组按 `.section-title` 里的"语音输入"识别。
+ * 与 TTS 那条同款，但**先锁定 STT 区组容器**再找按钮：两栏同页、且都有添加入口，
+ * 按文案全页找会点到 TTS 那个上去。区组按 `.section-title` 里的"语音输入"识别。
  */
 export const SETTINGS_STT_ADD_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    // ⚠️ 这里刻意**不用任何带反斜杠的正则**（要匹配空白与行首的加号，改成逐字符判定）：
-    // 探针是 template literal 字符串，反斜杠要先被模板层吃掉一层，写错一层就退化成非法正则、
-    // 渲染层直接"Script failed to execute"，报告里只剩一句没信息量的话（本轮实测栽在这里）。
-    // 注释里也**不要**写反斜杠转义（如"反斜杠 + s"那种写法）：ESLint 的 no-useless-escape
-    // 照字符串内容报错，模板串里的注释照样命中（本轮被 lint 抓过一次）。
-    const normalize = (text) => {
-      const joined = (text || '')
-        .split('')
-        .filter((ch) => ch.trim() !== '')
-        .join('')
-      return joined.charAt(0) === '+' ? joined.slice(1) : joined
-    }
-    const record = (value) => {
-      window.__auroraSttActResult = value
-      return value
-    }
     const section = () =>
       Array.from(document.querySelectorAll('section.group')).find((el) => {
         const title = el.querySelector('.section-title')
         return title !== null && (title.textContent || '').indexOf('语音输入') !== -1
       })
-    // 每次都重新查询按钮：进入添加态后是全新节点，缓存下来的数组里不会有它（TTS 那条首跑踩过）
+    const record = (value) => {
+      window.__auroraSttActResult = value
+      return value
+    }
     const allButtons = () =>
       section() === undefined ? [] : Array.from(section().querySelectorAll('button'))
-    const blankButton = () => allButtons().find((item) => normalize(item.textContent) === '空白配置')
-
-    let opened = null
-    if (blankButton() === undefined) {
-      const opener = allButtons().find(
-        (item) => normalize(item.textContent) === '添加语音输入模型',
-      )
-      if (opener === undefined) {
-        return record({
-          ok: false,
-          reason: 'no 添加语音输入模型 opener',
-          labels: allButtons()
-            .map((item) => (item.textContent || '').trim())
-            .filter((item) => item !== ''),
-        })
-      }
-      opener.click()
-      opened = normalize(opener.textContent)
-      await new Promise((resolve) => setTimeout(resolve, 300))
-    }
-
-    const target = blankButton()
-    if (target === undefined) {
+    const opener =
+      allButtons().find((item) => item.getAttribute('data-action') === 'add-stt-provider') ||
+      allButtons().find((item) => (item.textContent || '').replace(/\\s+/g, '').indexOf('添加语音输入模型') !== -1)
+    if (opener === undefined) {
       return record({
         ok: false,
-        reason: 'no 空白配置 button',
-        opened,
-        labels: allButtons()
-          .map((item) => (item.textContent || '').trim())
-          .filter((item) => item !== ''),
+        reason: 'no 添加语音输入模型 opener',
+        labels: allButtons().map((item) => (item.textContent || '').trim()).filter((item) => item !== ''),
       })
     }
-    target.click()
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    // 把这张卡滚进视野：设置页很长，不滚的话截图里只有上面的 TTS 区组，
-    // 探针量的是"控件有尺寸"（折叠线以下也算），截出来的图却没有它 —— 视觉证据就断了。
-    const card = section().querySelector('[data-field$=".baseUrl"]')
-    if (card !== null) card.scrollIntoView({ block: 'center' })
-    await new Promise((resolve) => setTimeout(resolve, 200))
-    return record({
-      ok: true,
-      opened,
-      label: normalize(target.textContent),
-      editorFields: section().querySelectorAll('[data-field$=".baseUrl"]').length,
-    })
+    opener.click()
+    let dialog = null
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      dialog = document.querySelector('[data-field="settings.add-provider"]')
+      if (dialog !== null) break
+      await wait(100)
+    }
+    return record({ ok: dialog !== null, dialog: dialog !== null, reason: dialog === null ? '弹窗没有出现' : '' })
   } catch (error) {
     window.__auroraSttActResult = { ok: false, reason: String(error) }
     return window.__auroraSttActResult
@@ -14419,26 +14359,21 @@ export const SETTINGS_STT_ADD_ACT = `(async () => {
 })()`
 
 /**
- * "语音"页 STT 编辑卡探针 · 后半（v24）：五个字段在，且"接口协议"真接在草稿上。
+ * "语音"页 STT 添加弹窗探针 · 后半（v47）：五个字段在，且「接口协议」真接在表单上。
  *
- * 只断言"控件在"是不够的：新建一个 provider、把一个下拉摆上去，测试照样绿而功能是坏的。
- * 所以这里跑一条**行为**断言 —— 把协议切到 `dashscope-native`，baseURL 的提示词必须
- * 跟着改写（两套接口的 baseURL 语义不同），切回后必须逐字复原。
- * 本场景只动本地 draft、**不点"应用"**，因此配置一个字都不写。
+ * 只断言"控件在"是不够的：把协议切到 `dashscope-native`，baseURL 的提示词必须
+ * 跟着改写（两套接口的 baseURL 语义不同），切回后必须逐字复原；最后点「取消」收尾。
  */
 export const SETTINGS_STT_CARD_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    const section = () =>
-      Array.from(document.querySelectorAll('section.group')).find((el) => {
-        const title = el.querySelector('.section-title')
-        return title !== null && (title.textContent || '').indexOf('语音输入') !== -1
-      })
+    const dialog = document.querySelector('[data-field="settings.add-provider"]')
     const visible = (el) => {
       const rect = el.getBoundingClientRect()
       return rect.width > 0 && rect.height > 0
     }
     const pick = (suffix) =>
-      Array.from(section().querySelectorAll('[data-field$=".' + suffix + '"]')).filter(visible)[0]
+      Array.from(document.querySelectorAll('[data-field="settings.add-provider.' + suffix + '"]')).filter(visible)[0]
     const hintOf = (root) => {
       const hint = root === undefined ? null : root.querySelector('.hint')
       return hint === null ? '' : (hint.textContent || '').trim()
@@ -14448,7 +14383,7 @@ export const SETTINGS_STT_CARD_CHECK = `(async () => {
     const found = {}
     for (const name of fields) {
       found[name] = Array.from(
-        section().querySelectorAll('[data-field$=".' + name + '"]'),
+        document.querySelectorAll('[data-field="settings.add-provider.' + name + '"]'),
       ).filter(visible).length
     }
     const missing = fields.filter((name) => found[name] === 0)
@@ -14465,16 +14400,28 @@ export const SETTINGS_STT_CARD_CHECK = `(async () => {
     if (select !== null) {
       select.value = 'dashscope-native'
       select.dispatchEvent(new Event('change', { bubbles: true }))
-      await new Promise((resolve) => setTimeout(resolve, 300))
+      await wait(300)
       hintAfter = hintOf(pick('baseUrl'))
       select.value = 'openai-compat'
       select.dispatchEvent(new Event('change', { bubbles: true }))
-      await new Promise((resolve) => setTimeout(resolve, 300))
+      await wait(300)
       hintRestored = hintOf(pick('baseUrl'))
+    }
+
+    let closed = false
+    const cancel = document.querySelector('[data-action="cancel-add-provider"]')
+    if (cancel !== null) cancel.click()
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (document.querySelector('[data-field="settings.add-provider"]') === null) {
+        closed = true
+        break
+      }
+      await wait(100)
     }
 
     return {
       pass:
+        dialog !== null &&
         missing.length === 0 &&
         options.length === 2 &&
         options.some(
@@ -14484,15 +14431,121 @@ export const SETTINGS_STT_CARD_CHECK = `(async () => {
         hintAfter !== '' &&
         hintAfter !== hintBefore &&
         hintAfter.indexOf('阿里云') !== -1 &&
-        hintRestored === hintBefore,
+        hintRestored === hintBefore &&
+        closed === true,
       fields: found,
       missing,
       options,
       hintBefore,
       hintAfter,
       hintRestored,
+      closed,
       act: window.__auroraSttActResult === undefined ? null : window.__auroraSttActResult,
     }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * "AI 模型"页添加弹窗场景（v47）：点「+ 添加 Provider」→ 等
+ * `settings.add-provider` 弹窗 → 断言基础字段齐全；check 内点「取消」收尾。
+ */
+export const SETTINGS_LLM_ADD_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const opener = document.querySelector('[data-action="add-llm-provider"]')
+    if (opener === null) return { ready: false, reason: '没有「添加 Provider」按钮' }
+    opener.click()
+    let dialog = null
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      dialog = document.querySelector('[data-field="settings.add-provider"]')
+      if (dialog !== null) break
+      await wait(100)
+    }
+    return { ready: dialog !== null, reason: dialog === null ? '弹窗没有出现' : '' }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_LLM_ADD_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const dialog = document.querySelector('[data-field="settings.add-provider"]')
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0
+    }
+    const fields = ['id', 'type', 'baseUrl', 'apiKey', 'model']
+    const found = fields.filter((name) => {
+      const node = document.querySelector('[data-field="settings.add-provider.' + name + '"]')
+      return node !== null && visible(node)
+    })
+    const missing = fields.filter((name) => found.indexOf(name) === -1)
+    let closed = false
+    const cancel = document.querySelector('[data-action="cancel-add-provider"]')
+    if (cancel !== null) cancel.click()
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (document.querySelector('[data-field="settings.add-provider"]') === null) {
+        closed = true
+        break
+      }
+      await wait(100)
+    }
+    return { pass: dialog !== null && missing.length === 0 && closed === true, fields: found, missing, closed }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * "MCP 服务器"页添加弹窗场景（v47）：点「添加服务器」→ 等 `settings.add-mcp` 弹窗 →
+ * 断言名称 / 传输方式 / 命令 / 参数 / 环境变量齐全；check 内点「取消」收尾。
+ */
+export const SETTINGS_MCP_ADD_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const opener = document.querySelector('[data-action="add-mcp-server"]')
+    if (opener === null) return { ready: false, reason: '没有「添加服务器」按钮' }
+    opener.click()
+    let dialog = null
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      dialog = document.querySelector('[data-field="settings.add-mcp"]')
+      if (dialog !== null) break
+      await wait(100)
+    }
+    return { ready: dialog !== null, reason: dialog === null ? '弹窗没有出现' : '' }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_MCP_ADD_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const dialog = document.querySelector('[data-field="settings.add-mcp"]')
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0
+    }
+    const fields = ['name', 'transport', 'command', 'args', 'env']
+    const found = fields.filter((name) => {
+      const node = document.querySelector('[data-field="settings.add-mcp.' + name + '"]')
+      return node !== null && visible(node)
+    })
+    const missing = fields.filter((name) => found.indexOf(name) === -1)
+    let closed = false
+    const cancel = document.querySelector('[data-action="cancel-add-mcp"]')
+    if (cancel !== null) cancel.click()
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (document.querySelector('[data-field="settings.add-mcp"]') === null) {
+        closed = true
+        break
+      }
+      await wait(100)
+    }
+    return { pass: dialog !== null && missing.length === 0 && closed === true, fields: found, missing, closed }
   } catch (error) {
     return { pass: false, reason: String(error) }
   }
@@ -16827,6 +16880,22 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_SUBAGENT_CREATE_ACT,
     check: SETTINGS_SUBAGENT_CREATE_CHECK,
   })
+  // 添加流程弹窗（v47）：模型 / MCP 的添加不再是页内表单，各拍一张模态层；
+  // check 断言字段后点取消收尾，避免遮罩污染后续设置页截图。
+  plan.push({
+    name: 'settings',
+    file: 'settings-llm-add.png',
+    query: { page: 'llm' },
+    act: SETTINGS_LLM_ADD_ACT,
+    check: SETTINGS_LLM_ADD_CHECK,
+  })
+  plan.push({
+    name: 'settings',
+    file: 'settings-mcp-add.png',
+    query: { page: 'agent-mcp' },
+    act: SETTINGS_MCP_ADD_ACT,
+    check: SETTINGS_MCP_ADD_CHECK,
+  })
   // 旧深链别名（BetaV2）："?page=tts" 应映射到"语音"页（TTS + STT 都在）。
   // `agent / skills / mcp` 走同一张 `LEGACY_PAGE_ALIASES` 映射表，机制代表验证；
   // `?page=agent`（2026-11 拆分前的主页面 id）另拍一张，用标题与总开关钉住落点。
@@ -17162,12 +17231,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_LLM_MULTIMODAL_ACT,
     check: SETTINGS_LLM_MULTIMODAL_CHECK,
   })
-  // "语音"页编辑卡（step-05）：点"+ 空白配置"→ 断言六个字段的 data-field 都在。
-  // 只动**本地 draft**、不点"应用"，所以无需恢复动作。
-  // ⚠️ "settings-voice.png" 不在这里 push：上面的 "SETTINGS_PAGE_IDS" 循环已经为每个 page
-  // 生成 "settings-<page>.png"（含 "voice"），再 push 一张同名图会多截一次、"report.json" 里
-  // 出现两条同名且后者把前者的 check 顶掉，所以要拍的只有这张卡场景。
-  // 深链用旧 id "tts"（别名场景同款）：顺带覆盖"旧链接打开的页面上编辑卡流程照常可用"。
+  // "语音"页 TTS 添加弹窗（v47）：点「添加 TTS 模型」→ 断言八个字段都在弹窗里。
+  // 只打开弹窗、不提交，所以无需恢复动作；深链用旧 id "tts" 顺带覆盖旧链接兼容。
   plan.push({
     name: 'settings',
     file: 'settings-tts-card.png',
@@ -17175,9 +17240,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_TTS_ADD_ACT,
     check: SETTINGS_TTS_CARD_CHECK,
   })
-  // "语音"页 STT 编辑卡（v24 阿里云原生 ASR）：点"+ 空白配置"→ 断言五字段在，
+  // "语音"页 STT 添加弹窗（v47）：点「添加语音输入模型」→ 断言五字段在，
   // 且"接口协议"下拉切到阿里云原生时 baseURL 提示词被改写（行为断言，不是只看控件在）。
-  // 同样只动本地 draft、不点"应用"；用**新页 id** "voice"（与上面 TTS 那条的旧别名 "tts" 相对）。
   plan.push({
     name: 'settings',
     file: 'settings-stt-card.png',

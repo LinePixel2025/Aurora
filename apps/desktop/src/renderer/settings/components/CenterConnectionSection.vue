@@ -1,23 +1,19 @@
 <script setup lang="ts">
 /**
- * Aurora Center 连接设置区组（docs/12 §3/§4.3/§7）：总开关 / 服务器地址 / 展示名 /
- * 登录账户（设备授权，主按钮）/ 密码登录（回落表单）/ clientId 只读展示。
- * 折叠卡风格与 `TtsSection.vue` / `SttSection.vue` 一致。
+ * Aurora Center 连接设置区组（docs/12 §3/§4.3/§7）：
+ * 总开关 / **固定服务器地址（只读）** / 展示名 / 登录账户（设备授权主按钮）/ clientId 只读展示。
  *
- * 保存链路分工（与 TTS provider 同一套口径）：
- * - 本卡字段走 `settings:update`（`center.*` 整组在 `SETTINGS_READONLY_PREFIXES` 黑名单里
- *   —— AI 的 set_setting 改不动；设置页走 settings:update，不受该黑名单影响）；
- * - **主路径是设备授权登录（v0.2.2）**：点「登录账户」走 `center:deviceLogin` IPC，
- *   主进程 `POST /api/client/device/start` 拿确认页地址并打开浏览器，随后后台轮询；
- *   网页确认后主进程拿到令牌落库（凭据链路 `center.token` ⇄ `center.tokenEnc`，
- *   与 apiKey 同链路）并推送 `center:deviceLoginResult`，本页据此回到正常态。
- * - **回落是密码直登（v0.2.1）**：填服务器地址 + Center 账号密码 → 「密码登录」
- *   走 `center:login` IPC，主进程调 `/api/client/login` 换客户端令牌。密码只在
- *   登录请求里使用，页面不保存、不回显；「已登录 / 未登录」标记用
- *   `settings:hasSecret` 查询。旧的手填配对令牌入口已移除（手动令牌功能面已整体删除）。
+ * 2026-11 前端重构：桌面端只连官方 Center，设置页不再提供服务器地址、Center 账号与密码输入；
+ * 登录只保留「登录账户」按钮 —— 点开浏览器在 Center 网页完成登录与确认，主进程后台轮询拿令牌。
+ * 密码直登的 `center:login` IPC 仍保留在主进程（兼容 / 测试），但设置页不再调用。
+ *
+ * 保存链路：本卡字段走 `settings:update`（`center.*` 整组在 `SETTINGS_READONLY_PREFIXES`
+ * 黑名单里，AI 的 set_setting 改不动；设置页走 settings:update，不受该黑名单影响）。
+ * 登录成功后主进程落库令牌（凭据链路 `center.token` ⇄ `center.tokenEnc`）并推送
+ * `center:deviceLoginResult`，本页据此回到正常态。
  */
 import { onUnmounted, ref, watch } from 'vue'
-import { ChevronRight } from '@aurora/shared/browser'
+import { CENTER_SERVER_URL, ChevronRight } from '@aurora/shared/browser'
 import type { CenterSettings, SettingsPatch } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
@@ -35,22 +31,17 @@ const open = ref(true)
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 const saving = ref(false)
-const loggingIn = ref(false)
 /** 设备授权登录在途（已打开浏览器等网页确认；最终结果推送到达后回正常态） */
 const deviceLoginPending = ref(false)
 
 // 表单草稿：settings 是唯一水合来源；保存成功后主进程回传新 settings，草稿随之刷新。
-// `center` 组 AI 改不动，广播重灌的实际来源只有保存回传与远端配置下发。
 const enabled = ref(false)
-const serverUrl = ref('')
 const displayName = ref('')
-const account = ref('')
-
-// 登录密码：write-only（只在点「密码登录」时随请求发给主进程），登录成功即清空
-const password = ref('')
 
 // 已登录标记 = 令牌已在凭据链路（hasSecret('center.token')）
 const tokenSet = ref(false)
+/** 登录成功后主进程记住的账号名（只读展示，不是输入框） */
+const account = ref('')
 
 // clientId 只读展示（首次登录时由主进程生成并持久化；空 = 尚未生成）
 const clientId = ref('')
@@ -59,7 +50,6 @@ function hydrate(): void {
   const center = settingsStore.settings?.center
   if (!center) return
   enabled.value = center.enabled
-  serverUrl.value = center.serverUrl
   displayName.value = center.displayName
   account.value = center.account
   clientId.value = center.clientId
@@ -76,14 +66,12 @@ void refreshTokenSet()
 
 /**
  * 设备授权登录的最终结果（`center:deviceLoginResult` 推送）：approved 时主进程
- * 已落库令牌、记住账号并启用连接（连接器自动重连，状态区有展示），这里只刷新
- * 标记、清空回落表单并给一句提示。
+ * 已落库令牌、记住账号并启用连接（连接器自动重连，状态区有展示），这里只刷新标记并给一句提示。
  */
 const offDeviceLoginResult = window.aurora.center.onDeviceLoginResult((result) => {
   deviceLoginPending.value = false
   if (result.status === 'approved') {
     void refreshTokenSet()
-    password.value = ''
     message.value = '登录成功，正在连接 Aurora Center'
     return
   }
@@ -105,7 +93,7 @@ onUnmounted(() => {
 })
 
 /**
- * 「登录账户」（设备授权登录，docs/12 §4.3）：把服务器地址交给主进程，
+ * 「登录账户」（设备授权登录，docs/12 §4.3）：把固定服务器地址交给主进程，
  * 主进程打开 Center 网页确认页并后台轮询。触发成功后按钮停在等待态，
  * 直到结果推送（登录成功 / 过期 / 拒绝 / 出错）把它带回正常态。
  */
@@ -113,14 +101,13 @@ async function deviceLogin(): Promise<void> {
   if (deviceLoginPending.value) return
   message.value = null
   error.value = null
-  const trimmedUrl = serverUrl.value.trim()
-  if (trimmedUrl === '') {
-    error.value = '请先填写服务器地址'
+  if (settingsStore.settings === null) {
+    error.value = '配置尚未加载完成，请稍后再试'
     return
   }
   deviceLoginPending.value = true
   const result = await window.aurora.center.deviceLogin({
-    serverUrl: trimmedUrl,
+    serverUrl: CENTER_SERVER_URL,
     // 主进程以持久化的 clientId 为准；这里带上只做展示一致性（可能尚未生成）
     ...(clientId.value === '' ? {} : { clientId: clientId.value }),
   })
@@ -133,14 +120,14 @@ async function deviceLogin(): Promise<void> {
 }
 
 /**
- * 整卡保存：patch 只带本卡草稿值。
+ * 整卡保存：patch 只带本卡草稿值，并把服务器地址固定为官方 Center。
  * **不带** `tokenEnc`（密文，由登录链路管）与 `clientId`（主进程生成，页面不可覆写）
  * —— 顶层浅合并下缺项 = 保留原值，二者不会被这次保存碰到。
  */
 async function save(): Promise<void> {
   const center: Partial<CenterSettings> = {
     enabled: enabled.value,
-    serverUrl: serverUrl.value.trim(),
+    serverUrl: CENTER_SERVER_URL,
     displayName: displayName.value.trim(),
   }
   const patch: CenterSettingsPatch = { center }
@@ -166,43 +153,6 @@ function tookEffect(sent: Partial<CenterSettings>): boolean {
   if (!saved) return false
   return Object.entries(sent).every(([key, value]) => saved[key as keyof CenterSettings] === value)
 }
-
-/**
- * 「密码登录」（回落表单，docs/12 §3）：账号密码经 `center:login` 发给主进程，
- * 由主进程调 Center 的 `/api/client/login` 换令牌。成功后主进程已写入令牌、
- * 记住账号并启用连接（连接器自动重连），这里只刷新展示并清空密码框。
- */
-async function login(): Promise<void> {
-  // 重入守卫：Enter 与按钮共用本函数；并发登录会互相吊销令牌（每次登录重发并吊销
-  // 同 clientId 旧令牌），乱序回包会把已吊销的令牌写进凭据链路 —— 必须串行化。
-  if (loggingIn.value) return
-  message.value = null
-  error.value = null
-  const trimmedUrl = serverUrl.value.trim()
-  const trimmedAccount = account.value.trim()
-  if (trimmedUrl === '' || trimmedAccount === '' || password.value === '') {
-    error.value = '请先填写服务器地址、账号与密码'
-    return
-  }
-  loggingIn.value = true
-  const result = await window.aurora.center.login({
-    serverUrl: trimmedUrl,
-    username: trimmedAccount,
-    password: password.value,
-  })
-  loggingIn.value = false
-  if (!result.ok) {
-    error.value = result.message
-    return
-  }
-  password.value = ''
-  await refreshTokenSet()
-  if (!result.value.tokenPersisted) {
-    error.value = '安全存储不可用：本次运行内已连接，重启后需要重新登录'
-    return
-  }
-  message.value = `已登录 ${result.value.account}，正在连接 Aurora Center`
-}
 </script>
 
 <template>
@@ -217,15 +167,14 @@ async function login(): Promise<void> {
       />
       <span class="section-title">连接设置</span>
       <span class="group-summary tiny muted grow">
-        {{ enabled ? '已启用' : '已停用' }} ·
-        {{ serverUrl.trim() === '' ? '未配置服务器地址' : serverUrl }}
+        {{ enabled ? '已启用' : '已停用' }} · 官方 Center
       </span>
     </button>
 
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          用 Center 账号登录后自动连接并归属该账号，可在网页端远程查看本机状态、发起会话。
+          登录后自动连接官方 Center，可在网页端远程查看本机状态、发起会话。
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
@@ -242,18 +191,14 @@ async function login(): Promise<void> {
           </label>
         </SettingField>
 
+        <!-- 固定地址：只读展示。设置页不再允许改向，避免把本机数据发往任意服务器。 -->
         <SettingField
+          as="div"
           data-field="center.serverUrl"
           label="服务器地址"
-          hint="ws(s):// 或 http(s)://，连接时统一换成 ws；与上面的开关无关，都可编辑"
+          hint="固定为官方 Center 地址，不可修改"
         >
-          <input
-            v-model="serverUrl"
-            class="input"
-            type="text"
-            spellcheck="false"
-            placeholder="http://center.example.com:8787"
-          />
+          <span class="tiny mono fixed-url">{{ CENTER_SERVER_URL }}</span>
         </SettingField>
 
         <SettingField
@@ -278,7 +223,7 @@ async function login(): Promise<void> {
           as="div"
           data-field="center.deviceLogin"
           label="登录账户"
-          hint="点击后打开浏览器，在 Center 网页登录并一键确认，桌面端自动拿到凭据"
+          hint="点击后在浏览器打开 Center 网页，登录并确认后自动拿到凭据"
         >
           <div class="row wrap token-row">
             <AppButton
@@ -293,45 +238,9 @@ async function login(): Promise<void> {
               {{ tokenSet ? '已登录' : '未登录' }}
             </span>
           </div>
-        </SettingField>
-
-        <SettingField
-          data-field="center.account"
-          label="Center 账号"
-          :hint="
-            tokenSet
-              ? '已登录（重新登录可更换账号 / 刷新凭据）'
-              : '由 Center 管理员创建的账号，仅密码登录时使用；改动不随「保存」提交'
-          "
-        >
-          <input
-            v-model="account"
-            class="input"
-            type="text"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="Center 账号名"
-          />
-        </SettingField>
-
-        <!-- 回落表单：不想切浏览器的场景用账号密码直登（docs/12 §3） -->
-        <SettingField
-          data-field="center.password"
-          label="登录密码"
-          hint="只在点「密码登录」时使用一次，不保存在本机，页面不回显"
-        >
-          <div class="row wrap token-row">
-            <input
-              v-model="password"
-              class="input grow"
-              type="password"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="Center 账号密码"
-              @keydown.enter="login"
-            />
-            <AppButton size="sm" :disabled="loggingIn" @click="login">密码登录</AppButton>
-          </div>
+          <p v-if="tokenSet && account.trim() !== ''" class="tiny muted account-line">
+            当前账号：<span class="mono">{{ account }}</span>
+          </p>
         </SettingField>
 
         <SettingField
@@ -344,7 +253,7 @@ async function login(): Promise<void> {
 
         <footer class="row wrap card-actions">
           <AppButton variant="primary" size="sm" :disabled="saving" @click="save">保存</AppButton>
-          <span class="tiny muted">开关 / 地址 / 展示名在点「保存」后落盘</span>
+          <span class="tiny muted">开关 / 展示名在点「保存」后落盘</span>
         </footer>
       </div>
     </Transition>
@@ -356,7 +265,15 @@ async function login(): Promise<void> {
   flex-wrap: wrap;
 }
 
-/* 密码行：输入框吃满剩余宽度，按钮与已登录徽章贴在右边 */
+.fixed-url {
+  word-break: break-all;
+}
+
+.account-line {
+  margin: var(--space-1) 0 0;
+  flex-basis: 100%;
+}
+
 .token-row .input {
   min-width: 200px;
 }

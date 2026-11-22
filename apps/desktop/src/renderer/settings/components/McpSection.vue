@@ -9,15 +9,16 @@
  * 删除按钮保留）。操作回执经 `notify` 事件上抛给页级 AppToast。
  *
  * env / headers 凭据通过 settings:setSecrets 加密存储，列表只显示已配置的变量名与请求头名；
- * `lazyConnect` 收进「高级」折叠；新增服务器表单默认收起（空状态时由主按钮展开）。
+ * `lazyConnect` 收进「高级」折叠；**添加服务器走独立弹窗（v47）**，页内不再展开表单。
  */
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 // 运行时值走浏览器子路径（`@aurora/shared` 主入口依赖 node:fs）；类型仍可从主入口取。
 import { ChevronRight, RESOURCE_NAME_PATTERN, RESOURCE_NAME_RULE } from '@aurora/shared/browser'
 import type { McpServerConfig, McpServerStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import StatusDot from '../../shared/components/StatusDot.vue'
+import McpServerDialog, { type McpServerAddPayload } from './McpServerDialog.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 
 type NotifyPayload = { tone: 'info' | 'warn' | 'error' | 'ok'; text: string }
@@ -29,6 +30,9 @@ const emit = defineEmits<{
 const settingsStore = useSettingsStore()
 const statuses = ref<McpServerStatus[]>([])
 const showAdd = ref(false)
+/** 添加弹窗在途 / 错误（v47 起添加流程从页内表单改为独立弹窗） */
+const adding = ref(false)
+const addError = ref('')
 const showAdvanced = ref(false)
 /** 删除的二次确认：待确认的服务器名（单值，同一时刻只确认一台；与 LlmPage 的 pendingRemoveId 同款） */
 const pendingRemoveId = ref<string | null>(null)
@@ -84,16 +88,6 @@ function statusDotStyle(status: McpServerStatus | undefined): Record<string, str
   if (status?.state === 'ready') return { '--status-idle': 'var(--status-ok)' }
   return undefined
 }
-
-const form = reactive({
-  name: '',
-  transport: 'stdio' as 'stdio' | 'http',
-  command: 'npx',
-  args: '-y @modelcontextprotocol/server-filesystem D:\\',
-  url: '',
-  envText: '',
-  headersText: '',
-})
 
 const servers = computed<McpServerConfig[]>(() => settingsStore.settings?.mcp.servers ?? [])
 const lazyConnect = computed(() => settingsStore.settings?.mcp.lazyConnect ?? false)
@@ -168,28 +162,41 @@ async function saveServers(
   return true
 }
 
-async function add(): Promise<void> {
+function openAdd(): void {
   pendingRemoveId.value = null
-  const name = form.name.trim()
+  addError.value = ''
+  showAdd.value = true
+}
+
+function closeAdd(): void {
+  if (adding.value) return
+  showAdd.value = false
+  addError.value = ''
+}
+
+/** 弹窗提交：解析 env / headers 后整数组落盘；成功后关闭弹窗。 */
+async function addServer(payload: McpServerAddPayload): Promise<void> {
+  pendingRemoveId.value = null
+  const name = payload.name.trim()
   if (name === '') {
-    notify('error', '请填写服务器名称')
+    addError.value = '请填写服务器名称'
     return
   }
   // 名称会作为凭据路径的段（`mcp.servers.<name>.env.<KEY>`），`.` 是分隔符 → 禁点：
   // 否则 `setSecrets` 会失败，服务器行落库而 env 明文丢失。正则与文案取自
   // `@aurora/shared`（`McpServerSchema.name` 同款），不另写一份。
   if (!RESOURCE_NAME_PATTERN.test(name)) {
-    notify('error', `服务器「${name}」${RESOURCE_NAME_RULE}`)
+    addError.value = `服务器「${name}」${RESOURCE_NAME_RULE}`
     return
   }
   if (servers.value.some((server) => server.name === name)) {
-    notify('error', `服务器「${name}」已存在`)
+    addError.value = `服务器「${name}」已存在`
     return
   }
 
   const env: Record<string, string> = {}
   const secrets: Record<string, string> = {}
-  for (const line of form.envText.split(/\r?\n/)) {
+  for (const line of payload.envText.split(/\r?\n/)) {
     const separator = line.indexOf('=')
     if (separator <= 0) continue
     const key = line.slice(0, separator).trim()
@@ -202,7 +209,7 @@ async function add(): Promise<void> {
   // 自定义请求头（v9）：明文只走 settings:setSecrets（路径 `mcp.servers.<name>.headers.<key>`），
   // `headersEnc` 里只放空串占位。按第一个 `:` 分隔（与 env 按 `=` 分隔同款容错）。
   const headers: Record<string, string> = {}
-  for (const line of form.headersText.split(/\r?\n/)) {
+  for (const line of payload.headersText.split(/\r?\n/)) {
     const separator = line.indexOf(':')
     if (separator <= 0) continue
     const key = line.slice(0, separator).trim()
@@ -214,22 +221,34 @@ async function add(): Promise<void> {
 
   const server: McpServerConfig = {
     name,
-    transport: form.transport,
-    ...(form.transport === 'stdio'
-      ? { command: form.command.trim(), args: form.args.split(/\s+/).filter((item) => item !== '') }
-      : { url: form.url.trim() }),
+    transport: payload.transport,
+    ...(payload.transport === 'stdio'
+      ? {
+          command: payload.command.trim(),
+          args: payload.args.split(/\s+/).filter((item) => item !== ''),
+        }
+      : { url: payload.url.trim() }),
     envEnc: env,
     headersEnc: headers,
     enabled: true,
   }
 
+  adding.value = true
+  addError.value = ''
   const saved = await saveServers([...servers.value, server], secrets)
-  if (!saved) return
-  notify('ok', `已添加 ${name}（连接状态见下方状态灯）`)
-  form.name = ''
-  form.envText = ''
-  form.headersText = ''
+  adding.value = false
+  if (!saved) {
+    // 配置已落盘但凭据写入失败：关掉弹窗并提示，避免同名 id 把用户卡在重复校验里。
+    if (servers.value.some((item) => item.name === name)) {
+      showAdd.value = false
+      notify('error', `已添加 ${name}，但凭据写入失败：请删除后重试`)
+    } else {
+      addError.value = settingsStore.error ?? '保存失败'
+    }
+    return
+  }
   showAdd.value = false
+  notify('ok', `已添加 ${name}（连接状态见下方状态灯）`)
 }
 
 /**
@@ -288,7 +307,9 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
           尚未配置 MCP 服务器：添加后它的工具会自动出现在对话可用工具里。
         </p>
         <div class="row">
-          <AppButton variant="primary" @click="showAdd = true">添加服务器</AppButton>
+          <AppButton variant="primary" data-action="add-mcp-server" @click="openAdd">
+            添加服务器
+          </AppButton>
         </div>
       </template>
 
@@ -410,81 +431,25 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
         </section>
 
         <div v-if="!showAdd" class="row">
-          <AppButton size="sm" @click="showAdd = true">添加服务器</AppButton>
+          <AppButton size="sm" data-action="add-mcp-server" @click="openAdd">添加服务器</AppButton>
         </div>
       </template>
-
-      <Transition name="collapse">
-        <section v-if="showAdd" class="form-block">
-          <div class="row">
-            <h3 class="block-title grow">添加服务器</h3>
-            <AppButton size="sm" variant="ghost" @click="showAdd = false">取消</AppButton>
-          </div>
-
-          <SettingField label="名称" required hint="用于工具命名前缀与状态展示">
-            <input
-              v-model="form.name"
-              class="input"
-              type="text"
-              spellcheck="false"
-              placeholder="filesystem"
-            />
-          </SettingField>
-          <SettingField label="传输方式">
-            <select v-model="form.transport">
-              <option value="stdio">stdio（本地进程）</option>
-              <option value="http">streamable-http（远程）</option>
-            </select>
-          </SettingField>
-          <template v-if="form.transport === 'stdio'">
-            <SettingField label="命令" required>
-              <input
-                v-model="form.command"
-                class="input"
-                type="text"
-                spellcheck="false"
-                placeholder="npx"
-              />
-            </SettingField>
-            <SettingField label="参数" hint="空格分隔">
-              <input v-model="form.args" class="input" type="text" spellcheck="false" />
-            </SettingField>
-          </template>
-          <SettingField v-else label="URL" required>
-            <input
-              v-model="form.url"
-              class="input"
-              type="text"
-              spellcheck="false"
-              placeholder="https://example.com/mcp"
-            />
-          </SettingField>
-          <SettingField label="环境变量" hint="每行 KEY=VALUE；值会加密存储，不回显">
-            <textarea v-model="form.envText" spellcheck="false" placeholder="TOKEN=xxxx" />
-          </SettingField>
-          <SettingField
-            v-if="form.transport === 'http'"
-            label="自定义请求头"
-            hint="每行 Key: Value；值会加密存储，不回显"
-          >
-            <textarea
-              v-model="form.headersText"
-              spellcheck="false"
-              placeholder="Authorization: Bearer xxx"
-            />
-          </SettingField>
-
-          <footer class="row">
-            <AppButton variant="primary" @click="add">添加</AppButton>
-          </footer>
-        </section>
-      </Transition>
 
       <p class="tiny muted">
         服务器以你填写的 argv 数组启动，<strong>不经过 shell</strong
         >；请求头与环境变量的值加密存储。
       </p>
     </div>
+
+    <!-- 添加 MCP 服务器弹窗（v47）：页内不再展开添加表单 -->
+    <McpServerDialog
+      v-if="showAdd"
+      :existing-names="servers.map((server) => server.name)"
+      :busy="adding"
+      :error="addError"
+      @close="closeAdd"
+      @submit="addServer"
+    />
   </section>
 </template>
 

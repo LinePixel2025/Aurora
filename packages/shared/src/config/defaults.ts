@@ -1,5 +1,6 @@
 /** 全量默认配置（docs/08 §1）。必须与 `schema.ts` 一一对应，由单测保证。 */
 import {
+  CENTER_SERVER_URL,
   CONFIG_VERSION,
   DEFAULT_SUBJECT_FOLDER_PREFIX,
   DEFAULT_SUBJECT_NAMES,
@@ -478,12 +479,13 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     subagents: DEFAULT_AGENT_SUBAGENTS.map((item) => ({ ...item, model: { ...item.model } })),
   },
   /**
-   * Aurora Center 连接（v16；v17 补 `account`，docs/12）：默认**不启用**（`enabled: false` + 空 serverUrl）
+   * Aurora Center 连接（v16；v17 补 `account`，docs/12）：默认**不启用**（`enabled: false`）
    * —— 不配置时零行为变化：不出站连接、不注册 Center 工具、设置页之外无任何入口。
+   * v47 起地址固定为官方 Center，官方模型默认全部开启（选择入口在各模型管理页）。
    */
   center: {
     enabled: false,
-    serverUrl: '',
+    serverUrl: CENTER_SERVER_URL,
     tokenEnc: '',
     account: '',
     clientId: '',
@@ -492,12 +494,12 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     allowRemoteConfig: true,
     allowFileTransfer: true,
     maxFileMb: 64,
-    // v31：Center 官方模型默认全部关闭，配置保留在本机，凭据始终取 center.token。
+    // v31 新增 / v47 起默认开启：配置保留在本机，凭据始终取 center.token。
     officialModels: {
-      llm: { enabled: false, model: '' },
-      imagegen: { enabled: false, model: '' },
-      tts: { enabled: false, model: '' },
-      stt: { enabled: false, model: '' },
+      llm: { enabled: true, model: '' },
+      imagegen: { enabled: true, model: '' },
+      tts: { enabled: true, model: '' },
+      stt: { enabled: true, model: '' },
     },
   },
   /**

@@ -8,6 +8,7 @@ import {
   TTS_PRESETS,
 } from './defaults.js'
 import {
+  CENTER_SERVER_URL,
   COMPUTER_TOOL_NAMES,
   CONFIG_VERSION,
   DEFAULT_SUBJECT_NAMES,
@@ -67,6 +68,17 @@ describe('SettingsSchema / defaults 一致性', () => {
 
   it('默认版本与 Schema 版本一致', () => {
     expect(createDefaultSettings().version).toBe(CONFIG_VERSION)
+  })
+
+  it('Center 地址固定、官方模型默认开启（v47）', () => {
+    const center = createDefaultSettings().center
+    expect(center.serverUrl).toBe(CENTER_SERVER_URL)
+    expect(center.officialModels).toEqual({
+      llm: { enabled: true, model: '' },
+      imagegen: { enabled: true, model: '' },
+      tts: { enabled: true, model: '' },
+      stt: { enabled: true, model: '' },
+    })
   })
 
   it('游戏模式默认开启且是布尔开关（v30）', () => {

@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 46 as const
+export const CONFIG_VERSION = 47 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -400,6 +400,16 @@ export type TtsFormat = (typeof TTS_FORMATS)[number]
  */
 export const TTS_PROVIDER_TYPES = ['openai-compat', 'dashscope', 'dashscope-audio'] as const
 export type TtsProviderType = (typeof TTS_PROVIDER_TYPES)[number]
+
+/**
+ * TTS 接口协议的展示文案（**唯一来源**：语音页 TTS 编辑卡与「添加 TTS 模型」弹窗）。
+ * 与 `STT_PROVIDER_TYPE_LABELS` 同款：新增取值时这个 Record 强制补文案。
+ */
+export const TTS_PROVIDER_TYPE_LABELS: Record<TtsProviderType, string> = {
+  'openai-compat': 'OpenAI 兼容（/audio/speech）',
+  dashscope: 'DashScope 原生（百炼 / 千问AI平台）',
+  'dashscope-audio': 'Qwen-Audio-TTS（语气指令 / 复刻音色）',
+}
 
 /**
  * TTS 合成语言短码（v43，docs/06 §13.1）：`auto` = 不发送、交给服务端自动判定。
@@ -1175,7 +1185,8 @@ export function isCenterOfficialProviderId(value: string): value is CenterOffici
 
 const CenterOfficialSelectionSchema = z
   .object({
-    enabled: z.boolean().default(false),
+    /** v47 起默认开启：官方模型选择不再在 Center 页提供总开关，入口并入各模型管理页。 */
+    enabled: z.boolean().default(true),
     model: z.string().default(''),
   })
   .default({})
@@ -1192,11 +1203,20 @@ export const CenterOfficialModelsSchema = z
 export type CenterOfficialModelSelection = z.infer<typeof CenterOfficialSelectionSchema>
 export type CenterOfficialModels = z.infer<typeof CenterOfficialModelsSchema>
 
+/**
+ * 桌面端连接的 Aurora Center 固定地址（v47）。
+ *
+ * 设置页不再提供地址输入：登录、保存与连接统一使用该常量。自托管 Center 需要
+ * 修改这里并重新构建客户端；存量配置的 `serverUrl` 不做迁移（避免静默切走自托管用户），
+ * 用户在下一次保存或登录时才会被规范到固定地址。
+ */
+export const CENTER_SERVER_URL = 'http://120.24.223.65:8787'
+
 export const CenterSchema = z.object({
   /** 总开关；false 时不连接 Center，`center_*` 工具也不注册（未配置不注册，与 STT/TTS 同口径）。 */
   enabled: z.boolean().default(false),
-  /** Center 服务器地址（`ws(s)://` 或 `http(s)://`，连接时统一换成 ws 协议）。 */
-  serverUrl: z.string().default(''),
+  /** Center 服务器地址；设置页固定为 `CENTER_SERVER_URL`，不可编辑。 */
+  serverUrl: z.string().default(CENTER_SERVER_URL),
   /**
    * 客户端令牌（safeStorage 密文），由账号登录（`POST /api/client/login`）颁发或
    * 手动配对粘贴。**凭据路径**：`center.token` ⇄ `center.tokenEnc`，

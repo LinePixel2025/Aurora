@@ -21,8 +21,6 @@ import {
   CENTER_OFFICIAL_PROVIDER_IDS,
   IMAGEGEN_PRESETS,
   IMAGEGEN_SIZES,
-  RESOURCE_NAME_PATTERN,
-  RESOURCE_NAME_RULE,
   isCenterOfficialProviderId,
   type ImageGenProviderConfig,
   type SettingsPatch,
@@ -31,6 +29,7 @@ import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import CenterOfficialProviderRow from './CenterOfficialProviderRow.vue'
+import ProviderAddDialog, { type ProviderAddPayload } from './ProviderAddDialog.vue'
 import { useCenterOfficialCatalog } from '../../shared/composables/useCenterOfficialCatalog.js'
 import {
   officialModelDetails,
@@ -45,18 +44,17 @@ interface ProviderDraft extends ImageGenProviderConfig {
   apiKeySet: boolean
 }
 
-/** 页面三态：目录列表 / 添加（选预设）/ 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
-type PageMode = 'list' | 'add' | 'edit'
-
-/** 新建 provider 的页面默认尺寸（与 Schema 默认一致；空白配置也用它） */
-const DEFAULT_SIZE = '1024x1024'
+/** 页面两态：目录列表 / 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
+type PageMode = 'list' | 'edit'
 
 const settingsStore = useSettingsStore()
 const { catalog } = useCenterOfficialCatalog()
 
-const newProviderId = ref('')
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
+/** 添加弹窗开关 / 在途状态（v47 起添加流程从页内表单改为独立弹窗） */
+const showAdd = ref(false)
+const adding = ref(false)
 
 const mode = ref<PageMode>('list')
 const editingId = ref<string | null>(null)
@@ -78,6 +76,11 @@ const officialProvider = computed(
 )
 const officialEnabled = computed(() => officialSelection.value.enabled)
 const officialService = computed(() => catalog.value?.services.imagegen)
+/** 官方行是否展示：v47 起不仅看 enabled，目录 / 镜像 Provider 可用时也展示（选中即写 enabled=true）。 */
+const officialVisible = computed(
+  () =>
+    officialEnabled.value || officialProvider.value !== null || officialService.value !== undefined,
+)
 const effectiveOfficial = computed(() =>
   resolveEffectiveOfficialModel(
     officialService.value,
@@ -88,8 +91,7 @@ const effectiveOfficial = computed(() =>
 const officialModel = computed(() => effectiveOfficial.value.model)
 const officialAvailable = computed(
   () =>
-    officialEnabled.value &&
-    catalog.value?.services.imagegen !== undefined &&
+    officialService.value !== undefined &&
     officialProvider.value !== null &&
     officialProvider.value.baseUrl.trim() !== '' &&
     officialModel.value !== '',
@@ -103,7 +105,7 @@ const officialDetails = computed(() =>
   ),
 )
 
-/** 官方行选模：写 `center.officialModels.imagegen.model`，与 Center 页同一字段、双向联动 */
+/** 官方行选模：写 `center.officialModels.imagegen.model`，入口已并入本页（docs/08 §8）。 */
 async function onOfficialModelChange(model: string): Promise<void> {
   const settings = settingsStore.settings
   if (settings === null) return
@@ -118,7 +120,7 @@ async function onOfficialModelChange(model: string): Promise<void> {
 const selectableProviders = computed<
   Array<{ id: string; model: string; official: boolean; available: boolean }>
 >(() => [
-  ...(officialEnabled.value
+  ...(officialVisible.value
     ? [
         {
           id: officialProviderId,
@@ -136,28 +138,25 @@ const selectableProviders = computed<
   })),
 ])
 const hasProviders = computed(() => selectableProviders.value.length > 0)
+/** 添加弹窗的重名校验集合：已保存 provider + 官方保留 id */
+const existingProviderIds = computed(() => {
+  const settings = settingsStore.settings
+  const ids = settings === null ? [] : Object.keys(settings.imagegen.providers)
+  return Array.from(new Set([...ids, ...Object.values(CENTER_OFFICIAL_PROVIDER_IDS)]))
+})
 
 function isEditing(id: string): boolean {
   return mode.value === 'edit' && editingId.value === id
 }
 
-/** 当前编辑的 provider 是不是还没落盘的新建草稿 */
-function isCreating(id: string): boolean {
-  return localDrafts.value.some((draft) => draft.id === id)
-}
-
 /**
- * 未落盘的新建草稿（`syncDrafts` 会把已保存的镜像整体换掉，
- * 所以「刚点预设、还没点应用」的那一条不能只活在镜像里，否则它会被下一次同步抹掉）。
- * 列表 = 已保存的镜像 + 这些草稿；落盘成功后草稿被移除，那一行就来自 settings 了。
+ * settings 的镜像；`syncDrafts` 只重写它，**不动**编辑卡正在改的那份对象引用。
+ * 添加流程已改为弹窗（提交即落盘），因此不再维护「未落盘的新建草稿」。
  */
-const localDrafts = ref<ProviderDraft[]>([])
-
-/** settings 的镜像；`syncDrafts` 只重写它，**不动**编辑卡正在改的那份对象引用 */
 const savedDrafts = ref<ProviderDraft[]>([])
 
-/** 列表 = 已保存的镜像 + 未落盘的新建草稿（重名不会出现：`addPreset` 先查重） */
-const drafts = computed<ProviderDraft[]>(() => [...savedDrafts.value, ...localDrafts.value])
+/** 列表 = 已保存的 provider 镜像 */
+const drafts = computed<ProviderDraft[]>(() => savedDrafts.value)
 
 function syncDrafts(): void {
   const settings = settingsStore.settings
@@ -181,7 +180,7 @@ function syncDrafts(): void {
     })
   // provider 被别处删掉（如 `set_setting`）时，编辑卡 / 确认条不能指着一个不存在的行。
   // 未落盘的新建草稿不在 settings 里，所以先把它排除在判断之外。
-  if (editing !== null && !isCreating(editing) && !hasSaved(editing)) closeEditor()
+  if (editing !== null && !hasSaved(editing)) closeEditor()
   if (
     pendingRemoveId.value !== null &&
     !drafts.value.some((draft) => draft.id === pendingRemoveId.value)
@@ -209,53 +208,54 @@ function openEditor(id: string): void {
 }
 
 function closeEditor(): void {
-  if (editingId.value !== null && isCreating(editingId.value)) {
-    // 没落盘的新建草稿：取消 = 整条丢掉，否则它会一直挂在 `drafts` 里像个幽灵行
-    localDrafts.value = localDrafts.value.filter((draft) => draft.id !== editingId.value)
-    syncDrafts()
-  }
   mode.value = 'list'
   editingId.value = null
   pendingRemoveId.value = null
 }
 
-function startAdd(): void {
-  mode.value = 'add'
+/** 添加入口：打开独立弹窗（v47），页内不再展开添加表单 */
+function openAdd(): void {
+  mode.value = 'list'
   editingId.value = null
   pendingRemoveId.value = null
   message.value = null
   error.value = null
+  showAdd.value = true
 }
 
-/** 添加流程：预设 chips 来自 `IMAGEGEN_PRESETS`，选中即进编辑卡（必填项由卡内当场校验） */
-function addPreset(id: string): void {
-  const preset = IMAGEGEN_PRESETS.find((item) => item.id === id)
-  const key = newProviderId.value.trim() === '' ? id : newProviderId.value.trim()
-  // provider id 会作为凭据路径的段（`imagegen.providers.<id>.apiKey`），`.` 是分隔符 → 禁点。
-  // 正则与文案与 `McpServerSchema.name` 同源（`@aurora/shared` 单一来源），不另写一份。
-  if (!RESOURCE_NAME_PATTERN.test(key)) {
-    error.value = `生图模型「${key}」${RESOURCE_NAME_RULE}`
-    return
-  }
-  if (drafts.value.some((draft) => draft.id === key)) {
-    error.value = `生图模型「${key}」已存在`
-    return
-  }
-  localDrafts.value.push({
-    id: key,
-    type: 'openai-compat',
-    baseUrl: preset?.baseUrl ?? '',
-    apiKeyEnc: '',
-    model: preset?.model ?? '',
-    size: preset?.size ?? DEFAULT_SIZE,
-    apiKey: '',
-    apiKeySet: false,
-  })
-  newProviderId.value = ''
+function closeAdd(): void {
+  if (adding.value) return
+  showAdd.value = false
   error.value = null
-  message.value = null
-  // 必填项前移：选中预设后直接进编辑卡，由卡内必填项当场校验（「空白配置」同理）
-  openEditor(key)
+}
+
+/** 弹窗提交：构造新建草稿并复用 `saveProvider`；成功后关闭弹窗并打开编辑卡 */
+async function addProvider(payload: ProviderAddPayload): Promise<void> {
+  const draft: ProviderDraft = {
+    id: payload.id,
+    type: 'openai-compat',
+    baseUrl: payload.baseUrl,
+    apiKeyEnc: '',
+    model: payload.model,
+    size: payload.size as ImageGenProviderConfig['size'],
+    apiKey: payload.apiKey,
+    apiKeySet: false,
+  }
+  adding.value = true
+  error.value = null
+  const ok = await saveProvider(draft)
+  adding.value = false
+  if (!ok) {
+    // 配置已落盘但凭据写入失败：关掉弹窗并打开编辑卡，避免同名 id 把用户卡在重复校验里。
+    if (settingsStore.settings?.imagegen.providers[draft.id] !== undefined) {
+      showAdd.value = false
+      openEditor(draft.id)
+    }
+    return
+  }
+  showAdd.value = false
+  message.value = `已添加 ${draft.id}`
+  openEditor(draft.id)
 }
 
 /**
@@ -308,7 +308,7 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
     }
   }
   // 落盘成功：新建草稿升级成普通行
-  if (isCreating(draft.id)) localDrafts.value = localDrafts.value.filter((d) => d.id !== draft.id)
+  // 落盘成功后由 settings:changed 广播驱动 `syncDrafts` 重建列表。
   syncDrafts()
   return true
 }
@@ -349,7 +349,6 @@ async function removeProvider(id: string): Promise<void> {
     error.value = settingsStore.error
     return
   }
-  localDrafts.value = localDrafts.value.filter((draft) => draft.id !== id)
   pendingRemoveId.value = null
   if (editingId.value === id) closeEditor()
   syncDrafts()
@@ -415,7 +414,7 @@ async function setActive(id: string): Promise<void> {
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
-        <AppToast v-if="error" tone="error">{{ error }}</AppToast>
+        <AppToast v-if="error && !showAdd" tone="error">{{ error }}</AppToast>
 
         <!-- 常显区：两项都不门控（总开关就在其中，跟着它藏起来就再也开不回来） -->
         <SettingField
@@ -466,55 +465,25 @@ async function setActive(id: string): Promise<void> {
         </p>
 
         <!-- 空态自带主按钮（与 LlmPage 空态同款）：此时工具行不渲染，不会重复出现同名按钮 -->
-        <div v-if="!hasProviders && mode !== 'add'" class="row wrap toolbar">
-          <AppButton variant="primary" data-action="add-imagegen-provider" @click="startAdd">
+        <div v-if="!hasProviders" class="row wrap toolbar">
+          <AppButton variant="primary" data-action="add-imagegen-provider" @click="openAdd">
             + 添加生图模型
           </AppButton>
         </div>
 
-        <!-- 工具行 + 添加流程（mode === 'add'）：预设 chips 来自 IMAGEGEN_PRESETS -->
-        <div v-if="hasProviders || mode === 'add'" class="row wrap toolbar">
-          <AppButton size="sm" :disabled="mode === 'add'" @click="startAdd">
+        <!-- 工具行：新增入口（列表非空时它才需要） -->
+        <div v-if="hasProviders" class="row wrap toolbar">
+          <AppButton size="sm" data-action="add-imagegen-provider" @click="openAdd">
             + 添加生图模型
           </AppButton>
           <span class="grow" />
-          <span v-if="hasProviders" class="tiny muted">
-            {{ selectableProviders.length }} 个生图模型
-          </span>
+          <span class="tiny muted">{{ selectableProviders.length }} 个生图模型</span>
         </div>
-
-        <section v-if="mode === 'add'" class="form-block">
-          <div class="row">
-            <h3 class="block-title grow">添加生图模型</h3>
-            <AppButton size="sm" variant="ghost" @click="closeEditor">取消</AppButton>
-          </div>
-          <p class="section-desc">
-            选一个预设快速填好 Base URL 与模型名，或填自定义 id 后手动配置。
-          </p>
-          <div class="add-row">
-            <input
-              v-model="newProviderId"
-              class="input"
-              type="text"
-              spellcheck="false"
-              placeholder="自定义 id（可选）"
-            />
-            <AppButton
-              v-for="preset in IMAGEGEN_PRESETS"
-              :key="preset.id"
-              size="sm"
-              @click="addPreset(preset.id)"
-            >
-              + {{ preset.label }}
-            </AppButton>
-            <AppButton size="sm" variant="ghost" @click="addPreset('custom')">+ 空白配置</AppButton>
-          </div>
-        </section>
 
         <!-- provider 目录行列表：容器上标 `imagegen.providers`，每行标 `imagegen.providers.<id>` -->
         <div v-if="hasProviders" class="provider-list" data-field="imagegen.providers">
           <CenterOfficialProviderRow
-            v-if="officialEnabled"
+            v-if="officialVisible"
             capability="imagegen"
             :provider-id="officialProviderId"
             :model="officialModel"
@@ -582,10 +551,6 @@ async function setActive(id: string): Promise<void> {
 
             <!-- 编辑卡：一次只渲染一张（editingId 是单值） -->
             <template v-if="isEditing(draft.id) && pendingRemoveId !== draft.id">
-              <p v-if="isCreating(draft.id)" class="tiny pending-note">
-                这条还没有保存：点「应用」后才写入配置。
-              </p>
-
               <SettingField
                 :data-field="`imagegen.providers.${draft.id}.baseUrl`"
                 label="baseURL"
@@ -644,6 +609,19 @@ async function setActive(id: string): Promise<void> {
         </div>
       </div>
     </Transition>
+
+    <!-- 添加生图模型弹窗（v47）：页内不再展开添加表单 -->
+    <ProviderAddDialog
+      v-if="showAdd"
+      capability="imagegen"
+      title="添加生图模型"
+      :presets="IMAGEGEN_PRESETS"
+      :existing-ids="existingProviderIds"
+      :busy="adding"
+      :error="error ?? ''"
+      @close="closeAdd"
+      @submit="addProvider"
+    />
   </section>
 </template>
 

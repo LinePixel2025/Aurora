@@ -1526,6 +1526,44 @@ const migrateV45ToV46: Migration = {
   },
 }
 
+/**
+ * v46 → v47：Center 官方模型默认开启（选择入口并入各模型管理页，docs/08 §8）。
+ *
+ * 设置页不再提供「官方模型」总开关，存量配置若保持 `enabled: false` 将永远没有入口启用。
+ * 因此这里只做一件事：把四类选择的 `enabled` 置 `true`，**已选模型原样保留**；
+ * `center` 分组缺失时不凭空造对象（交默认配置兜底）。幂等。
+ */
+const migrateV46ToV47: Migration = {
+  from: 46,
+  to: 47,
+  describe: 'v46 → v47：Center 官方模型默认开启（选择入口并入模型管理）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const center = asRecord(raw['center'])
+    if (center !== undefined) {
+      const official = asRecord(center['officialModels'])
+      const selection = (key: 'llm' | 'imagegen' | 'tts' | 'stt'): Record<string, unknown> => {
+        const existing = asRecord(official?.[key])
+        return {
+          enabled: true,
+          model: typeof existing?.['model'] === 'string' ? existing['model'] : '',
+        }
+      }
+      next['center'] = {
+        ...center,
+        officialModels: {
+          llm: selection('llm'),
+          imagegen: selection('imagegen'),
+          tts: selection('tts'),
+          stt: selection('stt'),
+        },
+      }
+    }
+    next['version'] = 47
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1573,6 +1611,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV43ToV44,
   migrateV44ToV45,
   migrateV45ToV46,
+  migrateV46ToV47,
 ]
 
 export interface MigrationOutcome {

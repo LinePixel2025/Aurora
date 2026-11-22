@@ -82,15 +82,18 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 - **自助注册**：`POST /api/auth/register`（用户名 3–32 位字母数字下划线连字符、密码 ≥ 8 位），
   成功即创建 `role:'user'` 并直接登录；服务器 `config.json` 的 `allowRegistration`（默认 true）
   可整体关闭。
-- **客户端接入主路径有两条**（手动配对令牌已删除）：
-  1. **账号登录**：客户端在设置页填写服务器地址与 Center 账号密码 → `POST /api/client/login`
-     （§4.2）校验密码后颁发**归属该用户、创建即绑定该 `clientId`** 的客户端令牌 → 客户端存入
-     安全存储（`center.token` 凭据链路）并自动连接。每次登录都会重发新令牌并**吊销同
-     `clientId` 的旧令牌**；密码本身**绝不落盘**。
-  2. **设备授权登录（推荐，v0.2.2 起）**：客户端设置页点「登录账户」→ `POST /api/client/device/start`
-     取得设备码与确认页地址 → 自动打开浏览器进入 Center 网页 `#/device?code=<userCode>` →
-     用户在网页**注册 / 登录后一键确认** → 客户端轮询 `POST /api/client/device/poll`
-     拿到令牌自动接入（§4.3）。适合不想在桌面端输入密码的场景，网页上还可以顺带完成注册。
+- **客户端接入主路径是设备授权登录**（v0.2.2 起；**v47 起设置页只保留这一条**）：
+  桌面端设置页的服务器地址**固定为官方 Center**（`CENTER_SERVER_URL`，只读、不可改向），
+  点「登录账户」→ `POST /api/client/device/start`
+  取得设备码与确认页地址 → 自动打开浏览器进入 Center 网页 `#/device?code=<userCode>` →
+  用户在网页**注册 / 登录后一键确认** → 客户端轮询 `POST /api/client/device/poll`
+  拿到令牌自动接入（§4.3）。适合不想在桌面端输入密码的场景，网页上还可以顺带完成注册。
+- **账号登录端点保留用于兼容**：`POST /api/client/login` 仍接受 `{ username, password, clientId }`
+  并颁发**归属该用户、创建即绑定该 `clientId`** 的客户端令牌（§4.2；旧客户端 / 测试可用），
+  令牌由客户端存入安全存储（`center.token` 凭据链路）并自动连接。每次登录都会重发新令牌并
+  **吊销同 `clientId` 的旧令牌**；密码本身**绝不落盘**。桌面端设置页**不再提供服务器地址 /
+  Center 账号 / 密码输入与「密码登录」按钮**，也不再调用 `center:login`
+  （主进程 IPC 与服务器端点都仍在，仅兼容保留）。
 - 一个用户可以同时在多台机器登录（每台一个 `clientId`，各自持有独立令牌）；每个用户
   （除管理员）在网页端**只能看到自己名下的客户端**，事件（会话 / 文件 / 确认卡）也只
   路由给属主 + 管理员。
@@ -182,7 +185,7 @@ WS 快照（管理端的 REST 只做首次水合），页面停留期间在线�
 
 ### 4.2 网页 ⇄ 服务器
 
-REST：`POST /api/auth/login`、`POST /api/auth/register`（§3）、`POST /api/client/login`（**无需已登录**：
+REST：`POST /api/auth/login`、`POST /api/auth/register`（§3）、`POST /api/client/login`（**兼容保留，无需已登录**：
 客户端用 `{ username, password, clientId }` 换客户端令牌）、**设备授权三端点**（§4.3，`start` / `poll`
 无需登录，`authorize` 需网页会话）、`GET /api/me`、`GET /api/clients`（按角色过滤）、
 `GET /api/files`（文件清单，属主过滤）、`GET /api/files/:fileId`（**网页会话**鉴权下载）、
@@ -251,7 +254,7 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
 **不新增任何持久化**（与"服务器不缓存会话内容"同口径，这里缓存的是一条尚未结算的待答问题）；
 提问的**长期留痕**在客户端（会话文件 `asks` sidecar，§5），历史回放时随 `session.history` 回来。
 
-### 4.3 设备授权登录（docs/12 §3 主路径 2）
+### 4.3 设备授权登录（docs/12 §3 客户端接入主路径）
 
 ```
 POST /api/client/device/start    { clientId }                    （无需登录）
@@ -588,17 +591,22 @@ interface ClientPluginInfo { id: string; name: string; version: string; panels: 
 
 Schema / 默认值 / 迁移见 docs/08 §1。要点：
 
-- **账号登录（v0.2.1 起）**：设置页填服务器地址 + 账号密码，经 `center:login` IPC 由主进程调
-  `POST /api/client/login`（出网走 `main/net.ts` 的 `netFetch`）；成功后主进程落三件事 ——
-  令牌写入 `center.token`（凭据链路）、`center.account` 记住账号名（**非凭据**，仅展示）、
-  `center.enabled = true`，连接器经 `settings:changed` 自动重连。`clientId` 为空时登录前先生成
-  并持久化（旧版只展示不生成，导致连接器永远停在"尚未配置"——已修复）。密码只在登录请求里
-  使用，**不落配置、不进日志**。
-- **设备授权登录（v0.2.2 起，§4.3）**：设置页「登录账户」按钮走 `center:deviceLogin` IPC →
-  主进程 `POST /api/client/device/start` 并 `shell.openExternal` 打开 Center 网页确认页 →
-  用户网页确认后轮询拿令牌，落库路径与账号登录共用同一函数（`center:deviceLoginResult`
-  推送通道把最终结果回给设置页）。适合不想在桌面端输密码、或需要先注册的场景；
-  账号密码直登表单保留作为回落。
+- **固定地址（v47）**：`center.serverUrl` 的默认值与设置页展示都固定为 `CENTER_SERVER_URL`
+  （`http://120.24.223.65:8787`，见 `packages/shared/src/config/schema.ts`），设置页只有一段
+  只读文本，**不提供服务器地址输入**。存量 `serverUrl` **不做迁移**（避免静默切走自托管用户），
+  在下一次保存或登录时规范到固定地址。
+- **设备授权登录（v0.2.2 起，§4.3；v47 起是设置页唯一的登录路径）**：设置页「登录账户」按钮走
+  `center:deviceLogin` IPC（带固定地址）→ 主进程 `POST /api/client/device/start` 并
+  `shell.openExternal` 打开 Center 网页确认页 → 用户网页确认后轮询拿令牌，落库路径与账号登录
+  共用 `persistCenterLogin`（`center:deviceLoginResult` 推送通道把最终结果回给设置页）。
+  设置页不再提供 Center 账号 / 密码输入，也没有「密码登录」按钮。
+- **账号登录（v0.2.1 起；仅兼容保留）**：`center:login` IPC 与 `POST /api/client/login`
+  （出网走 `main/net.ts` 的 `netFetch`）仍在，但**设置页不再调用**，保留给旧链路 / 测试。
+  成功后主进程落三件事 —— 令牌写入 `center.token`（凭据链路）、`center.account` 记住账号名
+  （**非凭据**，仅展示）、`center.enabled = true`，连接器经 `settings:changed` 自动重连。
+  `clientId` 为空时登录前先生成并持久化。密码只在登录请求里使用，**不落配置、不进日志**。
+- **v47 官方模型默认开启**：`center.officialModels` 四类 `enabled` 默认 `true`；选模入口不在
+  Center 页，而在 AI 模型（默认模型下拉官方分组）/ 语音 / 生图各自的模型管理页（§12.2、docs/08 §8）。
 - `center.tokenEnc` 是**凭据路径**（safeStorage 密文）：`canonicalSecretPath` 把
   `center.token` / `center.tokenEnc` 规范到 `center.token`；`SettingsStore` 的
   `readSecretField` / `writeSecretField` / `toPersisted`、`canonicalSecretPath`，
@@ -606,7 +614,7 @@ Schema / 默认值 / 迁移见 docs/08 §1。要点：
   派生名）**同步修改** —— 漏改 writeSecretField = 凭据静默丢失，漏改 redact = 密文泄漏。
 - `center.*` 整组进入 `SETTINGS_READONLY_PREFIXES`：AI 的 `set_setting` 一律拒绝。
   理由：连接目标是**数据外发通道**，AI 自行启用 / 改向或换账号登录，等于把本机数据发往
-  任意服务器；启用、改址、登录只能由用户在设置页操作（`center:login` 也不对 AI 开放）。
+  任意服务器；启用与登录只能由用户在设置页操作（`center:login` 也不对 AI 开放）。
 - 三个 `allow*` 开关是**客户端本地的最终闸门**：Center 发来的命令类别若被对应开关
   拒绝，客户端回 `result: { ok: false, error: 'E_REMOTE_DISABLED' }`，Center 端如实展示。
 
@@ -892,10 +900,14 @@ Center 可为登录客户端提供语言模型、生图、TTS 与 STT 四类官�
 客户端侧的选模（`center.officialModels.<cap>.model`）在主进程构造官方请求时生效——
 读时把所选模型与该条目的参数覆写进 `center-*` 镜像 Provider 副本（目录同步落盘的镜像
 始终是 defaultModel），解析链「选中项 → defaultModel → 首个」，目录缺席时不覆写（口径见 08 §8）。
-**语言模型是例外（2026-10-24）**：官方能力开启不再抢 `llm.active`；只有 `llm.active`
+**v47 起四类官方模型的 `enabled` 默认 `true`**（迁移 `v46 → v47` 对存量配置置真、保留已选
+`model`）；**Center 设置页不再提供官方模型开关**，选模入口并入各模型管理页：语言模型走
+「AI 模型」页默认模型下拉的官方分组，TTS / STT / 生图走各自列表里的**只读官方行**
+（选中即写 `center.officialModels.<cap>.model` 与 `enabled: true`）。
+**语言模型是例外（2026-10-24）**：官方能力不再抢 `llm.active`；只有 `llm.active`
 指向 `center-llm` 时才构造官方请求，并用同一解析链取选中模型。用户在 AI 模型页选了本机
-模型后，即使 Center 页的官方开关仍开着，请求也走本机；会话级覆盖到官方时按覆盖里的显式
-`model` 校验，模型不在目录则回落全局档。
+模型后请求走本机（官方选择保留，仍可作会话级来源）；v47 起不再有 Center 页开关需要关闭。
+会话级覆盖到官方时按覆盖里的显式 `model` 校验，模型不在目录则回落全局档。
 
 `/api/model-gateway/*` 接受客户端令牌并按其绑定 `clientId` 鉴权，覆盖：
 ```

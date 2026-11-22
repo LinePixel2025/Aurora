@@ -20,13 +20,12 @@ import { computed, reactive, ref, watch } from 'vue'
 import { ChevronRight } from '@aurora/shared/browser'
 import {
   CENTER_OFFICIAL_PROVIDER_IDS,
-  RESOURCE_NAME_PATTERN,
-  RESOURCE_NAME_RULE,
   TTS_FORMATS,
   TTS_INSTRUCTIONS_MAX_CHARS,
   TTS_LANGUAGES,
   TTS_LANGUAGE_LABELS,
   TTS_PRESETS,
+  TTS_PROVIDER_TYPE_LABELS,
   isCenterOfficialProviderId,
   type SettingsPatch,
   type TtsFormat,
@@ -38,6 +37,7 @@ import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import CenterOfficialProviderRow from './CenterOfficialProviderRow.vue'
+import ProviderAddDialog, { type ProviderAddPayload } from './ProviderAddDialog.vue'
 import { useCenterOfficialCatalog } from '../../shared/composables/useCenterOfficialCatalog.js'
 import {
   officialModelDetails,
@@ -53,15 +53,16 @@ interface ProviderDraft extends TtsProviderConfig {
   apiKeySet: boolean
 }
 
-/** 页面三态：目录列表 / 添加（选预设）/ 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
-type PageMode = 'list' | 'add' | 'edit'
+/** 页面两态：目录列表 / 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
+type PageMode = 'list' | 'edit'
 
-/** 接口类型 → 下拉文案（docs/06 §13.1 / §13.6 / §13.7）；新建草稿默认仍是 `openai-compat` */
-const TYPE_LABELS: Record<TtsProviderType, string> = {
-  'openai-compat': 'OpenAI 兼容（/audio/speech）',
-  dashscope: 'DashScope 原生（百炼 / 千问AI平台）',
-  'dashscope-audio': 'Qwen-Audio-TTS（语气指令 / 复刻音色）',
-}
+/** 接口类型 → 下拉文案：走 shared 的单一来源（添加弹窗与编辑卡共用）。 */
+const TYPE_LABELS = TTS_PROVIDER_TYPE_LABELS
+/** 添加弹窗的接口类型选项（编辑卡用 Record 遍历，这里转成数组） */
+const TYPE_OPTIONS = Object.entries(TTS_PROVIDER_TYPE_LABELS).map(([value, label]) => ({
+  value,
+  label,
+}))
 
 /** 语气指令常用 chips（v43）：点击填入 textarea，可再编辑；效果取决于模型支持面 */
 const INSTRUCTION_PRESETS = [
@@ -73,7 +74,6 @@ const INSTRUCTION_PRESETS = [
 
 /** 新建 provider 的页面默认值（`DEFAULT_TTS` 里没有 provider 级默认，所以在这里定义一次） */
 const DEFAULT_SPEED = 1
-const DEFAULT_FORMAT: TtsFormat = 'mp3'
 /** 单次朗读上限的夹取范围，与 `TtsSchema.maxChars` 的 min/max 一致 */
 const MIN_MAX_CHARS = 50
 const MAX_MAX_CHARS = 4096
@@ -83,11 +83,13 @@ const { catalog } = useCenterOfficialCatalog()
 /** 播放实现只有 `useTts` 一份，本区组**不**自己 `new Audio` */
 const tts = useTts()
 
-const newProviderId = ref('')
 const testing = ref<string | null>(null)
 const results = reactive<Record<string, TtsTestResult>>({})
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
+/** 添加弹窗开关 / 在途状态（v47 起添加流程从页内表单改为独立弹窗） */
+const showAdd = ref(false)
+const adding = ref(false)
 /** 正在「获取模型列表」的 provider id（与「连接测试」互不相干，各自独立转圈） */
 const fetchingModels = ref<string | null>(null)
 /** 各 provider 最近一次拉到的模型候选（只进 datalist，不改任何配置） */
@@ -115,6 +117,11 @@ const officialProvider = computed(
 )
 const officialEnabled = computed(() => officialSelection.value.enabled)
 const officialService = computed(() => catalog.value?.services.tts)
+/** 官方行是否展示：v47 起不仅看 enabled，目录 / 镜像 Provider 可用时也展示（选中即写 enabled=true）。 */
+const officialVisible = computed(
+  () =>
+    officialEnabled.value || officialProvider.value !== null || officialService.value !== undefined,
+)
 const effectiveOfficial = computed(() =>
   resolveEffectiveOfficialModel(
     officialService.value,
@@ -125,8 +132,7 @@ const effectiveOfficial = computed(() =>
 const officialModel = computed(() => effectiveOfficial.value.model)
 const officialAvailable = computed(
   () =>
-    officialEnabled.value &&
-    catalog.value?.services.tts !== undefined &&
+    officialService.value !== undefined &&
     officialProvider.value !== null &&
     officialProvider.value.baseUrl.trim() !== '' &&
     officialModel.value !== '' &&
@@ -141,7 +147,7 @@ const officialDetails = computed(() =>
   ),
 )
 
-/** 官方行选模：写 `center.officialModels.tts.model`，与 Center 页同一字段、双向联动 */
+/** 官方行选模：写 `center.officialModels.tts.model`，入口已并入本页（docs/08 §8）。 */
 async function onOfficialModelChange(model: string): Promise<void> {
   const settings = settingsStore.settings
   if (settings === null) return
@@ -156,7 +162,7 @@ async function onOfficialModelChange(model: string): Promise<void> {
 const selectableProviders = computed<
   Array<{ id: string; model: string; official: boolean; available: boolean }>
 >(() => [
-  ...(officialEnabled.value
+  ...(officialVisible.value
     ? [
         {
           id: officialProviderId,
@@ -174,8 +180,14 @@ const selectableProviders = computed<
   })),
 ])
 const hasProviders = computed(() => selectableProviders.value.length > 0)
+/** 添加弹窗的重名校验集合：已保存 provider + 官方保留 id */
+const existingProviderIds = computed(() => {
+  const settings = settingsStore.settings
+  const ids = settings === null ? [] : Object.keys(settings.tts.providers)
+  return Array.from(new Set([...ids, ...Object.values(CENTER_OFFICIAL_PROVIDER_IDS)]))
+})
 const activeSummary = computed(() => {
-  if (activeId.value === officialProviderId && officialEnabled.value) {
+  if (activeId.value === officialProviderId && officialVisible.value) {
     return `${officialProviderId} · ${officialModel.value || '未配置'}`
   }
   return activeDraft.value ? `${activeDraft.value.id} · ${activeDraft.value.model}` : ''
@@ -195,11 +207,6 @@ function resultOf(id: string): TtsTestResult | undefined {
 
 function isEditing(id: string): boolean {
   return mode.value === 'edit' && editingId.value === id
-}
-
-/** 当前编辑的 provider 是不是还没落盘的新建草稿 */
-function isCreating(id: string): boolean {
-  return localDrafts.value.some((draft) => draft.id === id)
 }
 
 /** 编辑卡上「候选音色」chips：只有整套预设都对得上同一个 id 时才给候选（自定义 id 不猜音色） */
@@ -224,17 +231,13 @@ function selectVoice(draft: ProviderDraft, voice: string): void {
 }
 
 /**
- * 未落盘的新建草稿（`syncDrafts` 会把已保存的镜像整体换掉，
- * 所以「刚点预设、还没点应用」的那一条不能只活在镜像里，否则它会被下一次同步抹掉）。
- * 列表 = 已保存的镜像 + 这些草稿；落盘成功后草稿被移除，那一行就来自 settings 了。
+ * settings 的镜像；`syncDrafts` 只重写它，**不动**编辑卡正在改的那份对象引用。
+ * 添加流程已改为弹窗（提交即落盘），因此不再维护「未落盘的新建草稿」。
  */
-const localDrafts = ref<ProviderDraft[]>([])
-
-/** settings 的镜像；`syncDrafts` 只重写它，**不动**编辑卡正在改的那份对象引用 */
 const savedDrafts = ref<ProviderDraft[]>([])
 
-/** 列表 = 已保存的镜像 + 未落盘的新建草稿（重名不会出现：`addPreset` 先查重） */
-const drafts = computed<ProviderDraft[]>(() => [...savedDrafts.value, ...localDrafts.value])
+/** 列表 = 已保存的 provider 镜像 */
+const drafts = computed<ProviderDraft[]>(() => savedDrafts.value)
 
 function syncDrafts(): void {
   const settings = settingsStore.settings
@@ -258,7 +261,7 @@ function syncDrafts(): void {
     })
   // provider 被别处删掉（如 `set_setting` 或对话窗）时，编辑卡 / 确认条不能指着一个不存在的行。
   // 未落盘的新建草稿不在 settings 里，所以先把它排除在判断之外。
-  if (editing !== null && !isCreating(editing) && !hasSaved(editing)) closeEditor()
+  if (editing !== null && !hasSaved(editing)) closeEditor()
   if (
     pendingRemoveId.value !== null &&
     !drafts.value.some((draft) => draft.id === pendingRemoveId.value)
@@ -286,58 +289,58 @@ function openEditor(id: string): void {
 }
 
 function closeEditor(): void {
-  if (editingId.value !== null && isCreating(editingId.value)) {
-    // 没落盘的新建草稿：取消 = 整条丢掉，否则它会一直挂在 `drafts` 里像个幽灵行
-    localDrafts.value = localDrafts.value.filter((draft) => draft.id !== editingId.value)
-    syncDrafts()
-  }
   mode.value = 'list'
   editingId.value = null
   pendingRemoveId.value = null
 }
 
-function startAdd(): void {
-  mode.value = 'add'
+/** 添加入口：打开独立弹窗（v47），页内不再展开添加表单 */
+function openAdd(): void {
+  mode.value = 'list'
   editingId.value = null
   pendingRemoveId.value = null
   message.value = null
   error.value = null
+  showAdd.value = true
 }
 
-/** 添加流程：预设 chips 来自 `TTS_PRESETS`，选中即进编辑卡（必填项由卡内当场校验） */
-function addPreset(id: string): void {
-  const preset = TTS_PRESETS.find((item) => item.id === id)
-  const key = newProviderId.value.trim() === '' ? id : newProviderId.value.trim()
-  // provider id 会作为凭据路径的段（`tts.providers.<id>.apiKey`），`.` 是分隔符 → 禁点。
-  // 正则与文案与 `McpServerSchema.name` 同源（`@aurora/shared` 单一来源），不另写一份。
-  if (!RESOURCE_NAME_PATTERN.test(key)) {
-    error.value = `TTS 模型「${key}」${RESOURCE_NAME_RULE}`
-    return
-  }
-  if (drafts.value.some((draft) => draft.id === key)) {
-    error.value = `TTS 模型「${key}」已存在`
-    return
-  }
-  localDrafts.value.push({
-    id: key,
-    // 接口类型跟预设走（v43 起预设自带 type，与 STT_PRESETS 同理）；空白配置回落 openai-compat
-    type: preset?.type ?? 'openai-compat',
-    baseUrl: preset?.baseUrl ?? '',
-    apiKeyEnc: '',
-    model: preset?.model ?? '',
-    voice: preset?.voice ?? '',
-    speed: DEFAULT_SPEED,
-    format: DEFAULT_FORMAT,
-    instructions: '',
-    language: preset?.language ?? 'auto',
-    apiKey: '',
-    apiKeySet: false,
-  })
-  newProviderId.value = ''
+function closeAdd(): void {
+  if (adding.value) return
+  showAdd.value = false
   error.value = null
-  message.value = null
-  // 必填项前移：选中预设后直接进编辑卡，由卡内必填项当场校验（「空白配置」同理）
-  openEditor(key)
+}
+
+/** 弹窗提交：构造新建草稿并复用 `saveProvider`；成功后关闭弹窗并打开编辑卡 */
+async function addProvider(payload: ProviderAddPayload): Promise<void> {
+  const draft: ProviderDraft = {
+    id: payload.id,
+    type: payload.type as TtsProviderType,
+    baseUrl: payload.baseUrl,
+    apiKeyEnc: '',
+    model: payload.model,
+    voice: payload.voice,
+    speed: clampSpeed(payload.speed, payload.type as TtsProviderType),
+    format: payload.format as TtsFormat,
+    instructions: payload.instructions,
+    language: payload.language,
+    apiKey: payload.apiKey,
+    apiKeySet: false,
+  }
+  adding.value = true
+  error.value = null
+  const ok = await saveProvider(draft)
+  adding.value = false
+  if (!ok) {
+    // 配置已落盘但凭据写入失败：关掉弹窗并打开编辑卡，避免同名 id 把用户卡在重复校验里。
+    if (settingsStore.settings?.tts.providers[draft.id] !== undefined) {
+      showAdd.value = false
+      openEditor(draft.id)
+    }
+    return
+  }
+  showAdd.value = false
+  message.value = `已添加 ${draft.id}`
+  openEditor(draft.id)
 }
 
 /**
@@ -409,8 +412,7 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
       error.value = '安全存储不可用：API Key 只保留在本次运行的内存中'
     }
   }
-  // 落盘成功：新建草稿升级成普通行（编辑卡保持打开，方便接着试听）
-  if (isCreating(draft.id)) localDrafts.value = localDrafts.value.filter((d) => d.id !== draft.id)
+  // 落盘成功后由 settings:changed 广播驱动 `syncDrafts` 重建列表。
   syncDrafts()
   return true
 }
@@ -594,7 +596,6 @@ async function removeProvider(id: string): Promise<void> {
     error.value = settingsStore.error
     return
   }
-  localDrafts.value = localDrafts.value.filter((draft) => draft.id !== id)
   pendingRemoveId.value = null
   if (editingId.value === id) closeEditor()
   syncDrafts()
@@ -674,7 +675,7 @@ function stopPreview(): void {
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
-        <AppToast v-if="error" tone="error">{{ error }}</AppToast>
+        <AppToast v-if="error && !showAdd" tone="error">{{ error }}</AppToast>
 
         <!-- 常显区：四项**都不门控**（总开关就在其中，跟着它藏起来就再也开不回来） -->
         <SettingField
@@ -756,51 +757,24 @@ function stopPreview(): void {
           还没有 TTS 模型：添加一个并在上方选为默认后就能朗读回复。
         </p>
         <div v-if="!hasProviders" class="row">
-          <AppButton variant="primary" @click="startAdd">添加 TTS 模型</AppButton>
+          <AppButton variant="primary" data-action="add-tts-provider" @click="openAdd">
+            添加 TTS 模型
+          </AppButton>
         </div>
 
         <!-- 工具行：新增入口（列表非空时它才需要；空列表由上面的空状态承担） -->
         <div v-if="hasProviders" class="row wrap toolbar">
-          <AppButton size="sm" :disabled="mode === 'add'" @click="startAdd">
+          <AppButton size="sm" data-action="add-tts-provider" @click="openAdd">
             + 添加 TTS 模型
           </AppButton>
           <span class="grow" />
           <span class="tiny muted">{{ selectableProviders.length }} 个 TTS 模型</span>
         </div>
 
-        <!-- 添加流程（mode === 'add'）：预设 chips 来自 TTS_PRESETS，选中即进编辑卡 -->
-        <section v-if="mode === 'add'" class="form-block">
-          <div class="row">
-            <h3 class="block-title grow">添加 TTS 模型</h3>
-            <AppButton size="sm" variant="ghost" @click="closeEditor">取消</AppButton>
-          </div>
-          <p class="section-desc">
-            选一个预设快速填好 Base URL、模型名与音色，或填自定义 id 后手动配置。
-          </p>
-          <div class="add-row">
-            <input
-              v-model="newProviderId"
-              class="input"
-              type="text"
-              spellcheck="false"
-              placeholder="自定义 id（可选）"
-            />
-            <AppButton
-              v-for="preset in TTS_PRESETS"
-              :key="preset.id"
-              size="sm"
-              @click="addPreset(preset.id)"
-            >
-              + {{ preset.label }}
-            </AppButton>
-            <AppButton size="sm" variant="ghost" @click="addPreset('custom')">+ 空白配置</AppButton>
-          </div>
-        </section>
-
         <!-- provider 目录行列表：容器上标 `tts.providers`，每行标 `tts.providers.<id>` -->
         <div v-if="hasProviders" class="provider-list" data-field="tts.providers">
           <CenterOfficialProviderRow
-            v-if="officialEnabled"
+            v-if="officialVisible"
             capability="tts"
             :provider-id="officialProviderId"
             :model="officialModel"
@@ -868,10 +842,6 @@ function stopPreview(): void {
 
             <!-- 编辑卡：一次只渲染一张（editingId 是单值） -->
             <template v-if="isEditing(draft.id) && pendingRemoveId !== draft.id">
-              <p v-if="isCreating(draft.id)" class="tiny pending-note">
-                这条还没有保存：点「应用」后才写入配置。
-              </p>
-
               <SettingField
                 :data-field="`tts.providers.${draft.id}.type`"
                 label="接口类型"
@@ -1092,6 +1062,20 @@ function stopPreview(): void {
         </div>
       </div>
     </Transition>
+
+    <!-- 添加 TTS 模型弹窗（v47）：页内不再展开添加表单 -->
+    <ProviderAddDialog
+      v-if="showAdd"
+      capability="tts"
+      title="添加 TTS 模型"
+      :presets="TTS_PRESETS"
+      :type-options="TYPE_OPTIONS"
+      :existing-ids="existingProviderIds"
+      :busy="adding"
+      :error="error ?? ''"
+      @close="closeAdd"
+      @submit="addProvider"
+    />
   </section>
 </template>
 

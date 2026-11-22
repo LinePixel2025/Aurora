@@ -1137,6 +1137,7 @@ describe('配置迁移链', () => {
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
         'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
         'v45 → v46：v45 → v46：新增 agent.subagents（子代理定义 / 权限档 / 独立模型）',
+        'v46 → v47：v46 → v47：Center 官方模型默认开启（选择入口并入模型管理）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1195,6 +1196,7 @@ describe('配置迁移链', () => {
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
         'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
         'v45 → v46：v45 → v46：新增 agent.subagents（子代理定义 / 权限档 / 独立模型）',
+        'v46 → v47：v46 → v47：Center 官方模型默认开启（选择入口并入模型管理）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1209,10 +1211,10 @@ describe('配置迁移链', () => {
         allowFileTransfer: true,
         maxFileMb: 64,
         officialModels: {
-          llm: { enabled: false, model: '' },
-          imagegen: { enabled: false, model: '' },
-          tts: { enabled: false, model: '' },
-          stt: { enabled: false, model: '' },
+          llm: { enabled: true, model: '' },
+          imagegen: { enabled: true, model: '' },
+          tts: { enabled: true, model: '' },
+          stt: { enabled: true, model: '' },
         },
       })
     })
@@ -1633,6 +1635,7 @@ describe('配置迁移链', () => {
         'v43 → v44：v43 → v44：notifications 补智慧提醒延迟投递分钟数（0 = 立即）',
         'v44 → v45：v44 → v45：移除 Code Mode（删 modes.code，modes.current=code 归一 classroom）',
         'v45 → v46：v45 → v46：新增 agent.subagents（子代理定义 / 权限档 / 独立模型）',
+        'v46 → v47：v46 → v47：Center 官方模型默认开启（选择入口并入模型管理）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -1899,7 +1902,7 @@ describe('配置迁移链', () => {
   })
 
   describe('v30 → v31（Center 官方模型）', () => {
-    it('为已有 center 补四类默认关闭选择，已有字段原样保留', () => {
+    it('为已有 center 补四类选择（v47 起默认开启），已有字段原样保留', () => {
       const missing = migrate({
         version: 30,
         center: { enabled: true, serverUrl: 'wss://center.example.com' },
@@ -1910,10 +1913,10 @@ describe('配置迁移链', () => {
         enabled: true,
         serverUrl: 'wss://center.example.com',
         officialModels: {
-          llm: { enabled: false, model: '' },
-          imagegen: { enabled: false, model: '' },
-          tts: { enabled: false, model: '' },
-          stt: { enabled: false, model: '' },
+          llm: { enabled: true, model: '' },
+          imagegen: { enabled: true, model: '' },
+          tts: { enabled: true, model: '' },
+          stt: { enabled: true, model: '' },
         },
       })
 
@@ -2409,7 +2412,7 @@ describe('配置迁移链', () => {
         version: 45,
         agent: { permissionMode: 'confirm' },
       })
-      expect(outcome.applied.at(-1)).toContain('v45 → v46')
+      expect(outcome.applied.some((item) => item.includes('v45 → v46'))).toBe(true)
       const agent = outcome.data['agent'] as Record<string, unknown>
       expect(agent['permissionMode']).toBe('confirm')
       const subagents = agent['subagents'] as Array<Record<string, unknown>>
@@ -2455,6 +2458,56 @@ describe('配置迁移链', () => {
     })
   })
 
+  describe('v46 → v47（Center 官方模型默认开启，docs/08 §8）', () => {
+    it('四类官方选择置 true，已选模型与 center 其它字段原样保留', () => {
+      const outcome = migrate({
+        version: 46,
+        center: {
+          enabled: true,
+          serverUrl: 'http://120.24.223.65:8787',
+          tokenEnc: 'cipher',
+          account: 'alice',
+          displayName: '书房电脑',
+          officialModels: {
+            llm: { enabled: false, model: 'deepseek-flash' },
+            imagegen: { enabled: false, model: 'img-a' },
+            tts: { enabled: false, model: 'tts-a' },
+            stt: { enabled: false, model: 'stt-a' },
+          },
+        },
+      })
+      expect(outcome.applied.at(-1)).toContain('v46 → v47')
+      expect(outcome.data['center']).toMatchObject({
+        enabled: true,
+        serverUrl: 'http://120.24.223.65:8787',
+        tokenEnc: 'cipher',
+        account: 'alice',
+        displayName: '书房电脑',
+        officialModels: {
+          llm: { enabled: true, model: 'deepseek-flash' },
+          imagegen: { enabled: true, model: 'img-a' },
+          tts: { enabled: true, model: 'tts-a' },
+          stt: { enabled: true, model: 'stt-a' },
+        },
+      })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('center 分组缺失时不凭空造对象；重复执行幂等', () => {
+      const missing = migrate({ version: 46, general: {} })
+      expect(missing.data['center']).toBeUndefined()
+
+      const once = migrate({
+        version: 46,
+        center: { officialModels: { llm: { enabled: false, model: 'm' } } },
+      })
+      const twice = migrate({ ...once.data, version: 46 })
+      expect(
+        (twice.data['center'] as { officialModels: { llm: unknown } }).officialModels.llm,
+      ).toEqual({ enabled: true, model: 'm' })
+    })
+  })
+
   describe('v44 → v45（移除 Code Mode，docs/05）', () => {
     it('删 modes.code，并把 current=code 归一为 classroom', () => {
       const outcome = migrate({
@@ -2466,10 +2519,11 @@ describe('配置迁移链', () => {
           code: { guideCompleted: true },
         },
       })
-      // v45 → v46 会接着跑（本用例只钉 Code Mode 那一步的语义），因此这里是前两步。
-      expect(outcome.applied).toHaveLength(2)
+      // v45 → v46 与 v46 → v47 会接着跑（本用例只钉 Code Mode 那一步的语义），因此这里是前三步。
+      expect(outcome.applied).toHaveLength(3)
       expect(outcome.applied[0]).toContain('v44 → v45')
       expect(outcome.applied[1]).toContain('v45 → v46')
+      expect(outcome.applied[2]).toContain('v46 → v47')
       const modes = outcome.data['modes'] as Record<string, unknown>
       expect(modes['current']).toBe('classroom')
       expect('code' in modes).toBe(false)

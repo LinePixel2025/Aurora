@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDefaultSettings, type Settings } from '@aurora/shared'
+import { CENTER_SERVER_URL, createDefaultSettings, type Settings } from '@aurora/shared'
 import { redactSettings } from './settings-redact.js'
 
 describe('redactSettings · center 令牌脱敏（v16，docs/12 §7）', () => {
@@ -14,6 +14,6 @@ describe('redactSettings · center 令牌脱敏（v16，docs/12 §7）', () => {
     expect(redacted.center.tokenEnc).toBe('')
     // 其它字段原样保留
     expect(redacted.center.enabled).toBe(false)
-    expect(redacted.center.serverUrl).toBe('')
+    expect(redacted.center.serverUrl).toBe(CENTER_SERVER_URL)
   })
 })

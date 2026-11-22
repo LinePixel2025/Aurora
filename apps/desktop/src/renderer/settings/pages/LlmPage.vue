@@ -2,7 +2,7 @@
 /**
  * AI 模型设置页（docs/08 §5）：provider **目录行列表 + 一次只开一张编辑卡**。
  *
- * 信息架构（step-04）：页头摘要（当前默认 provider · 模型）→ 工具行（添加 Provider / 保存全部）
+ * 信息架构（step-04）：页头摘要（当前默认 provider · 模型）→ 工具行（添加 Provider）
  * → provider 行列表（名称 + 凭据状态 + 是否默认 + 编辑 / 删除）→ 空状态。
  * 危险操作走**就地二次确认**；凭据是 write-only 输入，页面永不回显明文（只显示「已保存 / 缺失」）。
  *
@@ -34,14 +34,11 @@ import { formatTokenCount } from '@aurora/shared/browser'
 import { ChevronRight } from '@aurora/shared/browser'
 import {
   CENTER_OFFICIAL_PROVIDER_IDS,
-  DEFAULT_REASONING_EFFORT,
   LLM_PROVIDER_TYPE_LABELS,
   LlmProviderTypes,
   PROVIDER_PRESETS,
   REASONING_EFFORT_LABELS,
   REASONING_EFFORT_LEVELS,
-  RESOURCE_NAME_PATTERN,
-  RESOURCE_NAME_RULE,
   isCenterOfficialProviderId,
   resolveModelParams,
   type LlmModelParams,
@@ -53,6 +50,7 @@ import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import ImageGenSection from '../components/ImageGenSection.vue'
+import ProviderAddDialog, { type ProviderAddPayload } from '../components/ProviderAddDialog.vue'
 import { useCenterOfficialCatalog } from '../../shared/composables/useCenterOfficialCatalog.js'
 import { useSettingsStore } from '../../shared/stores.js'
 
@@ -62,8 +60,8 @@ interface ProviderDraft extends LlmProviderConfig {
   apiKeySet: boolean
 }
 
-/** 页面三态：目录列表 / 添加（选预设）/ 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
-type PageMode = 'list' | 'add' | 'edit'
+/** 页面两态：目录列表 / 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
+type PageMode = 'list' | 'edit'
 
 /**
  * 「接口类型」下拉的选项：取值来自 Schema 的枚举（**唯一来源**），文案来自同一份
@@ -77,12 +75,14 @@ const PROVIDER_TYPE_OPTIONS = LlmProviderTypes.map((value) => ({
 const settingsStore = useSettingsStore()
 const { catalog: centerCatalog } = useCenterOfficialCatalog()
 
-const newProviderId = ref('')
 const testing = ref<string | null>(null)
 const results = reactive<Record<string, TestConnectionResult>>({})
 const models = reactive<Record<string, string[]>>({})
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
+/** 添加弹窗开关 / 在途状态（v47 起添加流程从页内表单改为独立弹窗） */
+const showAdd = ref(false)
+const adding = ref(false)
 
 const mode = ref<PageMode>('list')
 const editingId = ref<string | null>(null)
@@ -102,6 +102,13 @@ const renamingModel = ref<string | null>(null)
 const renameValue = ref('')
 
 const activeId = computed(() => settingsStore.settings?.llm.active ?? '')
+
+/** 添加弹窗的重名校验集合：已保存 provider + 官方保留 id（后者不允许被用户覆盖） */
+const existingProviderIds = computed(() => {
+  const settings = settingsStore.settings
+  const ids = settings === null ? [] : Object.keys(settings.llm.providers)
+  return Array.from(new Set([...ids, ...Object.values(CENTER_OFFICIAL_PROVIDER_IDS)]))
+})
 
 /** Center 官方语言模型目录（未登录 / 未拉取到为 null）。 */
 const centerLlmService = computed(() => centerCatalog.value?.services.llm ?? null)
@@ -141,21 +148,13 @@ const activeSummary = computed(() => {
 const activeIsCenter = computed(() => isCenterOfficialProviderId(activeId.value))
 
 /**
- * 未落盘的新建草稿（`syncDrafts` 会把已保存的镜像整体换掉，
- * 所以「刚点预设、还没点应用」的那一条不能只活在镜像里，否则它会被下一次同步抹掉）。
- * 列表 = 已保存的镜像 + 这些草稿；落盘成功后草稿被移除，那一行就来自 settings 了。
- *
- * 与 `TtsSection.vue` / `SttSection.vue` / `ImageGenSection.vue` **同款结构**（P2-23）：
- * 之前只把草稿 push 进单一 `drafts` 数组，任一 `settings:changed` 广播都会连带把
- * 填了一半的 baseUrl / Key 整条丢掉、编辑器被强制关闭。
+ * settings 的镜像；`syncDrafts` 只重写它，**不动**编辑卡正在改的那份对象引用。
+ * 添加流程已改为弹窗（提交即落盘），因此不再维护「未落盘的新建草稿」。
  */
-const localDrafts = ref<ProviderDraft[]>([])
-
-/** settings 的镜像；`syncDrafts` 只重写它，**不动**编辑卡正在改的那份对象引用 */
 const savedDrafts = ref<ProviderDraft[]>([])
 
-/** 列表 = 已保存的镜像 + 未落盘的新建草稿（重名不会出现：`addPreset` 先查重） */
-const drafts = computed<ProviderDraft[]>(() => [...savedDrafts.value, ...localDrafts.value])
+/** 列表 = 已保存的 provider 镜像 */
+const drafts = computed<ProviderDraft[]>(() => savedDrafts.value)
 
 /**
  * 「默认模型」下拉的 value：JSON 编码一对 `(providerId, model)`。
@@ -183,10 +182,12 @@ const defaultGroups = computed(() =>
     .filter((group) => group.models.length > 0),
 )
 
-/** 官方分组：已登录且目录有可用模型时出现；选中即把官方设为全局默认。 */
+/** 官方分组：已登录、目录可用且镜像 Provider 已同步时出现；选中即把官方设为全局默认。 */
 const officialDefaultGroup = computed(() => {
   const service = centerLlmService.value
-  if (service === null) return null
+  const settings = settingsStore.settings
+  if (service === null || settings === null) return null
+  if (settings.llm.providers[CENTER_OFFICIAL_PROVIDER_IDS.llm] === undefined) return null
   const models = service.models.map((item) => item.id)
   return models.length === 0 ? null : { id: 'Aurora Center 官方', models }
 })
@@ -299,14 +300,9 @@ async function saveDefaultModel(providerId: string, model: string): Promise<void
   message.value = `默认模型已切换为 ${providerId} · ${model}`
 }
 
-/** 该 id 是否已经在配置里（与「未落盘草稿」相对） */
+/** 该 id 是否已经在配置里 */
 function hasSaved(id: string): boolean {
   return savedDrafts.value.some((draft) => draft.id === id)
-}
-
-/** 当前编辑的 provider 是不是还没落盘的新建草稿 */
-function isCreating(id: string): boolean {
-  return localDrafts.value.some((draft) => draft.id === id)
 }
 
 /**
@@ -588,8 +584,7 @@ function syncDrafts(): void {
     .filter(([id]) => !isCenterOfficialProviderId(id))
     .map(([id, provider]) => {
       // 编辑卡正在改的那一份：按 id 复用**旧对象引用** —— 广播到达（或任何一个即时保存动作
-      // 触发的 `settings:changed`）都不回退卡内内容、不关编辑器。未落盘的新建草稿在
-      // `localDrafts` 里，不参与这里的重建，所以填了一半的内容也不会被抹掉。
+      // 触发的 `settings:changed`）都不回退卡内内容、不关编辑器。
       // （其余行每次重建，别处改过的值——如另一个窗口改 baseURL——照常反映到列表。）
       const reused = editing === id ? previous.find((draft) => draft.id === id) : undefined
       if (reused !== undefined) {
@@ -620,8 +615,7 @@ function syncDrafts(): void {
       return draft
     })
   // provider 被别处删掉（如 `set_setting` 或对话窗）时，编辑卡 / 确认条不能指着一个不存在的行。
-  // 未落盘的新建草稿不在 settings 里，所以先把它排除在判断之外。
-  if (editing !== null && !isCreating(editing) && !hasSaved(editing)) closeEditor()
+  if (editing !== null && !hasSaved(editing)) closeEditor()
   if (
     pendingRemoveId.value !== null &&
     !drafts.value.some((draft) => draft.id === pendingRemoveId.value)
@@ -646,21 +640,24 @@ function openEditor(id: string, options: { advanced?: boolean } = {}): void {
 
 function closeEditor(): void {
   if (editingId.value !== null) advancedOpen[editingId.value] = false
-  if (editingId.value !== null && isCreating(editingId.value)) {
-    // 没落盘的新建草稿：取消 = 整条丢掉，否则它会一直挂在 `drafts` 里像个幽灵行
-    localDrafts.value = localDrafts.value.filter((draft) => draft.id !== editingId.value)
-    syncDrafts()
-  }
   mode.value = 'list'
   editingId.value = null
   pendingRemoveId.value = null
 }
 
-function startAdd(): void {
-  mode.value = 'add'
+/** 添加入口：打开独立弹窗（v47），页内不再展开添加表单 */
+function openAdd(): void {
+  mode.value = 'list'
   editingId.value = null
   pendingRemoveId.value = null
   message.value = null
+  error.value = null
+  showAdd.value = true
+}
+
+function closeAdd(): void {
+  if (adding.value) return
+  showAdd.value = false
   error.value = null
 }
 
@@ -734,8 +731,7 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
       error.value = '安全存储不可用：API Key 只保留在本次运行的内存中'
     }
   }
-  // 落盘成功：新建草稿升级成普通行（从 `localDrafts` 移除后再同步，那一行就来自 settings 了）
-  if (isCreating(draft.id)) localDrafts.value = localDrafts.value.filter((d) => d.id !== draft.id)
+  // 落盘成功后由 settings:changed 广播驱动 `syncDrafts` 重建列表。
   syncDrafts()
   return true
 }
@@ -749,65 +745,34 @@ async function applyDraft(draft: ProviderDraft): Promise<void> {
   closeEditor()
 }
 
-async function saveAll(): Promise<void> {
-  message.value = null
-  error.value = null
-  for (const draft of drafts.value) {
-    const ok = await saveProvider(draft)
-    if (!ok) return
-  }
-  closeEditor()
-  message.value = '已保存'
-}
-
-function addPreset(id: string): void {
-  const preset = PROVIDER_PRESETS.find((item) => item.id === id)
-  const key = newProviderId.value.trim() === '' ? id : newProviderId.value.trim()
-  // provider id 会作为凭据路径的段（`llm.providers.<id>.apiKey`），`.` 是分隔符 → 禁点。
-  // 正则与文案取自 `@aurora/shared` 的单一来源（同 `McpServerSchema.name`），不另写一份。
-  if (!RESOURCE_NAME_PATTERN.test(key)) {
-    error.value = `Provider「${key}」${RESOURCE_NAME_RULE}`
-    return
-  }
-  if (drafts.value.some((draft) => draft.id === key)) {
-    error.value = `Provider「${key}」已存在`
-    return
-  }
-  const model = preset?.model ?? ''
-  // 未落盘的新建草稿进 `localDrafts`（不能 push 进 `savedDrafts` 那份会被广播重建的镜像，
-  // 否则填了一半的 baseUrl / Key 会被下一次 `syncDrafts` 整条抹掉）。
-  localDrafts.value.push({
-    id: key,
-    // 新建一律从最通行的 `openai-compat` 起步（与 Schema 默认值、迁移口径一致）：
-    // 需要 Responses API 的网关是少数，用户会在折叠区自己切。
-    type: 'openai-compat',
-    baseUrl: preset?.baseUrl ?? '',
+/** 弹窗提交：构造新建草稿并复用 `saveProvider`（落盘 + 凭据）；成功后关闭弹窗并打开编辑卡 */
+async function addProvider(payload: ProviderAddPayload): Promise<void> {
+  const draft: ProviderDraft = {
+    id: payload.id,
+    type: payload.type as LlmProviderConfig['type'],
+    baseUrl: payload.baseUrl,
     apiKeyEnc: '',
-    model,
-    // 与 `syncDrafts` 同一口径：当前使用的模型就是列表里的第一个候选项
-    modelList: model === '' ? [] : [model],
-    // 生成参数按**模型 id** 键（v23）；三项写全 —— `reasoningEffort` 是三个子字段里
-    // 三项都写全。图片输入出厂**关**（docs/06 §3.1）：打开之前先确认
-    // 这个模型确实能看图，否则每一轮带图的消息都会被服务端 400 拒掉。
-    // `model` 为空（自定义 id + 还没填模型名）时不造条目，与迁移的语义一致。
-    modelParams:
-      model === ''
-        ? {}
-        : {
-            [model]: {
-              reasoningEffort: DEFAULT_REASONING_EFFORT,
-              contextWindow: 0,
-              vision: false,
-            },
-          },
-    apiKey: '',
+    model: payload.model,
+    modelList: [],
+    modelParams: {},
+    apiKey: payload.apiKey,
     apiKeySet: false,
-  })
-  newProviderId.value = ''
+  }
+  adding.value = true
   error.value = null
-  message.value = null
-  // 必填项前移：选中预设后直接进编辑卡，由卡内必填项当场校验（「空白配置」同理）
-  openEditor(key)
+  const ok = await saveProvider(draft)
+  adding.value = false
+  if (!ok) {
+    // 配置已落盘但凭据写入失败：关掉弹窗并打开编辑卡，避免同名 id 把用户卡在重复校验里。
+    if (settingsStore.settings?.llm.providers[draft.id] !== undefined) {
+      showAdd.value = false
+      openEditor(draft.id)
+    }
+    return
+  }
+  showAdd.value = false
+  message.value = `已添加 ${draft.id}`
+  openEditor(draft.id)
 }
 
 /** 删除入口：先亮出确认条，不直接生效 */
@@ -843,7 +808,6 @@ async function removeProvider(id: string): Promise<void> {
     error.value = settingsStore.error
     return
   }
-  localDrafts.value = localDrafts.value.filter((draft) => draft.id !== id)
   pendingRemoveId.value = null
   if (editingId.value === id) closeEditor()
   syncDrafts()
@@ -917,10 +881,14 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
     </header>
 
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
-    <AppToast v-if="error" tone="error">{{ error }}</AppToast>
+    <AppToast v-if="error && !showAdd" tone="error">{{ error }}</AppToast>
 
-    <!-- 默认模型（v37）：按 provider 分组的单个下拉，切换即保存（docs/08 §5） -->
-    <section v-if="savedDrafts.length > 0" class="section-card default-model-card">
+    <!-- 默认模型（v37）：按 provider 分组的单个下拉，切换即保存（docs/08 §5）。
+         v47：没有本机 provider 但有官方目录时也要渲染，否则官方模型没有选模入口。 -->
+    <section
+      v-if="defaultGroups.length > 0 || officialDefaultGroup !== null"
+      class="section-card default-model-card"
+    >
       <h2 class="section-title">默认模型</h2>
       <p class="section-desc">新建会话与未单独指定模型的会话默认调用它。</p>
       <select
@@ -972,49 +940,29 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
       </SettingField>
     </section>
 
-    <!-- 空状态：没有任何 provider 时不摆一排空行，直接给主入口（文案与主按钮保持不变） -->
-    <section v-if="drafts.length === 0" class="section-card empty-state" data-empty="llm.providers">
+    <!-- 空状态：既没有本机 provider 也没有官方目录时，不摆一排空行，直接给主入口 -->
+    <section
+      v-if="drafts.length === 0 && officialDefaultGroup === null"
+      class="section-card empty-state"
+      data-empty="llm.providers"
+    >
       <h2 class="section-title">还没有 AI 模型配置</h2>
       <p class="section-desc">添加一个 Provider 后主功能才可用；未配置时启动会进入首次引导向导。</p>
       <div class="row">
-        <AppButton variant="primary" @click="startAdd">添加 AI 模型</AppButton>
-      </div>
-    </section>
-
-    <!-- 工具行：新增与整体保存 -->
-    <div v-if="drafts.length > 0" class="row wrap toolbar">
-      <AppButton size="sm" :disabled="mode === 'add'" @click="startAdd">+ 添加 Provider</AppButton>
-      <AppButton size="sm" variant="primary" @click="saveAll">保存全部</AppButton>
-      <span class="grow" />
-      <span class="tiny muted">{{ drafts.length }} 个 Provider</span>
-    </div>
-
-    <!-- 添加流程（mode === 'add'）：预设 chips 沿用 PROVIDER_PRESETS，选中即进编辑卡 -->
-    <section v-if="mode === 'add'" class="section-card">
-      <div class="row">
-        <h2 class="section-title grow">添加 Provider</h2>
-        <AppButton size="sm" variant="ghost" @click="closeEditor">取消</AppButton>
-      </div>
-      <p class="section-desc">选一个预设快速填好 Base URL 与模型名，或填自定义 id 后手动配置。</p>
-      <div class="add-row">
-        <input
-          v-model="newProviderId"
-          class="input"
-          type="text"
-          spellcheck="false"
-          placeholder="自定义 provider id（可选）"
-        />
-        <AppButton
-          v-for="preset in PROVIDER_PRESETS"
-          :key="preset.id"
-          size="sm"
-          @click="addPreset(preset.id)"
-        >
-          + {{ preset.label }}
+        <AppButton variant="primary" data-action="add-llm-provider" @click="openAdd">
+          添加 AI 模型
         </AppButton>
-        <AppButton size="sm" variant="ghost" @click="addPreset('custom')">+ 空白配置</AppButton>
       </div>
     </section>
+
+    <!-- 工具行：新增入口 -->
+    <div v-if="drafts.length > 0 || officialDefaultGroup !== null" class="row wrap toolbar">
+      <AppButton size="sm" data-action="add-llm-provider" @click="openAdd">
+        + 添加 Provider
+      </AppButton>
+      <span class="grow" />
+      <span v-if="drafts.length > 0" class="tiny muted">{{ drafts.length }} 个 Provider</span>
+    </div>
 
     <!-- provider 目录行列表：行上只有名称 / 凭据状态 / 是否默认 / 行操作 -->
     <article
@@ -1072,9 +1020,6 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 
       <!-- 编辑卡：一次只渲染一张（editingId 是单值） -->
       <template v-if="isEditing(draft.id) && pendingRemoveId !== draft.id">
-        <p v-if="isCreating(draft.id)" class="tiny pending-note">
-          这条还没有保存：点「应用」后才写入配置。
-        </p>
         <!-- 必填区：三个 `data-field` 与重构前逐字一致（capture 抓手） -->
         <SettingField
           :data-field="`llm.providers.${draft.id}.baseUrl`"
@@ -1400,6 +1345,20 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 
     <!-- 生图模型区组（v8 新增）：独立 provider 体系，与聊天模型互不绑定 -->
     <ImageGenSection />
+
+    <!-- 添加 Provider 弹窗（v47）：页内不再展开添加表单 -->
+    <ProviderAddDialog
+      v-if="showAdd"
+      capability="llm"
+      title="添加 AI 模型"
+      :presets="PROVIDER_PRESETS"
+      :type-options="PROVIDER_TYPE_OPTIONS"
+      :existing-ids="existingProviderIds"
+      :busy="adding"
+      :error="error ?? ''"
+      @close="closeAdd"
+      @submit="addProvider"
+    />
   </section>
 </template>
 

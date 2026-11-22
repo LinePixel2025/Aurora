@@ -1724,14 +1724,14 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 - **可拖动区域**：设置窗顶部完整 32px 标题带（`.titlebar-drag`）与品牌行 `.brand` **都可以拖**；
   关闭按钮与其它交互元素挂 `no-drag`（`theme.css` 另有一条按标签兜底的规则）。
   `WindowCaption` 位于标题带右端，标题带其余区域始终可拖；内容滚动不再影响拖动入口。
-- **Aurora Center 页（v0.2.0；v0.2.1 起配对方式改为账号登录，docs/12 §7）**：`CenterPage.vue` 三张卡：
-  - **连接设置**（`CenterConnectionSection.vue`）：`center.enabled` / `center.serverUrl` /
-    `center.displayName` / **登录账号**（`data-field="center.account"`，回显 `center.account`）+
-    **登录密码**（`data-field="center.password"`，write-only，永不落配置）+
-    「登录并连接」按钮（走 `center:login` IPC，主进程调 `/api/client/login` 换令牌写入
-    `center.token` 凭据链路并自动启用连接；页面按 `settings.hasSecret('center.token')`
-    展示「已登录 / 未登录」）、`center.clientId` 只读展示（首次登录时由主进程生成）；
-    手填配对令牌的旧入口已移除（服务器端兼容路径保留，见 docs/12 §3）；
+- **Aurora Center 页（v0.2.0；v47 起固定官方地址 + 仅网页登录）**：`CenterPage.vue` 三张卡：
+  - **连接设置**（`CenterConnectionSection.vue`）：`center.enabled`（总开关）/
+    `center.serverUrl`（**只读固定地址** `CENTER_SERVER_URL` = `http://120.24.223.65:8787`，
+    设置页不再提供地址输入、不可改向）/ `center.displayName` / **「登录账户」按钮**
+    （设备授权登录：`center:deviceLogin`，主进程打开浏览器进 Center 网页确认并后台轮询拿令牌）+
+    「已登录 / 未登录」badge + `center.clientId` 只读展示（首次登录时由主进程生成，空 = 尚未生成）。
+    **没有** Center 账号输入、登录密码输入与「密码登录」按钮，`center.account` 只作为登录后的
+    账号名展示；卡片底部「保存」把开关 / 展示名与固定地址一并走 `settings:update` 落盘。
   - **远程控制许可**（`CenterPermissionsSection.vue`）：`center.allowRemoteSession` /
     `center.allowRemoteConfig` / `center.allowFileTransfer` 三个开关 + `center.maxFileMb`
     （1–512，保存时夹取）——这些是 Center 远程操作本机的**最终闸门**（docs/12 §7）；
@@ -1740,7 +1740,8 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
     disabled 灰。
   - **保存链路分工**：卡片字段整卡走 `settings:update`（`{ center: {...} }` 顶层浅合并，
     不含 `tokenEnc` / `clientId`；主进程合并时运行期剥 `tokenEnc` 防构造 patch 洗密文）；
-    令牌由 `center:login` 在主进程内直写凭据链路，页面不经手。
+    令牌由 `center:deviceLogin` 在主进程内直写凭据链路，页面不经手。
+    **「官方模型」区组已移除（v47）**：四类官方模型的选择并入对应模型管理页，见 §7 与 docs/08 §8；
 - 常规页（**BetaV2**：「启动」/「项目」/「提示条」/「勿扰时段」/「关于与更新」）：
   「启动」区组内、开机自启（`general.launchAtLogin`）之下是 **「以管理员身份运行」**
   （v20 新增，`data-field="general.requireAdmin"`，常显 checkbox）—— 启动时未提权会用 UAC
@@ -1764,22 +1765,37 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
     `settings.classisland-notify-result`。按钮调用 `classisland:notify`（固定 `channel: 'custom'`），
     成功显示耗时并刷新回显，失败就地给出原因（插件不是 v3 / 命令通道关闭 / 超时）。
     **渲染层发送时只传字面量对象**：Vue 的 `reactive` / `ref` 代理过不了结构化克隆（`AGENTS.md`）。
-- **AI 模型页（本轮重写；BetaV2 增补）**：**目录行列表 + 一次只开一张编辑卡**（`editingId` 单值），不再平铺所有卡片——
+- **AI 模型页（本轮重写；BetaV2 增补；v47 添加弹窗）**：**默认模型卡 + 目录行列表 +
+  一次只开一张编辑卡**（`editingId` 单值），不再平铺所有卡片——
+  默认模型（`llm.defaultModel`）下拉在**有本机 provider 或官方目录可用**时渲染
+  （切换即保存；目录只有官方模型时也渲染，否则官方模型没有选模入口）；
+  工具行只有 `+ 添加 Provider`（`data-action="add-llm-provider"`），**不再有「保存全部」**；
+  添加走**模态弹窗**（`settings.add-provider`，字段锚点
+  `settings.add-provider.{id,type,baseUrl,apiKey,model}`，取消 `cancel-add-provider`），
+  提交成功关闭弹窗并**自动打开该 provider 的编辑卡**。
   行上只有名称 + 凭据状态 badge（`凭据已保存` / `缺少凭据`）+ 行操作
   （`编辑` / `删除`）；当前默认行带 `.accent` 描边，行 hover 用 `--fill-2`；
   `删除` 是危险操作，先就地弹确认条（`data-action="confirm-remove-provider"`）再生效；
-  列表为空时是 `data-empty="llm.providers"` 的空状态卡。BetaV2 新增：「显示思考过程」开关
-  （`data-field="general.chat.showThinking"`）与**生图模型区组**（enabled / active / provider 编辑，
-  锚点 `imagegen.*`）。详情见 docs/08 §5。
+  **本机列表与官方分组都为空**时才是 `data-empty="llm.providers"` 的空状态卡。BetaV2 新增：
+  「显示思考过程」开关（`data-field="general.chat.showThinking"`）与**生图模型区组**
+  （enabled / active / provider 编辑，锚点 `imagegen.*`；添加同样走 `settings.add-provider`
+  弹窗，入口 `add-imagegen-provider`）。详情见 docs/08 §5。
   模型行内参数里的「支持图片输入」（`data-field` 锚点 `…modelParams.<模型 id>.vision`）勾选后，
   除图片附件按分片下发外，还会给模型**注册图像工具**（`view_image` / `screenshot` /
   `clipboard_read_image`，见 06 §25）。
-- **语音页（P6+ 语音轮 新增；BetaV2 扩为 TTS + STT 双区组）**：页面提供 TTS 区组 —— 总开关（`tts.enabled`）、
-  默认 TTS 模型（`tts.active`）、自动朗读（`tts.autoRead`）、截断上限（`tts.maxChars`），
-  以及 TTS provider 列表的**增 / 改 / 删 + 「试听」**；BetaV2 新增 **STT 区组**（`stt.enabled` / `stt.active` /
-  provider 的 type / baseUrl / model / apiKey / language，锚点 `stt.*`；
-  v24 起「接口协议」（`type`，`openai-compat` / `dashscope-native`）是编辑卡的**第一项**，
-  切换后 baseURL / 模型名的提示词随之改写 —— 两套接口的字段语义不同，见 docs/06 §15.1）。
+- **语音页（P6+ 语音轮 新增；BetaV2 扩为 TTS + STT 双区组；v47 添加弹窗）**：页面提供 TTS 区组 ——
+  总开关（`tts.enabled`）、默认 TTS 模型（`tts.active`）、自动朗读（`tts.autoRead`）、
+  截断上限（`tts.maxChars`），以及 TTS provider 列表的**增 / 改 / 删 + 「试听」**；
+  **添加走模态弹窗**：`添加 TTS 模型` / `+ 添加 TTS 模型`（`add-tts-provider`）→
+  `settings.add-provider`，字段锚点 `settings.add-provider.{id,type,baseUrl,apiKey,model,voice,
+  instructions,language,speed,format}`（后四项为 TTS 专属），取消 `cancel-add-provider`；
+  提交成功关闭弹窗并**自动打开编辑卡**（继续拉模型列表 / 试听）。
+  BetaV2 新增 **STT 区组**（`stt.enabled` / `stt.active` / provider 的 type / baseUrl / model /
+  apiKey / language，锚点 `stt.*`；添加同样走 `settings.add-provider` 弹窗，
+  入口 `add-stt-provider`，字段锚点 `settings.add-provider.{id,type,baseUrl,apiKey,model,language}`，
+  成功后自动打开编辑卡）。v24 起 STT「接口协议」（`type`，`openai-compat` / `dashscope-native`）
+  是编辑卡的**第一项**，切换后 baseURL / 模型名的提示词随之改写 —— 两套接口的字段语义不同，
+  见 docs/06 §15.1。TTS / STT 列表顶部各有只读 `center-*` 官方行（行内下拉选官方模型，见 §7）。
   凭据行的展示规则与 AI 模型页一致（只显示「凭据已保存 / 缺少凭据」，密文不进渲染层）。
   字段与门控矩阵见 docs/08 §1 / §6.1。
 - **Agent 五页（2026-11 拆分；原「Agent 设置」单页，2026-10 前该页称「智能与工具」）**：左栏新增
@@ -1828,8 +1844,13 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
     全局 `projects.current` 一级已于 v25 退役）、敏感工具需逐次确认（确认开关在「系统 → 安全」，
     关闭后不经确认直接执行）只在工具组说明里完整表述一次；工作目录长说明、页尾安全提示与
     原常驻警示 Toast 里与之重复的表述删除，页副标题只保留导航信息。
-- **MCP 服务器页（`agent-mcp`）区组（本轮增补）**：服务器编辑新增「自定义请求头」输入 —— 多行 `Key: Value`、每行一个
-  （HTTP 传输的鉴权头等场景，`mcp.servers.<id>.headersEnc`，v9 新增）；已配置的头在服务器条目上
+- **MCP 服务器页（`agent-mcp`）区组（本轮增补）**：**添加服务器走模态弹窗（v47）**——
+  入口 `添加服务器`（`data-action="add-mcp-server"`）→ `settings.add-mcp`；字段锚点
+  `settings.add-mcp.{name,transport,command,args,url,env,headers}`（URL / headers 仅 HTTP 传输），
+  取消 `cancel-add-mcp`。名称沿用资源名规则（禁 `.`）且不许重名；Esc / 点遮罩 / 取消不写配置；
+  提交成功关闭弹窗、列表出现新行（MCP 没有独立编辑卡），页级 Toast 回执。
+  弹窗内「自定义请求头」输入为多行 `Key: Value`、每行一个（HTTP 传输的鉴权头等场景，
+  `mcp.servers.<id>.headersEnc`，v9 新增）；已配置的头在服务器条目上
   按名字列出并注明「值已加密存储」（读主进程补的只读标记 `headersSet`，与 env 的 `envSet` 同款），
   留空 = 不改动已有值，删除某一行 = 删除该头。编辑交互与「环境变量」完全同款，
   字段与凭据链路见 docs/08 §1 / §1.1。
@@ -2188,14 +2209,18 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      **v0.8.1 新增 `settings-subagent-create.png`**：在子代理页点「新建子代理」打开弹窗，
      断言弹窗在、四个字段 / Aurora 起草入口 / 提交按钮齐全，check 内点「取消」收尾
      （见下面「子代理创建弹窗」一条）→
+     **v47 新增 `settings-llm-add.png` / `settings-mcp-add.png`**：分别打开 AI 模型页
+     「+ 添加 Provider」与 MCP 页「添加服务器」的模态弹窗，断言字段齐全后点「取消」收尾
+     （不提交，避免遮罩污染后续设置页截图）→
      `settings-legacy-tts-alias.png` / `settings-legacy-agent-alias.png`（旧深链 `?page=tts` 与
      `?page=agent` 经 `LEGACY_PAGE_ALIASES` 分别落到「语音」页 / 「电脑操控」页；`skills` / `mcp`
      走同一张映射表）→ `settings-drag.png` →
      `settings-llm-models.png` → `settings-llm-default.png`（v37 默认模型下拉）→
      `settings-llm-params.png` → `settings-llm-structure.png` →
-     `settings-tts-card.png`（深链用旧 id `tts`，顺带覆盖「旧链接上编辑卡流程照常可用」）→
-     `settings-stt-card.png`（v24 新增；深链用新页 id `voice`，打开 STT 编辑卡并断言
-     「接口协议」切到阿里云原生时 baseURL 提示词被改写）→
+     `settings-tts-card.png`（深链用旧 id `tts`，顺带覆盖旧链接兼容；**v47 起拍的是
+     「添加 TTS 模型」弹窗**：断言八个字段与三档接口类型都在，点取消收尾）→
+     `settings-stt-card.png`（v24 新增；深链用新页 id `voice`；**v47 起拍 STT 添加弹窗**，
+     断言五个字段且「接口协议」切到阿里云原生时 baseURL 提示词被改写，点取消收尾）→
      `settings-classroom-patch.png` → `settings-modes-work-gating.png` →
      `settings-appearance-glass-off.png`（v32：act 关掉 `appearance.glass`，`mainAct` 断言**原生材质真的摘掉**
      —— 必须在 check 的还原动作之前读，放到 `nativeCheck` 只会读到"已还原"的假结果；
@@ -2203,6 +2228,9 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      check 断言文档根 `data-glass="off"` 与 `--glass-filter: none` / `--glass-content` 换成基座色，
      收尾还原成开，后续场景与两档主题图仍看到默认档）。
      「思考等级 / 结构 / 模型列表」三条的配置改写与恢复口径见下面各条探针说明。
+     **v47 Center 页探针**：`settings-center.png` 断言固定地址以只读文本出现、**没有** Center
+     账号 / 密码输入与「密码登录」按钮、**没有** `center.officialModels*` 锚点，且**不点击登录**
+     （会真的打开浏览器）；页面循环本身仍按 `SETTINGS_PAGE_IDS` 出图。
   5. **提示条收尾**：`edge-bar-collapsed-final.png`（收起，不留展开态）→
      `edge-bar-after-click.png`（先 `hide('chat')` 复位再点竖条，回归「点击呼出交互窗」）。
      `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）；
@@ -3020,24 +3048,29 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
   对话含工具结果、实时事件与持久化快照合并）；**「一个写者」原则**（任何回复只能经父代理转达）
   正好解释了为什么视图里没有输入框 —— 这是设计决定，不是没做完。
 
-## 7. Aurora Center 官方模型与自托管更新（v31）
+## 7. Aurora Center 官方模型与自托管更新（v31；v47 起默认开启）
 
-桌面端 Center 设置页新增「官方模型」区组，未登录或目录不可用时整组禁用：
+`center.officialModels` 四类能力（语言模型 / 生图 / TTS / STT）默认 `enabled: true`（v47；
+迁移 `v46 → v47` 把存量配置的四项置真并保留已选 `model`）。
+**桌面端 Center 设置页不再有「官方模型」区组**：Center 页只保留连接设置 / 远程控制许可 /
+连接状态，四类官方模型的选模入口并入对应模型管理页 ——
 
-- 四行分别对应语言模型、生图、TTS、STT；每行有启用开关与模型下拉；
-- 模型目录来自 Center，普通用户看不到上游地址与 API Key；
+- **语言模型**：AI 模型页「默认模型」下拉的「Aurora Center 官方」分组（`<optgroup>`）；
+  选中会同时写 `llm.active = 'center-llm'`、`center.officialModels.llm = { enabled: true, model }`。
+  Provider 列表里**没有**官方语言模型卡片。
+- **TTS / STT / 生图**：各自 provider 列表顶部一条**只读官方行**（`center-tts` /
+  `center-stt` / `center-imagegen`），行内模型下拉写 `center.officialModels.<cap>.model`；
+  在下拉里选中任意模型即 `enabled: true`。官方行不能编辑凭据 / Base URL / 模型项或删除，
+  只能在其中选模型。
+- **官方行的出现条件**：`officialModels.<cap>.enabled` 为 true，**或**该能力的目录 / 镜像
+  Provider 可用（v47）—— 没有 Center 页总开关后，这条保证配置被外部置 `false` 时仍有入口选回来。
 - **语言模型不再「全局覆盖」**（2026-10-24）：`llm.active` 是全局默认唯一事实来源，
-  只有它指向 `center-llm` 时才使用官方模型。Center 页的 LLM 开关首次开启会把默认切到官方；
-  关闭时若默认仍是官方则回落到首个可用本机 provider。用户在 AI 模型页选本机后，
-  官方开关保持可用（会话模型选择器仍可覆盖到官方），但不再顶替本机默认；
-  开关开启而默认在本机时，LLM 行补一行「当前默认：本机模型 <id>」状态；
-- Center 不可用或模型被停用时回落本地 Provider，并在当前会话首次提示，不阻塞回复。
+  只有它指向 `center-llm` 时才使用官方模型；本文档的模型选择器（会话级）仍可覆盖到官方。
+  用户在 AI 模型页选本机模型即切回本机默认，官方选择保留、不阻塞后续再选官方。
+- Center 不可用或模型被停用时回落本地 Provider，并在当前会话首次提示，不阻塞回复；
+  目录不可用时官方行保留并标注「Center 暂不可用」。
 
-勾选 TTS / STT / 生图官方服务后，对应 Provider 页显示只读 `center-*` 卡片，并加入默认模型
-下拉；卡片不能编辑凭据、Base URL、模型或删除。切回本地模型不会关闭
-Center 开关，官方卡片继续展示并标记为未作为默认；目录不可用时保留卡片并标注暂不可用。
-语言模型的全局默认只通过「AI 模型」页的默认模型下拉（含官方分组）与 Center 页 LLM 开关写入
-`llm.active`；Provider 页不展示官方语言模型卡片。会话模型选择器仍可在会话内覆盖到官方。Center Web 新增 `#/usage`：用户看本人，管理员可按用户、
+模型目录来自 Center，普通用户看不到上游地址与 API Key。Center Web 新增 `#/usage`：用户看本人，管理员可按用户、
 设备、模型筛选全站；两页均显示总量卡、输入/输出/缓存折线图与最近记录。管理页新增
 官方模型配置与 Release 管理卡。
 
