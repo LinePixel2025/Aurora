@@ -983,7 +983,9 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   不在「＋」新建菜单里）。容器锚点 `data-field="chat.subagent-panel"`，头部依次是
   名称（`chat.subagent-panel-title`）/ 状态（`chat.subagent-panel-status`）/
   权限徽章（`chat.subagent-panel-access`）/ 模型（`chat.subagent-panel-model`）/ 耗时，
-  下方是两行截断的任务指令，正文复用 `SubagentConversation`（只读口径与页面一致）。
+  正文复用 `SubagentConversation`（只读口径与页面一致）。
+  **v0.8.1 起不再单列「任务指令」两行**：对话视图的首条消息就是主代理的任务指令气泡，
+  同一段文字出现两遍只会挤占窄面板的高度。
   空态锚点 `chat.subagent-panel-empty`（切到没派过子代理的会话时）。
   - **打开 / 聚焦**：`App.vue` 的 `openSubagentPanel({ callId, taskId })` 统一入口 ——
     `contextOpen = true` → `ensureKind('subagent')` → 写焦点 → `nextTick` 后标题设成子代理名

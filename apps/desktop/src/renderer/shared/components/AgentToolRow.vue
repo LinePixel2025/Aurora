@@ -259,15 +259,18 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
           子代理行：**独立对话视图**（2026-09，docs/06 §19 / docs/07 §2.3）。
           展开体里直接给完整对话（任务指令 → 正文 → 工具调用与结果 → 最终报告），
           与「子代理」页面用的是同一个组件。
+          **v0.8.1 起不再在后面重复「参数 / 结果」**：对话已包含任务指令、每次工具调用的
+          参数与结果、最终报告，是严格超集；两块并排只会让同一段内容说两遍。
         -->
         <template v-if="call.subagent">
-          <span class="tiny muted tool-label">对话</span>
           <SubagentConversation :snapshot="call.subagent" />
         </template>
-        <span class="tiny muted tool-label">参数</span>
-        <pre class="mono tool-args">{{ prettyInput(call.input) }}</pre>
-        <span class="tiny muted tool-label">结果</span>
-        <p class="tool-output">{{ call.outputSummary ?? stateLabel(call.state) }}</p>
+        <template v-else>
+          <span class="tiny muted tool-label">参数</span>
+          <pre class="mono tool-args">{{ prettyInput(call.input) }}</pre>
+          <span class="tiny muted tool-label">结果</span>
+          <p class="tool-output">{{ call.outputSummary ?? stateLabel(call.state) }}</p>
+        </template>
       </div>
     </Transition>
   </article>

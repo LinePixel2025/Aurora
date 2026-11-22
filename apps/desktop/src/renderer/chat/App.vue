@@ -103,7 +103,16 @@ import { usePluginsStore } from '../shared/plugins-store.js'
 import { isTtsConfigured } from '../shared/tts-config.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, planTaskOf, slashQueryOf, type SlashItem } from './slashCommands.js'
-import { ArrowUp, ClipboardList, Mic, PanelLeft, Trash2, X } from '@aurora/shared/browser'
+import {
+  ArrowUp,
+  CircleCheck,
+  ClipboardList,
+  Mic,
+  PanelLeft,
+  Trash2,
+  TriangleAlert,
+  X,
+} from '@aurora/shared/browser'
 import type { ComputerUseEvent, ComputerUseStatus } from '@aurora/shared'
 
 const chat = useChat('chat', 'main')
@@ -1129,26 +1138,48 @@ async function startWorkSession(): Promise<void> {
 }
 
 /**
- * 「添加项目」的结果提示（2026-10-01）。
+ * 左栏动作 / 计划模式等**短回执**（2026-10-01；v0.8.1 改为主区顶部居中通知）。
  *
  * **独立于 `chatError` / `pickerHint`**：那两个都渲染在 composer 里，而 composer 只在
  * `view === 'chat'` 时挂载 —— 左栏的「添加项目」在子代理 / 自动化页照样能点，
  * 提示就必须在任何视图下都看得见（否则又回到"点了什么都不发生"）。
  * 成功 2.6 秒自散；失败留 6 秒（够读完，又不会变成常驻噪声；下次再点会先清掉）。
+ *
+ * v0.8.1：位置从窗口左下角移到**主区顶部居中**。旧位置会压住左栏底部的模式徽章 / 设置齿轮，
+ * 且旧实现用近乎透明的 `--glass-surface`，左栏文字透上来像「字体重叠」。现在实底 + 阴影 +
+ * 可关闭，并带一条按剩余时间收缩的进度条。
  */
-const projectNotice = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
+const PROJECT_NOTICE_OK_MS = 2_600
+const PROJECT_NOTICE_ERR_MS = 6_000
+
+const projectNotice = ref<{
+  tone: 'ok' | 'error'
+  text: string
+  durationMs: number
+} | null>(null)
 let projectNoticeTimer: number | null = null
 
+function clearProjectNotice(): void {
+  if (projectNoticeTimer !== null) {
+    window.clearTimeout(projectNoticeTimer)
+    projectNoticeTimer = null
+  }
+  projectNotice.value = null
+}
+
 function flashProjectNotice(tone: 'ok' | 'error', text: string): void {
-  projectNotice.value = { tone, text }
+  const durationMs = tone === 'ok' ? PROJECT_NOTICE_OK_MS : PROJECT_NOTICE_ERR_MS
+  projectNotice.value = { tone, text, durationMs }
   if (projectNoticeTimer !== null) window.clearTimeout(projectNoticeTimer)
-  projectNoticeTimer = window.setTimeout(
-    () => {
-      projectNotice.value = null
-      projectNoticeTimer = null
-    },
-    tone === 'ok' ? 2600 : 6000,
-  )
+  projectNoticeTimer = window.setTimeout(() => {
+    projectNotice.value = null
+    projectNoticeTimer = null
+  }, durationMs)
+}
+
+/** 用户点 ×：立刻收掉（不等自动计时） */
+function dismissProjectNotice(): void {
+  clearProjectNotice()
 }
 
 /**
@@ -1163,11 +1194,7 @@ function flashProjectNotice(tone: 'ok' | 'error', text: string): void {
  * 旧实现把「取消」与「出错」压成同一个 `null` 直接返回，用户点完什么都看不到。
  */
 async function addProject(): Promise<void> {
-  if (projectNoticeTimer !== null) {
-    window.clearTimeout(projectNoticeTimer)
-    projectNoticeTimer = null
-  }
-  projectNotice.value = null
+  clearProjectNotice()
   if (!settingsStore.settings) return
   const picked = await pickProjectEntry()
   if (picked.kind === 'canceled') return
@@ -1510,6 +1537,9 @@ const offCenterRuntimeNotice = window.aurora.center.onRuntimeNotice((notice) => 
 onUnmounted(() => {
   offCenterRuntimeNotice()
   if (centerRuntimeNoticeTimer !== null) window.clearTimeout(centerRuntimeNoticeTimer)
+  // 顶部通知的自动消散计时器（v0.8.1）：窗口卸载时收掉，别让回调打到已卸载的组件
+  if (projectNoticeTimer !== null) window.clearTimeout(projectNoticeTimer)
+  projectNoticeTimer = null
 })
 let ttsErrorTimer: number | null = null
 
@@ -2569,6 +2599,43 @@ async function markGuideDone(): Promise<void> {
     <!-- ── 主区 ── -->
     <main class="main anim-pane">
       <!--
+        顶部居中通知（v0.8.1，docs/07 §2.3）：项目创建 / 计划模式进出 / 计划批准 /
+        标签上限 / Computer Use 授权等短回执共用这一条。位置在主区标题栏下方、`<main>`
+        内绝对定位 —— 不再压左栏文字；实底 + 阴影保证不与背后的正文混成「字体重叠」。
+        容器不接收指针（只有 × 可点），因此不挡正文的选中 / 点击。
+      -->
+      <Transition name="notice">
+        <div
+          v-if="projectNotice !== null"
+          class="shell-notice"
+          :class="`t-${projectNotice.tone}`"
+          :style="{ '--notice-ms': `${projectNotice.durationMs}ms` }"
+          data-field="chat.project-notice"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="notice-icon" aria-hidden="true">
+            <component
+              :is="projectNotice.tone === 'ok' ? CircleCheck : TriangleAlert"
+              :size="15"
+              :stroke-width="1.9"
+            />
+          </span>
+          <span class="notice-text">{{ projectNotice.text }}</span>
+          <button
+            type="button"
+            class="notice-close"
+            aria-label="关闭提示"
+            title="关闭提示"
+            @click="dismissProjectNotice"
+          >
+            <X :size="13" :stroke-width="2" aria-hidden="true" />
+          </button>
+          <span class="notice-progress" aria-hidden="true" />
+        </div>
+      </Transition>
+
+      <!--
         双击头部拖动区 = 切换最大化：frame:false 窗口的 drag region 双击由 Windows 原生接管
         （`maximizable: true` 后 WM_NCLBUTTONDBLCLK 语义），页面侧不再挂 dblclick——
         拖动区收不到页面鼠标事件，重复挂只会造成双重切换。最大化期间几何不落盘（persistGeometry 跳过）。
@@ -3095,13 +3162,9 @@ async function markGuideDone(): Promise<void> {
     <ZoomBadge />
 
     <!--
-      左栏动作的结果提示（「添加项目」成功 / 失败，2026-10-01）：挂在 app-shell 层而不是
-      composer 里 —— composer 只在 `view === 'chat'` 时挂载，而左栏那个按钮在子代理 /
-      自动化页照样能点，提示必须跟着它走。`pointer-events: none` 保证不挡住左栏底部的按钮。
+      左栏动作 / 计划模式的结果提示（v0.8.1 起在 `<main>` 内顶部居中渲染，见上面的
+      `chat.project-notice`）：这里不再保留旧的「窗口左下角固定 Toast」。
     -->
-    <div v-if="projectNotice !== null" class="shell-toast" data-field="chat.project-notice">
-      <AppToast :tone="projectNotice.tone">{{ projectNotice.text }}</AppToast>
-    </div>
   </div>
 </template>
 
@@ -3135,16 +3198,116 @@ async function markGuideDone(): Promise<void> {
 }
 
 /*
- * 左栏动作的结果提示：固定在窗口左下角（浮在左栏之上，不参与三栏 grid 排版）。
- * 不挡点击（`pointer-events: none`）—— 它可能盖住左栏底部的模式徽章 / 设置齿轮。
+ * 顶部居中通知（v0.8.1）：项目创建 / 计划模式进出等短回执。
+ * 锚在主区标题栏下方、主区水平居中 —— 不压左栏文字（旧实现固定在窗口左下角会盖住
+ * 模式徽章 / 设置齿轮）；实底 `--bg-raised` + 描边 + `--shadow-2` 保证不与背后正文
+ * 混成「字体重叠」（旧实现用近透明玻璃底）。
+ * `pointer-events: none` 只让关闭按钮可点，正文的选中与点击不被挡住。
  */
-.shell-toast {
-  position: fixed;
-  left: var(--space-3);
-  bottom: var(--space-3);
-  z-index: 60;
-  max-width: 320px;
+.shell-notice {
+  position: absolute;
+  top: calc(var(--head-h) + var(--space-2));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: min(560px, calc(100% - var(--space-6)));
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-2);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  overflow: hidden;
   pointer-events: none;
+}
+
+.shell-notice.t-ok {
+  border-color: color-mix(in srgb, var(--status-ok) 35%, var(--border-subtle));
+}
+
+.shell-notice.t-error {
+  border-color: color-mix(in srgb, var(--status-error) 45%, var(--border-subtle));
+}
+
+.notice-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--status-ok);
+}
+
+.shell-notice.t-error .notice-icon {
+  color: var(--status-error);
+}
+
+.notice-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.notice-close {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--text-muted);
+  pointer-events: auto;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.notice-close:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+/* 自动消散进度：时长由内联 `--notice-ms` 给出（成功 2.6s / 失败 6s） */
+.notice-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--aurora-gradient);
+  transform-origin: left center;
+  animation: notice-countdown var(--notice-ms, 3000ms) linear both;
+}
+
+@keyframes notice-countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notice-progress {
+    animation: none;
+  }
+}
+
+/* 进 / 出：轻微下移淡入（不从 0 高度展开 —— 它是浮层，不参与主区排版） */
+.notice-enter-active,
+.notice-leave-active {
+  transition:
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-standard);
+}
+
+.notice-enter-from,
+.notice-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-6px);
 }
 
 /* ── 左栏 / 右栏的公共折叠语义 ── */
@@ -3306,6 +3469,8 @@ body.col-resizing .nav {
    * 内容 tint，避免后方窗口文字直接穿过正文。侧栏 / 标题栏仍用各自更厚的玻璃层。
    */
   background-color: var(--glass-content);
+  /* 顶部居中通知（`.shell-notice`）以本元素为定位上下文：只在主区内居中、不压左栏 */
+  position: relative;
 }
 
 .head {

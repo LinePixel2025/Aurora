@@ -117,10 +117,12 @@ watch(selected, (run) => emit('title', run?.agentName?.trim() ?? ''), { immediat
         </span>
       </header>
 
-      <p class="tiny muted panel-prompt">{{ selected.prompt }}</p>
-
+      <!--
+        头部已经给了名称 / 权限 / 模型，对话本体不再重复一行元信息。
+        v0.8.1 起也**不再单列两行任务指令**：对话视图的首条消息就是主代理的任务指令
+        （右对齐气泡），同一段文字出现两遍反而把窄面板挤满。
+      -->
       <div class="panel-body">
-        <!-- 头部已经给了名称 / 权限 / 模型，对话本体不再重复一行元信息 -->
         <SubagentConversation :snapshot="selected" :show-meta="false" />
       </div>
     </template>
@@ -210,14 +212,7 @@ watch(selected, (run) => emit('title', run?.agentName?.trim() ?? ''), { immediat
   text-overflow: ellipsis;
 }
 
-/* 任务指令：两行截断（完整指令在对话首条气泡里，不在这里重复整段） */
-.panel-prompt {
-  margin: 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
+/* v0.8.1 起任务指令只在对话视图的首条气泡里出现（不再另设两行截断行） */
 
 .panel-body {
   flex: 1;

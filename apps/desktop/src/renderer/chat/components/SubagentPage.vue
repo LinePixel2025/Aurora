@@ -225,6 +225,9 @@ function statusLabel(status: SubagentRun['status']): string {
           <br />
           它的过程与报告会出现在这里。
         </p>
+        <p class="tiny muted">
+          想创建自己的子代理？到「设置 → Agent → 子代理」点「新建子代理」，也可以让 Aurora 起草。
+        </p>
       </div>
     </div>
   </section>
