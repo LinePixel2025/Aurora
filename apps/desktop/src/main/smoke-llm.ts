@@ -17,6 +17,7 @@ import { createServer, type Server, type ServerResponse } from 'node:http'
 import { createNoopLogger, type Logger } from '@aurora/shared'
 import { TITLE_PROMPT_MARKER } from './session-title.js'
 import { SMART_DIGEST_PROMPT_MARKER } from './smart-reminder.js'
+import { SUBAGENT_DRAFT_PROMPT_MARKER } from './subagent-draft.js'
 
 export const STUB_MARKER = 'AURORA_STUB_OK'
 export const STUB_MODEL = 'aurora-smoke-model'
@@ -44,6 +45,16 @@ export const REASONING_MARKER = 'STUB_REASONING_OK'
  */
 export const STUB_DIGEST_SUMMARY =
   '免打扰期间共 1 条提醒被静默：一条测试提醒已按当前设置入队，无阻塞事项（桩摘要）。'
+/**
+ * 子代理起草分流（v0.8.1，docs/06 §19.6）的固定草稿：冒烟据此断言
+ * `subagents:draft` 的返回形状（名称 / 用途 / 指令 / 档位）与「不写配置」。
+ */
+export const STUB_SUBAGENT_DRAFT = JSON.stringify({
+  name: '冒烟审查员',
+  description: '冒烟自测用的只读审查员，检查改动与遗漏项，只读不改。',
+  instructions: '你是冒烟自测用的代码审查员。先读改动，再按风险排序给出结论与文件行号。',
+  access: 'read',
+})
 /** 子代理最终报告里的标记 */
 export const SUBAGENT_REPORT_MARKER = 'STUB_SUB_OK'
 
@@ -299,7 +310,8 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         item.path.endsWith('/chat/completions') &&
         !isClassifyRequest(item) &&
         !isTitleRequest(item) &&
-        !isDigestRequest(item),
+        !isDigestRequest(item) &&
+        !isSubagentDraftRequest(item),
     )
   const classifyRequests = (): StubRequest[] =>
     requests.filter((item) => item.path.endsWith('/chat/completions') && isClassifyRequest(item))
@@ -325,7 +337,8 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       if (
         path.endsWith('/chat/completions') &&
         !isTitleRequest(record) &&
-        !isDigestRequest(record)
+        !isDigestRequest(record) &&
+        !isSubagentDraftRequest(record)
       ) {
         recordedRequests.push({
           messages: body?.messages ?? [],
@@ -396,6 +409,24 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
             {
               index: 0,
               delta: { content: STUB_DIGEST_SUMMARY },
+              finish_reason: null,
+            },
+          ],
+        })
+        sendSseStop(res)
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
+      // ── 子代理起草分流（v0.8.1，docs/06 §19.6）：必须像标题 / 汇总一样排除在对话计数之外
+      //    （用户点「生成草稿」会发一次普通对话请求，按计数寻址的默认分流会被顶掉）──
+      if (isSubagentDraftRequest(record)) {
+        sendSse(res, {
+          choices: [
+            {
+              index: 0,
+              delta: { content: STUB_SUBAGENT_DRAFT },
               finish_reason: null,
             },
           ],
@@ -1089,6 +1120,16 @@ function isDigestRequest(request: StubRequest): boolean {
       message.role === 'user' &&
       typeof message.content === 'string' &&
       message.content.includes(SMART_DIGEST_PROMPT_MARKER),
+  )
+}
+
+/** 请求是否为子代理起草请求（v0.8.1）：user 正文带 `AURORA_SUBAGENT_DRAFT` 标记。 */
+function isSubagentDraftRequest(request: StubRequest): boolean {
+  return (request.body?.messages ?? []).some(
+    (message) =>
+      message.role === 'user' &&
+      typeof message.content === 'string' &&
+      message.content.includes(SUBAGENT_DRAFT_PROMPT_MARKER),
   )
 }
 

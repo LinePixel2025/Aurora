@@ -57,13 +57,14 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、310 条断言应当全绿（2026-11-22 实测 `SUMMARY 310/310 passed`；v45 计划模式 +11；
+  **全量约 40 秒、312 条断言应当全绿（2026-11-22 实测 `SUMMARY 312/312 passed`；v45 计划模式 +11；
   2026-11-18 实测 297/297；2026-11-07 实测 283/283；v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
   v36 插件系统 +24、小组件与推送 +4、v37 小组件层级 / 材质 +4、插件配置窗口 +1、
   流光提醒 +4、默认提醒方式 +5、提醒细节 +6、插件用量统计 +1、小组件不可激活 / 固定 +3、
   v39 Computer Use +5、v40 智慧提醒 §2.5 +6、v41 轮终改动汇总 / 任务完成提醒 +2、
   统一缩放 +3、v42 自定义提示音 §2.4.1 +4、v43 TTS +7、v44 智慧提醒延迟投递 +2、
-  v0.7.2 Win10 材质降级 +2、v46 具名子代理 +2 条断言（合计 **310**，提交轮全量实测确认）；
+  v0.7.2 Win10 材质降级 +2、v46 具名子代理 +2、v0.8.1 Aurora 起草子代理 +2 条断言
+  （合计 **312**，提交轮全量实测确认）；
   示例插件缺席等环境差异会少 3 条，以当轮 SUMMARY 为准）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
@@ -93,9 +94,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   2026-11-12 文件面板重做新增 `chat-file-office`（Office 正文 / 搜索排序 / 信息卡 + 自动系统打开）
   与 `chat-file-layout`（版式页图 + 翻页，无 OfficeCLI / Edge 时**显式跳过**）2 个场景；
   2026-11-14 统一缩放新增 `settings-zoom` / `settings-zoom-reset` 2 个场景）：
-  **全量 136 条 checks**（2026-11-22 实测）——
-  本机全量单轮 **127 条**（含 `dialog`；2026-11 新增 Agent 五页、计划模式 3 个场景、
-  子代理页面 / 查看器 2 个场景）
+  **全量 137 条 checks**（2026-11-22 实测）——
+  本机全量单轮 **128 条**（含 `dialog`；2026-11 新增 Agent 五页、计划模式 3 个场景、
+  子代理页面 / 查看器 2 个场景、v0.8.1 子代理创建弹窗 1 个场景）
   + onboarding 6 + memory/awareness-glow 3。
   四窗 104 含 v36 插件场景 `chat-plugin-panel` /
   `chat-plugin-page` / `settings-plugins-installed` / `settings-plugins-detail`（设置列表 + 配置入口）/
@@ -104,9 +105,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   桌面 widget 窗口不在 `WindowName` 里，走 `captureWindows` 的 `widgetWindow` 现取。
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 136 条：
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 137 条：
   `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget,plugin-config,banner-card,banner-glow,computer-use-overlay,computer-use-hud,dialog'`
-  （127 checks，仅
+  （128 checks，仅
   `chat-model-picker` 红；**两个 Computer Use 内部窗口必须显式列进 `AURORA_CAPTURE_WINDOWS`** ——
   按 `target.name` 精确过滤，漏了它们只会得到 109 条，看起来「少了两张」）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
@@ -114,7 +115,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **2026-11-10 新增插件临时对话框**：`plugin-dialog`（声明式，真实键入 + 确定）与
   `plugin-dialog-page`（自定义 HTML / CSS，页面内提交）2 个场景，`target.name` 都是 `dialog`；
   定向验收用 `AURORA_CAPTURE_WINDOWS=dialog AURORA_CAPTURE_ONLY=plugin-dialog`（2 条全绿）。
-  它们**不在**上面默认名单里，当前全量单轮已把 `dialog` 加进该列表（合计 127 条）。
+  它们**不在**上面默认名单里，当前全量单轮已把 `dialog` 加进该列表（合计 128 条）。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
   （只按 `pass === false` 会把纯截图场景误判成失败）。`AURORA_CAPTURE_ONLY` 是**子串**匹配
   （`'chat.png'` 连带命中 `theme-chat.png`），且**每轮必须写独立目录**（同目录会覆盖上一轮 `report.json`）。

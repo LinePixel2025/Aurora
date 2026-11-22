@@ -127,6 +127,10 @@ describe('createTaskTool', () => {
     // 同轮多个 task 可入并发批（真正并发度由 subagent-limiter 按父会话限制，docs/06 §19.5）
     expect(tool.parallel).toBe(true)
     expect(tool.parameters.required).toEqual(['description', 'prompt'])
+    // v0.8.1：描述首句强调「优先分流、不要自己逐个读文件」，并写明小任务豁免
+    expect(tool.description).toContain('优先用本工具分流多步任务')
+    expect(tool.description).toContain('不要自己逐个文件读')
+    expect(tool.description).toContain('小任务（单文件、两三次读取）自己做')
   })
 
   it('子代理只见过滤后的工具：confirm 工具与 task 自身被排除', async () => {

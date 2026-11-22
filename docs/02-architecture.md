@@ -204,6 +204,13 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
   不与分类 / 自感知共用那个串行池）；版式另实例化一个 office-port
   （产物落 `userData/office-previews/panel`，LRU + 24h sweep，**不进 Agent 工具表**），
   引擎忙时立即回错不排队。
+- **子代理起草通道（v0.8.1，docs/06 §19.6）**：`subagents:draft`（渲染层 → 主进程 invoke，
+  请求 `{ description: string }`，回 `Result<SubagentDraft>`，`SubagentDraft` =
+  子代理配置的 `name` / `description` / `instructions` / `access` 四项）。
+  主进程 `AgentSubagentDraftService`（`main/subagent-draft.ts`）只做一次普通 provider 请求
+  并把模型输出解析成草稿；**不写配置**、不落会话，用户确认后仍走 `settings:update`。
+  该通道只服务设置页，Agent 工具面没有对应入口（`agent.subagents` 整组在
+  `SETTINGS_READONLY_PREFIXES`）。
 - **内置浏览器 Agent 通道（v35，docs/06 §27）**：`browser_open` 等八个内置工具由主进程驱动
   右栏 chat 窗口里的 webview，四个通道的方向与语义如下（preload 白名单与 shared 双向断言同步）：
 

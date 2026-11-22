@@ -37,6 +37,7 @@ import {
   isRestorePathRejectedError,
   writeRestoredFile,
 } from './tools/restore-guard.js'
+import type { SubagentDraftOutcome } from './subagent-draft.js'
 import {
   IPC,
   PLUGIN_WIDGET_WINDOW_LEVELS,
@@ -148,6 +149,7 @@ import {
   type SetSecretsOutcome,
   type Settings,
   type SettingsPatch,
+  type SubagentDraft,
   type SkillSummary,
   type SkillsStatus,
   type SmokeDiagnostics,
@@ -303,6 +305,13 @@ export interface DesktopDeps {
    */
   sessionTitles?: {
     schedule(sessionId: string, firstUserText?: string, attachments?: readonly string[]): void
+  }
+  /**
+   * 子代理起草（v0.8.1，docs/06 §19.6）：设置页「新建子代理」弹窗的 Aurora 起草入口。
+   * 未注入时 `subagents:draft` 回 `E_INVALID_STATE`（不静默造一个空草稿）。
+   */
+  subagentDraft?: {
+    draft(description: string): Promise<SubagentDraftOutcome>
   }
   /** 对话图片读取（chat:readDisplayImage，docs/06 §14） */
   readDisplayImage: (request: ChatDisplayImageReadRequest) => Promise<ChatDisplayImageReadResult>
@@ -1432,6 +1441,22 @@ export function registerIpc(deps: DesktopDeps): () => void {
       ),
   )
   handle<SkillsStatus>(IPC.skills.status, () => ok(deps.skills.status()))
+
+  // ───────────────────────── subagents（v0.8.1）─────────────────────────
+  // 设置页「新建子代理」的 Aurora 起草：只回草稿、不写配置；用户确认后才走 settings:update。
+  // 参数与返回值都做一次收敛（渲染层传什么都不能把空白需求送给模型）。
+  handle<SubagentDraft>(IPC.subagents.draft, async (request: { description?: unknown }) => {
+    if (deps.subagentDraft === undefined) {
+      return err('E_INVALID_STATE', '子代理起草服务尚未装配')
+    }
+    const description =
+      typeof request?.description === 'string' ? request.description.trim().slice(0, 2_000) : ''
+    if (description.length < 4) {
+      return err('E_INVALID_ARGUMENT', '请先描述你想要的子代理（至少写几个字）')
+    }
+    const outcome = await deps.subagentDraft.draft(description)
+    return outcome.ok ? ok(outcome.draft) : err('E_INVALID_STATE', outcome.message)
+  })
 
   // ───────────────────────── plugins（docs/14）─────────────────────────
   // 安装 / 启停 / 信任 / 配置全部经 `PluginManager`；未装配时如实回错，不静默成功。

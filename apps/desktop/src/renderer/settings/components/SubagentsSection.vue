@@ -13,8 +13,8 @@
  * 为什么模型用两个下拉（来源 + 模型）而不是自由输入：模型 id 必须落在已配置的
  * `llm.providers` 里才有意义；`providerId` 与 `model` 都为空 = 跟随当前会话模型。
  */
-import { computed, reactive, ref, watch } from 'vue'
-import { ChevronRight } from '@aurora/shared/browser'
+import { computed, ref, watch } from 'vue'
+import { ChevronRight, Plus } from '@aurora/shared/browser'
 import type { SubagentAccess, SubagentConfig } from '@aurora/shared/browser'
 import {
   DEFAULT_AGENT_SUBAGENTS,
@@ -24,6 +24,7 @@ import {
 } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import SettingField from '../../shared/components/SettingField.vue'
+import SubagentCreateDialog from './SubagentCreateDialog.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 
 type NotifyPayload = { tone: 'info' | 'warn' | 'error' | 'ok'; text: string }
@@ -49,15 +50,10 @@ const providers = computed(() =>
 const editingId = ref<string | null>(null)
 /** 待确认删除的子代理 id（同一时刻只确认一个，与 MCP / 模型页同款） */
 const pendingRemoveId = ref<string | null>(null)
-/** 新增表单是否展开（空列表时默认展开，见下） */
-const showAdd = ref(false)
-
-const form = reactive({
-  name: '',
-  description: '',
-  instructions: '',
-  access: 'read' as SubagentAccess,
-})
+/** 「新建子代理」弹窗是否打开（v0.8.1：替代原来页内那条四行小表单） */
+const creating = ref(false)
+/** 保存中（弹窗禁用关闭 / 提交，防重复点击产生两条定义） */
+const saving = ref(false)
 
 watch(
   agents,
@@ -69,7 +65,6 @@ watch(
     if (editingId.value !== null && !next.some((item) => item.id === editingId.value)) {
       editingId.value = null
     }
-    if (next.length === 0) showAdd.value = true
   },
   { immediate: true },
 )
@@ -169,35 +164,38 @@ function nextCustomId(): string {
   return `custom-${index}`
 }
 
-async function addAgent(): Promise<void> {
-  const name = form.name.trim()
-  const description = form.description.trim()
-  const instructions = form.instructions.trim()
-  if (name === '' || description === '' || instructions === '') {
-    notify('warn', '名称、用途说明与指令都要填')
-    return
-  }
+/**
+ * 弹窗提交（v0.8.1）：id / 默认值在父级生成，保存仍是 `settings:update` 整数组权威。
+ * 失败时**不关弹窗**（用户填的内容还在，改完可以重试）。
+ */
+async function createAgent(payload: {
+  name: string
+  description: string
+  instructions: string
+  access: SubagentAccess
+}): Promise<void> {
   if (agents.value.length >= MAX_SUBAGENTS) {
     notify('warn', `子代理最多 ${MAX_SUBAGENTS} 个`)
     return
   }
   const item: SubagentConfig = {
     id: nextCustomId(),
-    name,
-    description,
-    instructions,
+    name: payload.name.trim(),
+    description: payload.description.trim(),
+    instructions: payload.instructions.trim(),
     enabled: true,
-    access: form.access,
+    access: payload.access,
     model: { providerId: '', model: '' },
     builtin: false,
   }
-  if (!(await save([...agents.value, item]))) return
-  form.name = ''
-  form.description = ''
-  form.instructions = ''
-  form.access = 'read'
-  showAdd.value = false
-  notify('ok', `已添加子代理「${name}」`)
+  saving.value = true
+  try {
+    if (!(await save([...agents.value, item]))) return
+    creating.value = false
+    notify('ok', `已添加子代理「${item.name}」`)
+  } finally {
+    saving.value = false
+  }
 }
 
 async function removeAgent(item: SubagentConfig): Promise<void> {
@@ -233,7 +231,8 @@ function toggleEditing(id: string): void {
     </p>
 
     <p v-if="agents.length === 0" class="subagents-empty tiny muted">
-      还没有子代理。添加一个后，主代理会根据「用途说明」判断什么时候派它。
+      还没有子代理。点「新建子代理」创建一条（可以一句话让 Aurora 起草），主代理就会按
+      「用途说明」判断什么时候派它。
     </p>
 
     <article
@@ -273,7 +272,7 @@ function toggleEditing(id: string): void {
         <SettingField
           :data-field="`agent.subagents.${item.id}.name`"
           label="名称"
-          hint="展示名，报告与卡片徽章都用它"
+          hint="展示名，报告、工具卡徽章与侧栏标题都用它"
         >
           <input
             class="input"
@@ -402,61 +401,33 @@ function toggleEditing(id: string): void {
       </footer>
     </article>
 
+    <!--
+      v0.8.1：创建入口收成弹窗（`SubagentCreateDialog`）。按钮放区组底部、用主按钮 ——
+      空列表时它是页面上最该被点的东西；有列表时它是唯一的「加一条」入口。
+    -->
     <div class="add-area">
-      <AppButton size="sm" :data-field="`agent.subagents.add`" @click="showAdd = !showAdd">
-        {{ showAdd ? '收起新增' : '添加子代理' }}
+      <AppButton
+        variant="primary"
+        size="sm"
+        :disabled="agents.length >= MAX_SUBAGENTS"
+        :data-field="`agent.subagents.create`"
+        @click="creating = true"
+      >
+        <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+        新建子代理
       </AppButton>
-      <span class="tiny muted">最多 {{ MAX_SUBAGENTS }} 个；新子代理默认只读、跟随会话模型</span>
+      <span class="tiny muted">
+        最多 {{ MAX_SUBAGENTS }} 个；可以让 Aurora 起草，也可以手动填写
+      </span>
     </div>
 
-    <div v-if="showAdd" class="add-form" data-field="agent.subagents.addForm">
-      <SettingField label="名称" hint="展示名，例如 Reviewer">
-        <input
-          v-model="form.name"
-          class="input"
-          type="text"
-          maxlength="40"
-          :data-field="`agent.subagents.add.name`"
-        />
-      </SettingField>
-      <SettingField label="用途说明" hint="什么时候派它：写清适用与不适用的场合">
-        <input
-          v-model="form.description"
-          class="input"
-          type="text"
-          maxlength="200"
-          :data-field="`agent.subagents.add.description`"
-        />
-      </SettingField>
-      <SettingField label="工具权限" hint="写入与命令仍按当前权限档逐次确认">
-        <select
-          class="input"
-          :value="form.access"
-          :data-field="`agent.subagents.add.access`"
-          @change="form.access = ($event.target as HTMLSelectElement).value as SubagentAccess"
-        >
-          <option v-for="level in SUBAGENT_ACCESS_LEVELS" :key="level" :value="level">
-            {{ SUBAGENT_ACCESS_LABELS[level] }}
-          </option>
-        </select>
-      </SettingField>
-      <div class="add-instructions">
-        <span class="tiny muted">指令（系统提示词）</span>
-        <textarea
-          v-model="form.instructions"
-          class="input instructions"
-          rows="5"
-          maxlength="4000"
-          spellcheck="false"
-          :data-field="`agent.subagents.add.instructions`"
-        />
-      </div>
-      <div class="row-actions">
-        <AppButton size="sm" :data-field="`agent.subagents.add.confirm`" @click="addAgent">
-          添加
-        </AppButton>
-      </div>
-    </div>
+    <SubagentCreateDialog
+      v-if="creating"
+      :existing="agents"
+      :busy="saving"
+      @close="creating = false"
+      @submit="createAgent"
+    />
   </div>
 </template>
 
@@ -585,21 +556,7 @@ function toggleEditing(id: string): void {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-}
-
-.add-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px dashed var(--border-subtle);
-  border-radius: var(--radius-sm);
-}
-
-.add-instructions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  flex-wrap: wrap;
 }
 
 .grow {
