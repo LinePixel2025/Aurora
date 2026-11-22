@@ -14,6 +14,7 @@ import type {
   ReminderChannel,
   Settings,
   SttSettings,
+  SubagentAccess,
   TtsFormat,
   TtsProviderType,
   TtsSettings,
@@ -2083,6 +2084,27 @@ export interface SubagentTranscriptMessage {
 }
 
 /**
+ * Aurora 起草子代理的请求（v0.8.1，docs/06 §19.6）：
+ * 用户的一句话需求；已存在名称由主进程从配置里补，渲染层不用传。
+ */
+export interface SubagentDraftRequest {
+  /** 想要的子代理做什么 / 什么时候用（trim 后至少 4 字） */
+  description: string
+}
+
+/**
+ * Aurora 起草子代理的产出（v0.8.1）：与 `SubagentConfig` 的可编辑字段同名同上限，
+ * 但**只是草稿**——不含 `id` / `enabled` / `model` / `builtin`，也不落配置。
+ * 渲染层预填到「新建子代理」弹窗，用户确认后才由 `settings:update` 保存。
+ */
+export interface SubagentDraft {
+  name: string
+  description: string
+  instructions: string
+  access: SubagentAccess
+}
+
+/**
  * 子代理运行快照（`task` 工具的实时进度，docs/06 §19）。
  *
  * 子代理的对话过程**不落会话存储**（见 `tools/task.ts`），这份快照是它唯一的对外可见形态：
@@ -3010,6 +3032,13 @@ export interface AuroraApi {
     /** 重新扫描内置 + 用户技能目录（设置页「重新扫描」） */
     rescan(): Promise<Result<SkillsStatus>>
     status(): Promise<Result<SkillsStatus>>
+  }
+  /**
+   * 子代理定义（v0.8.1，docs/06 §19.6）：设置页「新建子代理」的 Aurora 起草。
+   * 只回草稿、不写配置；用户确认后由 `settings.update({ agent: { subagents } })` 落盘。
+   */
+  subagents: {
+    draft(request: SubagentDraftRequest): Promise<Result<SubagentDraft>>
   }
   hotkey: {
     /** 当前快捷键注册状态（docs/07 §5） */

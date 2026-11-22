@@ -161,6 +161,10 @@ const api: AuroraApi = {
     rescan: () => invoke(IPC.skills.rescan),
     status: () => invoke(IPC.skills.status),
   },
+  // 子代理定义起草（v0.8.1，docs/06 §19.6）：设置页新建子代理的 Aurora 起草，只回草稿
+  subagents: {
+    draft: (request) => invoke(IPC.subagents.draft, request),
+  },
   hotkey: {
     status: () => invoke(IPC.hotkey.status),
     onChanged: (listener) => subscribe(IPC.hotkey.changed, listener),

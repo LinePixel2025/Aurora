@@ -123,6 +123,10 @@ const CHANNELS = {
     rescan: 'skills:rescan',
     status: 'skills:status',
   },
+  /** 子代理定义起草（v0.8.1，docs/06 §19.6）：设置页新建子代理的 Aurora 起草 */
+  subagents: {
+    draft: 'subagents:draft',
+  },
   chat: {
     send: 'chat:send',
     abort: 'chat:abort',

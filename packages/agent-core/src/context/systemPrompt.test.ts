@@ -218,10 +218,11 @@ describe('buildSystemPrompt', () => {
     expect(buildSystemPrompt().endsWith(SAFETY_RULES)).toBe(true)
   })
 
-  it('默认人设包含查证与如实汇报两条基线', () => {
+  it('默认人设包含查证、子代理分流与如实汇报三条基线', () => {
     expect(BASE_PERSONA).toContain(
       '需要系统状态、文件内容等真实信息时优先用工具查证，不要凭空猜测。',
     )
+    expect(BASE_PERSONA).toContain('能独立并行的子任务优先派给子代理')
     expect(BASE_PERSONA).toContain('完成任务后简短汇报做了什么、结果如何；不要编造未执行的步骤。')
     expect(buildSystemPrompt()).toContain('优先用工具查证')
   })
@@ -400,10 +401,12 @@ describe('buildToolGuidance', () => {
     expect(guidance).toContain('一次只保留一个 in_progress')
   })
 
-  it('含 task 时附子代理派发规范（触发式：该派就派，而不是"可以派"）', () => {
+  it('含 task 时附子代理派发规范（触发式：该派就派，附小任务豁免）', () => {
     const guidance = buildToolGuidance(['task'])
-    expect(guidance).toContain('动手前先分流')
-    expect(guidance).toContain('先派只读子代理把结论收回来')
+    expect(guidance).toContain('先分流再动手')
+    expect(guidance).toContain('要读 ≥3 个文件或跨 ≥2 个目录才能答清')
+    expect(guidance).toContain('实现型任务能拆成独立子任务')
+    expect(guidance).toContain('单文件、两三次读取就能答的小任务自己做')
     expect(guidance).toContain('用 `agent` 参数按名册选型')
     expect(guidance).toContain('`prompt` 必须自包含')
     expect(guidance).toContain('同一会话最多 3 个并发')

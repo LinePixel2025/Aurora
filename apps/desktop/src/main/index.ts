@@ -121,6 +121,7 @@ import {
 } from './ipc.js'
 import { TerminalService } from './terminal-service.js'
 import { SessionTitleService } from './session-title.js'
+import { SubagentDraftService } from './subagent-draft.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { isQuietHour, ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
@@ -2049,6 +2050,16 @@ async function bootstrap(): Promise<void> {
     // 标题落盘成功后才广播：渲染层看到标题时，重启 / Center 再拉列表也一定读得到。
     onTitle: (event) => windows?.sendTo('chat', IPC.chat.sessionTitleChanged, event),
   })
+  // 子代理起草（v0.8.1，docs/06 §19.6）：设置页「新建子代理」的 Aurora 起草。
+  // 与标题服务同一套「裸 provider 请求」形态；已存在名称现读，防模型起重名。
+  const subagentDraft = new SubagentDraftService({
+    provider: agentProvider,
+    logger: logger.child('subagent-draft'),
+    existingNames: () =>
+      (settings?.get().agent.subagents ?? [])
+        .filter((item) => item.enabled)
+        .map((item) => item.name),
+  })
   registerPlanTool({
     tools,
     logger: logger.child('tools'),
@@ -3430,6 +3441,8 @@ async function bootstrap(): Promise<void> {
     pluginMarketplace,
     sessions,
     sessionTitles,
+    // 子代理起草（v0.8.1）：设置页「新建子代理」→ Aurora 起草（只回草稿，不写配置）
+    subagentDraft,
     // 计划模式（docs/06 §29）：chat:plan* 与 plans:* 的唯一服务实例
     ...(planService === undefined ? {} : { plan: planService }),
     readDisplayImage: async ({ sessionId, imageId }) => {

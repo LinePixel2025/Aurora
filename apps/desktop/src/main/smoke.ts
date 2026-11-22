@@ -1582,6 +1582,34 @@ export function smokeScript(
     // 能同时验证"单例标签 + 换焦点"）；这里刻意不碰 DOM —— 本轮 send 用的是独立会话，
     // 渲染层当前视图不一定是它，点徽章会落空（错误的判据比少一条更糟）。
 
+    // 9.4d Aurora 起草子代理（v0.8.1，docs/06 §19.6）：设置页「新建子代理」的同一条 IPC →
+    //      主进程起草服务 → 桩模型。两条断言成对：① 草稿形状可用；② **不写配置** ——
+    //      草稿必须由用户确认后才保存，服务自己落盘就等于 AI 自建了子代理。
+    const draftBefore = await window.aurora.settings.get()
+    const draftResult = await window.aurora.subagents.draft({
+      description: '做一个只读的代码审查员，检查改动风险',
+    })
+    const draft = draftResult && draftResult.ok ? draftResult.value : null
+    record(
+      'Aurora 起草子代理：返回可用的名称 / 用途 / 指令 / 档位',
+      Boolean(draft) &&
+        draft.name === '冒烟审查员' &&
+        draft.description.length > 5 &&
+        draft.instructions.length > 10 &&
+        draft.access === 'read',
+      JSON.stringify(draft),
+    )
+    const draftAfter = await window.aurora.settings.get()
+    const subagentsBefore =
+      draftBefore && draftBefore.ok ? JSON.stringify(draftBefore.value.agent.subagents) : ''
+    const subagentsAfter =
+      draftAfter && draftAfter.ok ? JSON.stringify(draftAfter.value.agent.subagents) : ''
+    record(
+      'Aurora 起草不写配置（草稿须用户确认后才保存）',
+      subagentsAfter !== '' && subagentsBefore === subagentsAfter,
+      'subagents=' + subagentsAfter.slice(0, 60),
+    )
+
     // 9.5 免确认命令模式（docs/06 §11.7，v12）：命中列表 → 直接执行、不弹卡片；未命中 → 仍然弹卡片。
     //     两条断言必须成对：只断言「没收到卡片」证明不了什么 —— 整条链路没走（工具压根没被调用、
     //     或走了 enabled() 为假的那条更宽的放行路径）同样收不到卡片，负对照才是这条断言的本体。

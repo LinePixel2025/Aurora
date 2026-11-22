@@ -153,6 +153,14 @@ export const IPC = {
     rescan: 'skills:rescan',
     status: 'skills:status',
   },
+  /**
+   * 子代理定义（v0.8.1，docs/06 §19.6）。只有设置页用：
+   * `draft` 把用户的一句话需求交给模型起草一条子代理定义，**只回草稿、不写配置**
+   * （用户确认后仍走 `settings:update`）；Agent 工具面没有对应入口。
+   */
+  subagents: {
+    draft: 'subagents:draft',
+  },
   chat: {
     send: 'chat:send',
     abort: 'chat:abort',
