@@ -374,9 +374,18 @@
        对话，在该项目的分组头 `+` 新建会话（`chat:setSessionProject`）即绑定。
        选择框出错 / 配置被拒不再静默：IPC 仍是 `Result<string | null>`，渲染层的
        `pickProjectEntry` 把它收敛成三态（选中 / 用户取消 / 出错，`ProjectPickOutcome`），
-       出错经左栏左下角的 `chat.project-notice` 提示条报出来（**不挂在 composer 里** ——
+       出错经主区顶部居中的 `chat.project-notice` 通知报出来（**不挂在 composer 里** ——
        composer 只在对话视图挂载，而左栏这个钮在子代理 / 自动化页照样能点），
        成功给一句「已添加项目「X」」。
+       **通知位置与外观（v0.8.1）**：不再固定在窗口左下角 —— 那里会压住左栏底部的
+       模式徽章 / 设置齿轮，且旧实现的 `--glass-surface` 近乎透明，左栏文字透上来像
+       「字体重叠」。现在渲染在 `<main>` 内、标题栏下方**顶部居中**（`position: absolute;
+       top: calc(var(--head-h) + var(--space-2)); left: 50%`），实底 `--bg-raised` + 1px
+       描边 + `--shadow-2`、max-width 520 可换行；`role="status"` + `aria-live="polite"`；
+       左侧语义图标 + 右侧关闭按钮 + 底部 2px 自动消失进度条（成功 2.6s / 失败 6s，
+       `prefers-reduced-motion` 降级为无动画）。容器 `pointer-events: none`、只有关闭按钮
+       可点，不挡正文选中与点击。同一条通道也承载进入 / 退出计划模式、计划批准、标签上限、
+       Computer Use 授权等 `flashProjectNotice` 回执。
        绑定项目已被删除的孤儿会话**归入 Agent对话区**显示（解析链上它们已按未绑定回落；
        展示层按 `knownProjectIds` 判定，2026-09-30 修 —— 此前它们既进不了项目分组、
        又被 Agent 分组按 `projectId === undefined` 挡掉，会从**左栏整条消失**）。
@@ -903,6 +912,8 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   **v46 起行尾多一枚「子代理标识徽章」**（`data-action="chat.subagent-open-panel"`：`Bot` 图标 +
   `agentName`（未到快照时回落「子代理」），运行中强调色 + 边框呼吸）：点是**在右栏打开 / 聚焦**
   这次运行的对话面板，与头部展开开关是两个动作（`<button>` 里不嵌按钮）。
+  **v0.8.1 起 `task` 行的展开体只渲染对话视图**（见下「独立对话视图」），不再在后面重复
+  「参数 / 结果」两块 —— 对话已包含任务指令、每次工具调用的参数与结果、最终报告，是严格超集。
   行首一行固定是：状态点 → 工具图标 → 标题 → **结果摘要**（单行省略，悬停 `AppTooltip` 看全文），
   行尾是耗时与 chevron。三条硬口径：
   ① **不再有「执行中 / 完成 / 失败」文字**：状态语义交给**状态点色**（`--status-running` /
@@ -934,11 +945,24 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
     进度条 + 步骤时间线 + 报告 `data-field="chat.subagent-report"`），
     展开 = 独立对话视图（见下条））；无运行时给空状态说明。
   - **独立对话视图**（2026-09，`SubagentConversation.vue`，根锚点 `data-field="chat.subagent-conversation"`，
-    见 `06 §19.3`）：展开后渲染 `SubagentSnapshot.messages` —— 顶部一行是权限徽章与
-    可用工具清单（`可用工具：read_file、grep…`），随后是**主代理气泡**（任务指令）→
-    **子代理正文**（最后一条有正文的标「最终报告」）→ 其中的工具调用各成一行
-    （语义图标 + 工具名 + 结果摘要，点开看参数与结果正文）；超限时底部如实标出「中间已省略」。
-    与 `task` 工具卡的展开体**共用同一个组件**。
+    见 `06 §19.3`）：展开后渲染 `SubagentSnapshot.messages`。**v0.8.1 起与普通对话同一套排版语言**
+    （此前是独立的气泡 + 边框工具卡，与主对话明显两种观感）：
+    - 每轮 = `.conv-turn`（24px 头像列 + 内容列）；**主代理的任务指令右对齐**、强调色浅填充胶囊
+      （`.conv-bubble.user`），与主对话的「用户气泡」同款；
+    - **子代理正文左对齐、不套气泡**，走共享 Markdown 渲染器（`renderMarkdown` → `.md`，
+      与 `MessageList` 同一份安全基线：先转义再白名单标记，绝无裸 `v-html`）；最后一条有正文的
+      助手消息标 `最终报告`（`.conv-report-tag`，正文仍是 `.conv-bubble.report`）；
+    - **工具调用是轨迹行**：左侧竖脊 + 节点圆点、状态点色 + 每行一枚语义图标 +
+      `toolLabelOf()` 可读标题（「读取 <路径>」「运行 <命令>」…，未登记回落 mono 工具名）+
+      结果摘要，点开看参数与结果全文（`.conv-tool` 保留为锚点；
+      v0.8.1 前是带描边的独立小卡片）；
+    - 顶部元信息行（名字 / 三档权限 / 模型 / 可用工具数）在 `showMeta !== false` 时渲染，
+      工具清单挂 `AppTooltip`（窄栏不再铺满整行）；侧栏面板头部已有同样信息，那里传 `false`；
+    - 超限时底部如实标出「中间已省略」；最底部保留一句只读说明。
+    与 `task` 工具卡的展开体、「子代理」页面、右栏查看器**共用同一个组件**，四处观感一致。
+  - **v0.8.1 探针锚点不变**：`.conv-turn` / `.conv-tool` / `.conv-bubble.user` /
+    `.conv-bubble.report` / `.conv-report-tag` 仍由 capture 断言；新增断言对话里存在
+    `.conv-turn.assistant .md`（正文真的走了 Markdown 渲染）与头像列。
   - **只读口径**：对话视图里**没有输入框 / 发送键 / 任何干预入口**（子代理的生死跟着父请求，
     要中止就中止父请求，这句提示写在视图底部）。capture 探针按「容器内不存在 `textarea` /
     `input` / `contenteditable`」来钉这条口径 —— 注释不算证据。
@@ -1770,12 +1794,24 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   - **组头摘要承载状态**：工具组「x / y 个工具生效」（`y` 取 `COMPUTER_TOOL_NAMES.length`、
     **不写死数字**，总开关关闭时显示「已停用」）、子代理「x / y 个启用」、技能「已启用 x / 共 y」
     （未发现显示「未发现」）、MCP「n 台服务器 / m 台启用」（未配置显示「未配置」）。
-  - **子代理页（`agent-subagents`，`SubagentsSection.vue`，见 06 §19.6）**：列表行 = 启用 checkbox +
-    名称 + id（mono）+「内置」徽章 + 摘要（档位 · 模型）+ 展开指令的箭头；行内字段
-    名称 / 用途说明 / 工具权限（三档下拉）/ 模型来源（空 = 跟随当前会话模型）+ 模型，
+  - **子代理页（`agent-subagents`，`SubagentsSection.vue` + `SubagentCreateDialog.vue`，见 06 §19.6）**：
+    列表行 = 启用 checkbox + 名称 + id（mono）+「内置」徽章 + 摘要（档位 · 模型）+ 展开指令的箭头；
+    行内字段名称 / 用途说明 / 工具权限（三档下拉）/ 模型来源（空 = 跟随当前会话模型）+ 模型，
     展开区是子代理指令（textarea，mono）。行尾「恢复预设」（仅内置）/「删除」（二次确认）、
-    底部「添加子代理」（表单：名称 / 用途说明 / 权限 / 指令；id 由页面生成 `custom-N`）。
-    锚点 `agent.subagents`（容器）/ `agent.subagents.<id>.*` / `agent.subagents.add*`；
+    区组底部一枚显眼的**「新建子代理」主按钮**（锚点 `agent.subagents.create`）。
+    **v0.8.1 起新增走弹窗**（`<Teleport to="body">` + 遮罩 + 卡片，`role="dialog"` /
+    `aria-modal`，Esc / 遮罩 / 取消关闭，打开即聚焦），不再用页内那条四行小表单：
+    - 上半「让 Aurora 起草」：一句话需求 textarea（锚点 `agent.subagents.create.brief`）+
+      示例 chip + 「生成草稿」按钮（`agent.subagents.create.draft`）。调用新通道
+      `subagents:draft`，把 `name` / `description` / `instructions` / `access` 预填下半表单；
+      生成中禁用按钮并显示内联错误（无模型 / 网络失败 / 输出畸形各有可读文案）。
+      **草稿不自动保存**，用户改完再点添加；
+    - 下半字段：名称（≤40）/ 用途说明（≤200，说明「主代理据此选型」）/ 工具权限三档
+      （`execute` 显示敏感提示）/ 指令（≤4000，mono），锚点
+      `agent.subagents.create.{name,description,access,instructions}`；
+    - 底部「取消」/「添加子代理」（`agent.subagents.create.submit`）：校验非空、长度、
+      重名提示与上限 `MAX_SUBAGENTS`；id 仍由页面生成 `custom-N`。
+    锚点 `agent.subagents`（容器）/ `agent.subagents.<id>.*` / `agent.subagents.create*`；
     **刻意不用 `data-empty`**（本页探针把未登记的空态当回归，见 §5.3）。保存走
     `settings:update({ agent: { subagents } })`（整数组权威），回执经 `notify` 上抛页级 Toast。
   - **技能页（`agent-skills`）与 MCP 页（`agent-mcp`）**：区组常显（不再默认收起），
@@ -2132,6 +2168,9 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
       左栏「计划」入口 → 右栏计划标签：**把右栏拖到最小 280px** 后截图，断言多计划 chips、
       默认选中最新计划、chips 双向切换、单阅读区无重复标题、面板占满窗格、面板 / 预览头无横向溢出、
       选中 chip 在可视区内、正文是唯一纵向滚动区；旧垂直列表锚点必须不存在）。
+      **v0.8.1 起 `chat-plan-mode` 的 act 还量一次进入计划模式那条通知**（`chat.project-notice`：
+      存在 / 落在 `.main` 内 / 与左栏 `.nav` 矩形不相交 / 背景 alpha ≥ 0.9），写入
+      `window.__auroraPlanNoticeProbe` 交给 check —— 这条钉住「提示不再压在左栏文字上」。
       同时 `chat-composer-slash` 增加 `chat.slash-plan === 1` 断言。
      历史现场由 `runCapture` 在跑计划前经 `seedChatTtsHistory` 种进 `sessions/main.json`：
      一条助手消息，内容含裸 URL 与行内代码（核对链接样式），并带 `reasoning` 字段
@@ -2144,6 +2183,9 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      `settings-agent-browser.png` / `settings-agent-subagents.png` / `settings-agent-skills.png` /
      `settings-agent-mcp.png`；各页按下面「设置页门控」挂对应探针；Computer Use 不入循环，
      由 `settings-computer-use.png` 单列场景拍；modes 页 act 先展开默认收起的「课程表与课前提醒」分组）→
+     **v0.8.1 新增 `settings-subagent-create.png`**：在子代理页点「新建子代理」打开弹窗，
+     断言弹窗在、四个字段 / Aurora 起草入口 / 提交按钮齐全，check 内点「取消」收尾
+     （见下面「子代理创建弹窗」一条）→
      `settings-legacy-tts-alias.png` / `settings-legacy-agent-alias.png`（旧深链 `?page=tts` 与
      `?page=agent` 经 `LEGACY_PAGE_ALIASES` 分别落到「语音」页 / 「电脑操控」页；`skills` / `mcp`
      走同一张映射表）→ `settings-drag.png` →
@@ -2689,6 +2731,13 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     **`agent-subagents` 页**（`SETTINGS_AGENT_SUBAGENTS_FIELDS_SCRIPT`）
     区组在、`agent.subagents.<id>.enabled` 至少 2 行（出厂预设）、字段数 ≥ 行数×5、
     区组矩形真的落在视口里、本页不出现 `data-empty`；
+    **子代理创建弹窗（v0.8.1，`SETTINGS_SUBAGENT_CREATE_ACT/CHECK`，产物
+    `settings-subagent-create.png`）**：act 点 `agent.subagents.create` → 等
+    `agent.subagents.createDialog` 出现；check 断言弹窗可见且完整落在窗口内、
+    名称 / 用途说明 / 工具权限 / 指令四字段齐全、Aurora 起草的 brief 与 draft 入口在、
+    提交按钮在、无 `data-empty`；收尾点 `agent.subagents.create.cancel` 关闭弹窗并断言对话框消失
+    （否则会污染后续设置页截图）。**不在这里触发模型调用**：无模型的失败路径由单测覆盖，
+    真实链路在冒烟里打桩验证；
     **`agent-skills` 页**（`SETTINGS_AGENT_SKILLS_FIELDS_SCRIPT`）`skills.userDir` 常显，
     技能清单「空态 `skills.disabled` 或至少一行」二选一，且除 `skills.disabled` 外不出现空态；
     **`agent-mcp` 页**（`SETTINGS_AGENT_MCP_FIELDS_SCRIPT`）必须给出

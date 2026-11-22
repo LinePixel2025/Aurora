@@ -1164,7 +1164,10 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     以及 `agent.loop.*` 的 Agent 循环）、
     `agent-browser` **内置浏览器**（`agent.browser.*` 六项，v35，见 06 §27）、
     `agent-subagents` **子代理**（`agent.subagents.*`，v46 见 06 §19.6；字段锚点
-    `agent.subagents.<id>.*`，添加表单 `agent.subagents.add*`，回执经页级 Toast）、
+    `agent.subagents.<id>.*`；v0.8.1 起新增走「新建子代理」弹窗：`agent.subagents.create`
+    打开、`agent.subagents.create.{brief,draft,name,description,access,instructions,submit,cancel}`
+    为弹窗内锚点，其中 `brief` + `draft` 是 **Aurora 起草**入口 —— 调用 `subagents:draft`
+    生成草稿预填表单，**不自动保存**；回执经页级 Toast）、
     `agent-skills` **技能**（`skills.*`）、`agent-mcp` **MCP 服务器**（`mcp.*`）；
     五页均为「页头 + 常显静态区组」，页内不再有可折叠 section-card；
   - **系统**：`center` Aurora Center；`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
